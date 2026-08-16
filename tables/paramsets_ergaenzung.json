@@ -1,0 +1,70 @@
+{
+ "KEY_TRANSCEIVER": {
+  "VALUES": {
+   "PRESS_LONG_RELEASE": {
+    "DEFAULT": false,
+    "FLAGS": 1,
+    "MAX": true,
+    "MIN": false,
+    "OPERATIONS": 4,
+    "TYPE": "ACTION"
+   },
+   "PRESS_LONG_START": {
+    "DEFAULT": false,
+    "FLAGS": 1,
+    "MAX": true,
+    "MIN": false,
+    "OPERATIONS": 4,
+    "TYPE": "ACTION"
+   }
+  }
+ },
+ "MAINTENANCE": {
+  "MASTER": {
+   "MULTICAST_ROUTER_MODULE_ENABLED": {
+    "DEFAULT": false,
+    "FLAGS": 1,
+    "MAX": true,
+    "MIN": false,
+    "OPERATIONS": 3,
+    "TYPE": "BOOL"
+   }
+  },
+  "VALUES": {
+   "INSTALL_TEST": {
+    "DEFAULT": false,
+    "FLAGS": 2,
+    "MAX": true,
+    "MIN": false,
+    "OPERATIONS": 3,
+    "TYPE": "BOOL"
+   },
+   "UPDATE_PENDING": {
+    "DEFAULT": false,
+    "FLAGS": 9,
+    "MAX": true,
+    "MIN": false,
+    "OPERATIONS": 5,
+    "TYPE": "BOOL"
+   }
+  }
+ },
+ "SWITCH_VIRTUAL_RECEIVER": {
+  "VALUES": {
+   "COMBINED_PARAMETER": {
+    "FLAGS": 1,
+    "OPERATIONS": 2,
+    "TYPE": "STRING"
+   }
+  }
+ },
+ "SWITCH_WEEK_PROFILE": {
+  "VALUES": {
+   "COMBINED_PARAMETER": {
+    "FLAGS": 1,
+    "OPERATIONS": 2,
+    "TYPE": "STRING"
+   }
+  }
+ }
+}

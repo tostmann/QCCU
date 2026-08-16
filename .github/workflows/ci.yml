@@ -1,0 +1,42 @@
+name: Prüfung
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Geprüft wird hier, was ohne den Rest des Aufbaus prüfbar ist: dass alles
+# übersetzt und dass das Abbild keine fremden Bestandteile enthält. Die
+# eigentlichen Prüffälle sind nicht Teil dieses Repositories.
+
+jobs:
+  syntax:
+    name: Syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Übersetzbarkeit
+        run: python3 -m compileall -q . && echo "alle Module übersetzbar"
+      - name: Shell-Dateien
+        run: |
+          for f in docker/*.sh; do sh -n "$f" && echo "ok  $f"; done
+
+  abbild:
+    name: Abbild
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: docker build
+        run: docker build -f docker/Dockerfile -t qccu:ci .
+      - name: Abbild darf keine fremden Bestandteile enthalten
+        run: |
+          treffer=$(docker run --rm --entrypoint sh qccu:ci -c \
+            'find / -name "HMIPServer*" -o -name "paramsets.json" -o -name "catalog.json" -o -name "*.deb" 2>/dev/null' | wc -l)
+          if [ "$treffer" -ne 0 ]; then
+            echo "FEHLER: fremde Bestandteile im Abbild"; exit 1
+          fi
+          echo "Abbild ist frei von fremden Bestandteilen"

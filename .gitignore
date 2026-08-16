@@ -1,0 +1,34 @@
+# Arbeitsnotizen gehoeren nicht ins Repo
+CLAUDE.md
+MEMORY.md
+GEMINI.md
+FACTS.md
+HARDWARE_STATUS.md
+.claude/
+
+# Geheimnisse
+.env
+.env.*
+*.key
+*.pem
+
+# Arbeitsspuren
+__pycache__/
+*.pyc
+*.log
+/data/
+
+# Vollstaendige Geraetetabellen: sie entstehen beim ersten Start aus dem
+# Paket des Nutzers und gehoeren NICHT ins Repo.
+tables/catalog.json
+tables/paramsets.json
+tables/sdt_table.json
+
+# macOS-Beidateien
+._*
+.DS_Store
+
+# Pruefstaende und Hilfsskripte bleiben lokal: sie arbeiten mit den
+# Geraeten und Ports des jeweiligen Aufbaus.
+test/
+scripts/

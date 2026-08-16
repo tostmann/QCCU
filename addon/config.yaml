@@ -1,0 +1,91 @@
+name: QCCU
+# ⚠️ `version` ist NICHT nur eine Anzeige: der Supervisor zieht das Abbild als
+# `<image>:<version>` — hier also `tostmann/qccu:2026.8.6`. Steht hier etwas,
+# das es auf Docker Hub nicht als Marke gibt, bricht schon die Installation ab
+# („Failed to fetch manifest … 404"), und `latest` wird NICHT ersatzweise
+# genommen. Sie ist dieselbe Fassung wie `VERSION` in qccu.py; wer hochzählt,
+# zieht beide mit und veröffentlicht die Marke — genau
+# daran erkennt der Supervisor auch, dass eine Aktualisierung vorliegt.
+version: "2026.8.6"
+slug: qccu
+description: >-
+  Zentrale für Homematic-IP-Geräte am busware-Funkstick — ohne CCU.
+  Bindet sich an Home Assistant (Homematic(IP) Local) und an FHEM (HMCCU)
+  gleichzeitig an.
+url: https://github.com/tostmann/QCCU
+arch:
+  - aarch64
+  - amd64
+
+# Ein fertiges Abbild statt eines Bauvorgangs beim Anwender: es liegt bereits
+# mehrarchitektur-fähig auf Docker Hub, und der Bau braucht ein JDK plus einen
+# Paketbezug — das gehört nicht auf die Zentrale des Anwenders.
+image: tostmann/qccu
+
+# Der Funkstick. `uart` bindet die seriellen Geräte des Rechners ein — QCCU
+# sucht sich seinen Stick darin selbst am Namen, deshalb ist SERIAL meist leer.
+uart: true
+# ⚠️ `usb` ist NICHT dasselbe und wird zusätzlich gebraucht: zum Einspielen der
+# Stick-Firmware schickt QCCU den Stick in den Bootlader, wo er sich mit einer
+# ANDEREN USB-Kennung zurückmeldet. Ohne den rohen USB-Zugang schlägt genau
+# dieser Schritt fehl — und er ist der erste, den ein neuer Anwender braucht.
+usb: true
+
+startup: services
+boot: auto
+# Eigener Einstiegspunkt; das Abbild bringt keinen s6-Init mit.
+init: false
+
+ports:
+  8080/tcp: 8080
+  2010/tcp: 2010
+  8181/tcp: 8181
+  8082/tcp: 8082
+  2000/tcp: 2000
+ports_description:
+  8080/tcp: Weboberfläche — hier wird angelernt
+  2010/tcp: XML-RPC — Home Assistant und FHEM/HMCCU
+  8181/tcp: ReGa — FHEM/HMCCU
+  8082/tcp: JSON-RPC — Home Assistant (Homematic(IP) Local)
+  2000/tcp: TCP-Zugang im culfw-Stil für BidCoS/AskSin (0 = aus)
+
+# ── Zugang aus dem Menue von Home Assistant ────────────────────────────────
+# Mit Ingress laeuft die QCCU-Oberflaeche INNERHALB von Home Assistant: kein
+# eigener Anmeldeschritt, keine Adresse zum Merken, und sie ist auch von
+# unterwegs erreichbar, wo Port 8080 es nicht ist. Home Assistant reicht die
+# Anfragen an diesen Port im Behaelter weiter und entfernt dabei sein
+# Wegpraefix — die Oberflaeche merkt davon nichts, ABER der Browser sieht das
+# Praefix. Deshalb traegt die Seite `<base href="./">` und benutzt durchweg
+# relative Adressen; mit `/api/state` landete sie bei Home Assistant selbst.
+ingress: true
+ingress_port: 8080
+# In der Seitenleiste, damit „im Menue" auch heisst, was es sagt.
+panel_icon: mdi:radio-tower
+panel_title: QCCU
+# Nur fuer Verwalter: hier wird Firmware eingespielt und angelernt.
+panel_admin: true
+
+# ⚠️ Der veroeffentlichte Port 8080 BLEIBT trotzdem. Ingress ist der bequeme
+# Weg, nicht der einzige: wer die Oberflaeche von einem anderen Rechner aus
+# oder ohne Home Assistant braucht (Fehlersuche, Erstinbetriebnahme), kommt
+# weiter unmittelbar an sie heran.
+webui: "http://[HOST]:[PORT:8080]/"
+
+options:
+  serial: ""
+  own_addr: ""
+  advertise: ""
+  cul_port: 2000
+  json_port: 8082
+schema:
+  # Leer lassen: QCCU sucht den Stick selbst. Nur nötig, wenn mehrere
+  # busware-Sticks stecken.
+  serial: "str?"
+  # Eigene Funkadresse (6 Hexziffern). Ohne Angabe wird beim ersten Start
+  # eine gewürfelt und gemerkt.
+  own_addr: "match(^$|^[0-9a-fA-F]{6}$)?"
+  # Adresse, unter der die Gegenstelle uns erreicht. ⚠️ Ohne sie findet
+  # HMCCU den XML-RPC-Dienst nicht — der Rückruf geht dann ins Leere.
+  advertise: "str?"
+  cul_port: "port?"
+  json_port: "port?"
