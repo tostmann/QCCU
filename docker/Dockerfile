@@ -57,8 +57,8 @@ COPY --from=uebersetzer /uebersetzt ./jarparam/
 COPY assets/busware_logo.png assets/busware_logo_dark.png assets/busware_icon.png ./
 # Ergaenzungen: die wenigen Parameter, die in keiner Definition stehen.
 COPY tables/paramsets_ergaenzung.json ./
-# Die Stick-Firmware, die `flash` einspielt
-COPY firmware/q-culfw-CUL_V3.hex firmware/THIRD-PARTY-NOTICES.md ./firmware/
+# Die Stick-Firmware, die `flash` einspielt — samt Lizenz und Vermerken
+COPY firmware/q-culfw-CUL_V3.hex firmware/LICENSE firmware/THIRD-PARTY-NOTICES.md ./firmware/
 
 COPY docker/entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/entrypoint.sh

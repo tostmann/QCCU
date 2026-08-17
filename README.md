@@ -183,8 +183,9 @@ gehört ins eigene Netz und nicht ins offene Internet.
 © 2026 Dirk Tostmann. Lizenz: **Apache-2.0** — siehe [LICENSE](LICENSE).
 
 Das gilt für QCCU selbst. Zwei Dinge daneben haben eigene Bedingungen: die
-Stick-Firmware unter [firmware/](firmware/) (siehe die Vermerke dort) und die
-HomeMatic-Software von eQ-3, die beim ersten Start geladen und ausgelesen wird
-— für sie gelten die HMSL, siehe [Starten](#starten).
+Stick-Firmware unter [firmware/](firmware/) — PolyForm Perimeter 1.0.1, siehe
+[firmware/LICENSE](firmware/LICENSE) und die Fremdbestandteil-Vermerke dort —
+und die HomeMatic-Software von eQ-3, die beim ersten Start geladen und
+ausgelesen wird — für sie gelten die HMSL, siehe [Starten](#starten).
 
 Genannte Marken sind Eigentum ihrer jeweiligen Inhaber. Dieses Projekt steht in keiner Verbindung zu deren Inhabern und wird von ihnen weder unterstützt noch geprüft.
