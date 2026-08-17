@@ -39,6 +39,12 @@ FT_STATUS = 5
 # Ein frisch angelerntes Geraet fragt die Zeit an und verlangt Antwort; die
 # CCU schickt ihr einen TIME_INFO-Frame zurueck, KEIN ANSWER.
 FT_TIME_INFO = 35
+
+# NetworkManagementFrameType — Werte aus denselben Jar-Enums. Der Ausschluss
+# eines Geraets laeuft in drei Schritten, alle ohne Nutzlast.
+NM_EXCLUDE_REQUEST = 0xF0
+NM_EXCLUDE_READY = 0xF1
+NM_EXCLUDE_CONCLUDE = 0xF2
 SDT_BINARY = 8
 
 # Statusdatentyp -> (Parameter, Umrechnung, Einheit fuer die Anzeige).
@@ -63,6 +69,7 @@ SDT_DEUTUNG = {
 APP_RESP_REQ = 0x80
 RXF_FOR_US = 0x01
 
+CT_NETWORK_MGMT = 1
 CT_ICMP = 2
 CT_MAC_CONTROL = 4
 ICMP_ECHO_REPLY = 0x80
@@ -154,6 +161,8 @@ class Radio:
         self.own_addr = None
         self.netzschluessel_fehlt = False
         self._acked = {}
+        # Funkadresse -> Ereignis: das Geraet hat den Ausschluss angenommen.
+        self._exclude_ready = {}
 
         self.vlen = {}
         for name, e in (self.t.sdt or {}).items():
@@ -570,6 +579,20 @@ class Radio:
                 and int(sec) >= 1):
             self._pair_ok.set()
 
+        if int(ct) == CT_NETWORK_MGMT:
+            # Die Bereitmeldung zum Ausschluss ist das Einzige, was uns hier
+            # interessiert. Sie MUSS ueber ein eigenes Ereignis laufen: ein
+            # wartender Auftrag hilft nicht, weil die laufenden Statusmeldungen
+            # des Geraets laufend Antwort-Auftraege erzeugen und den
+            # wartenden ueberschreiben.
+            b = bytes.fromhex(payhex) if len(payhex) % 2 == 0 else b""
+            if len(b) >= 2 and b[0] == 1 and b[1] == NM_EXCLUDE_READY:
+                ev = self._exclude_ready.get(src.lower())
+                self._log("<<", f"Ausschluss bestaetigt von {src.lower()}")
+                if ev:
+                    ev.set()
+            return
+
         if int(ct) == CT_ICMP:
             ms = SEQ.search(line)
             self._icmp(payhex, src.lower(), dst.lower(),
@@ -975,6 +998,48 @@ class Radio:
                 "netzschluessel_fehlt": bool(self.netzschluessel_fehlt),
                 "icmp": dict(self.icmp_seen),
                 "devices": {h: a for h, a in self.by_hmid.items()}}
+
+    def funk_exclude(self, hmid, warten=2.5):
+        """Ein Geraet ueber Funk ausschliessen — wie die CCU beim Loeschen.
+
+        Ohne diesen Anruf erfaehrt das Geraet nie, dass es entlassen wurde: es
+        funkt weiter zu einer Zentrale, die es nicht mehr kennt, und laesst
+        sich erst nach einem Werksreset von Hand wieder anlernen. Mit ihm geht
+        es von selbst in den Anlernzustand zurueck.
+
+        Die Folge steht im Referenzmitschnitt der echten CCU:
+
+            ZENTRALE->GERAET  DEVICE_EXCLUDE_REQUEST   (0xF0)
+            GERAET->ZENTRALE  DEVICE_EXCLUDE_READY     (0xF1)
+            ZENTRALE->GERAET  DEVICE_EXCLUDE_CONCLUDE  (0xF2)
+
+        Alle drei sind NETWORK_MGMT (Inhaltsart 1, daher `mT11`), ohne
+        Nutzlast — die Aussage steckt allein im Typ-Byte.
+
+        Rueckgabe: True, wenn das Geraet mit READY geantwortet hat. Der
+        Abschluss geht in jedem Fall raus; ein Geraet, das gerade stromlos
+        ist, soll den Ausschluss nicht dauerhaft blockieren.
+        """
+        dst = hmid.upper()
+        ev = threading.Event()
+        self._exclude_ready[hmid.lower()] = ev
+        try:
+            self._submit(f"mT11{dst}{NM_EXCLUDE_REQUEST:02X}", "cmd")
+            bestaetigt = ev.wait(warten)
+        finally:
+            self._exclude_ready.pop(hmid.lower(), None)
+
+        # Der Abschluss folgt kurz darauf — bei der echten CCU 77 ms nach der
+        # Bereitmeldung.
+        time.sleep(0.1)
+        self._submit(f"mT11{dst}{NM_EXCLUDE_CONCLUDE:02X}", "cmd")
+        m = bestaetigt
+        with self.lock:
+            self.by_hmid.pop(hmid.lower(), None)
+        if self.verbose:
+            print(f"  Ausschluss {hmid}: "
+                  + ("bestaetigt" if m else "ohne Antwort abgeschlossen"))
+        return bool(m)
 
     def _ask(self, cmd, pattern, tries=3):
         """Frage an den Stick, Antwort abwarten."""

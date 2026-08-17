@@ -149,6 +149,16 @@ Ohne hinterlegten Aufkleber lehnt QCCU das Anlernen ab und nennt den Grund. Die 
 
 BidCoS-Geräte lernt FHEM über `CUL_HM` an wie an jedem CUL — siehe [docs/FHEM.md](docs/FHEM.md).
 
+## Gerät löschen
+
+Beim Löschen schließt QCCU das Gerät **über Funk aus** — dieselben drei
+Schritte, die eine CCU führt (Antrag, Bereitmeldung, Abschluss). Das Gerät
+verwirft daraufhin Adresse und Netzwerkschlüssel und meldet sich von selbst
+wieder als anlernbereit: ein Werksreset am Gerät ist nicht nötig, ein
+Tastendruck auch nicht. Ist das Gerät gerade stromlos, geht der Ausschluss
+trotzdem zu Ende — dann erfährt es nichts davon und braucht doch den
+Werksreset.
+
 ## Einstellungen
 
 | Umgebung | Vorgabe | Bedeutung |

@@ -16,7 +16,7 @@ from xmlrpc.server import SimpleXMLRPCServer, SimpleXMLRPCRequestHandler
 # zugleich die Marke des Abbilds auf Docker Hub UND der Wert von `version`
 # in addon/config.yaml — der Supervisor zieht `<image>:<version>`. Wer hier
 # hochzaehlt, muss beides mitziehen, sonst schlaegt die Installation fehl.
-VERSION = "2026.8.10"
+VERSION = "2026.8.11"
 PRODUKT = "QCCU"
 NAME_UND_FASSUNG = f"{PRODUKT} {VERSION}"
 
@@ -362,13 +362,23 @@ class QCCU:
         self._enqueue(("new", device.address, device.descriptions()))
 
     def deleteDevices(self, address):
-        """Geraet entfernen und die Gegenstellen benachrichtigen."""
+        """Geraet entfernen, ueber Funk ausschliessen, Gegenstellen melden."""
         key = address.upper().split(":")[0]
         with self.lock:
             d = self.devices.pop(key, None)
-            self.rf.pop(key, None)
+            rf = self.rf.pop(key, None)
         if not d:
             return ""
+
+        # Erst dem Geraet Bescheid sagen, dann die Buecher fuehren: ohne den
+        # Ausschluss ueber Funk merkt es nichts vom Rauswurf und liesse sich
+        # nur noch mit einem Werksreset von Hand wieder anlernen.
+        if rf and self.radio is not None:
+            try:
+                self.radio.funk_exclude(rf)
+            except Exception as ex:                      # noqa: BLE001
+                print(f"  ! Ausschluss von {rf} scheiterte: {ex}")
+
         self.save_store()
         addrs = [x["ADDRESS"] for x in d.descriptions()]
         self._enqueue(("delete", key, addrs))
