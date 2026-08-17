@@ -16,7 +16,7 @@ from xmlrpc.server import SimpleXMLRPCServer, SimpleXMLRPCRequestHandler
 # zugleich die Marke des Abbilds auf Docker Hub UND der Wert von `version`
 # in addon/config.yaml — der Supervisor zieht `<image>:<version>`. Wer hier
 # hochzaehlt, muss beides mitziehen, sonst schlaegt die Installation fehl.
-VERSION = "2026.8.7"
+VERSION = "2026.8.8"
 PRODUKT = "QCCU"
 NAME_UND_FASSUNG = f"{PRODUKT} {VERSION}"
 
@@ -1106,11 +1106,35 @@ def main():
         alle paar Sekunden nach, ob ein Geraet aufgetaucht ist. Gesucht wird
         wie sonst auch: am Namen und, wenn einer gemerkt ist, an der
         Seriennummer.
+
+        ⚠️ „Der Funk steht" heisst NICHT „das Objekt ist da". Verschwindet der
+        Stick im Betrieb — abgezogen, Wackler, Hub-Reset —, bleibt das
+        Funkpfad-Objekt bestehen und QCCU meldet munter „laeuft", waehrend
+        nichts mehr ankommt. Deshalb wird zusaetzlich geprueft, ob sein
+        Anschluss ueberhaupt noch existiert; ist er weg, wird der Pfad
+        verworfen und von vorn gesucht. (Am Aufbau nachgestellt: Stick von der
+        virtuellen Maschine getrennt — der Zustand blieb auf „angebunden".)
         """
         while True:
             time.sleep(pause)
-            if getattr(lc, "radio", None) is not None:
-                continue
+            r = getattr(lc, "radio", None)
+            if r is not None:
+                pfad = getattr(r, "port", None) or getattr(lc, "serial_path", None)
+                if pfad and not os.path.exists(pfad):
+                    print(f"  ! Der Stick ist weg ({pfad}) — Funk wird geloest.")
+                    try:
+                        r.stop()
+                    except Exception:                # noqa: BLE001
+                        pass
+                    lc.radio = None
+                    try:
+                        from qccu_web import WebHandler
+                        WebHandler.radio = None
+                    except Exception:                # noqa: BLE001
+                        pass
+                    g.serial = None
+                else:
+                    continue
             try:
                 neu = bind_radio()
             except Exception as ex:                  # noqa: BLE001

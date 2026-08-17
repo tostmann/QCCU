@@ -73,12 +73,19 @@ Local.** Dann:
 | Feld | Wert |
 |---|---|
 | Instanzname | frei wählbar |
-| Host | IP oder Name des QCCU-Rechners |
+| Host | **`local-qccu`** — so heißt die Erweiterung im Netz von Home Assistant, eine IP braucht es nicht. (Container-Betrieb: IP oder Name des Rechners.) |
 | Benutzer / Kennwort | beliebig, aber nicht leer |
 | Schnittstellen | **nur `HmIP-RF`** anhaken |
-| Eigene Ports setzen | anhaken |
+| Eigene Ports setzen | **anhaken — das ist Pflicht, nicht Kür** |
 | JSON-Port | **8082** |
 | HmIP-RF-Port | **2010** |
+
+⚠️ **Ohne den Haken bei „Eigene Ports setzen" schlägt es fehl**, und zwar mit
+einer Meldung, die nicht nach der Ursache klingt:
+`RPC error on http://<host>/api/homematic.cgi: ClientConnectorError during
+Session.login`. Die Adresse darin hat keinen Port — dann versucht Home
+Assistant **Port 80**, weil eine Zentrale von eQ-3 dort antwortet. QCCU nicht:
+seine JSON-Auskunft liegt auf 8082.
 
 Dieselben Angaben stehen in der Weboberfläche unter *„Home Assistant
 anbinden"* — dort mit den tatsächlich laufenden Ports, falls jemand sie
@@ -173,6 +180,11 @@ Neustart der Zentrale leert ihn, und Einträge verfallen nach einer Stunde.
 ---
 
 ## 6. Wenn etwas nicht geht
+
+**`ClientConnectorError during Session.login`**
+Der Port fehlt. Siehe [Schritt 3](#3-integration-einrichten) — „Eigene Ports
+setzen" anhaken und JSON auf 8082 stellen. Gegenprobe aus Home Assistant
+heraus: `local-qccu:8082` muss antworten, `local-qccu` allein nicht.
 
 **„Interface: HmIP-RF is not available for the backend"**
 Der JSON-Port stimmt nicht oder ist abgeschaltet. QCCU nennt seine

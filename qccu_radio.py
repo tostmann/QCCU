@@ -117,6 +117,9 @@ class Radio:
         self.mac_seq = 0
         self.answer_enabled = answer
         self.answer_delay = answer_delay
+        # Den Anschluss merken: der Waechter prueft daran, ob der Stick noch
+        # da ist (ein verschwundenes Geraet laesst das Objekt bestehen).
+        self.port = port
         self.ser = serial.serial_for_url(port, baud, timeout=0.3, exclusive=True)
         self.by_hmid = {}
         self.appseq = {}

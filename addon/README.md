@@ -30,10 +30,15 @@ Erweiterung eingerichtet.
 Die Erweiterung ist **nicht** die Anbindung selbst — sie ist die Zentrale.
 Angebunden wird über die HACS-Integration **Homematic(IP) Local**:
 
-* Host: die Adresse dieses Rechners (bei HAOS meist `homeassistant.local`)
+* Host: **`local-qccu`** — unter diesem Namen ist die Erweiterung im Netz von
+  Home Assistant erreichbar, eine IP braucht es nicht
 * Benutzer/Kennwort: beliebig — QCCU prüft keine Zugangsdaten
 * Bei den Schnittstellen **nur `HmIP-RF`** anhaken
-* Eigene Ports setzen: **JSON-Port `8082`**, **HmIP-RF-Port `2010`**
+* **Eigene Ports setzen anhaken** (Pflicht): **JSON `8082`**, **HmIP-RF `2010`**
+
+⚠️ Ohne den Port-Haken versucht Home Assistant Port 80 — dort antwortet eine
+echte CCU, QCCU aber nicht. Die Meldung lautet dann
+`ClientConnectorError during Session.login`.
 
 ## Gerät anlernen
 
