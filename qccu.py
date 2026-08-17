@@ -16,7 +16,7 @@ from xmlrpc.server import SimpleXMLRPCServer, SimpleXMLRPCRequestHandler
 # zugleich die Marke des Abbilds auf Docker Hub UND der Wert von `version`
 # in addon/config.yaml — der Supervisor zieht `<image>:<version>`. Wer hier
 # hochzaehlt, muss beides mitziehen, sonst schlaegt die Installation fehl.
-VERSION = "2026.8.6"
+VERSION = "2026.8.7"
 PRODUKT = "QCCU"
 NAME_UND_FASSUNG = f"{PRODUKT} {VERSION}"
 
@@ -1092,6 +1092,47 @@ def main():
     if lc.store:
         lc.save_store()
 
+    def stick_waechter(pause=8.0):
+        """Sucht den Stick weiter, solange keiner angebunden ist.
+
+        ⚠️ Ohne das bleibt QCCU blind, wenn der Stick NACH dem Start dazukommt
+        — und genau so laeuft die Erstinbetriebnahme: die Erweiterung wird
+        installiert und startet, der Stick wird eingesteckt oder aus dem
+        Bootlader geholt, und erst dann gibt es etwas zu finden. Bis hierher
+        half nur ein Neustart; gesucht wurde nur beim Start und nach einem
+        Einspielen ueber die Oberflaeche.
+
+        Der Waechter fasst nichts an, solange der Funk steht — er sieht nur
+        alle paar Sekunden nach, ob ein Geraet aufgetaucht ist. Gesucht wird
+        wie sonst auch: am Namen und, wenn einer gemerkt ist, an der
+        Seriennummer.
+        """
+        while True:
+            time.sleep(pause)
+            if getattr(lc, "radio", None) is not None:
+                continue
+            try:
+                neu = bind_radio()
+            except Exception as ex:                  # noqa: BLE001
+                if lc.verbose:
+                    print(f"  ! Stick-Suche: {ex}")
+                continue
+            if not neu:
+                continue
+            alt_cul = getattr(lc, "cul", None)
+            if alt_cul is not None:
+                neu.cul = alt_cul
+                alt_cul.radio_wechsel(neu)
+            elif g.cul_port:
+                start_cul(neu)
+            lc.radio = neu
+            try:
+                from qccu_web import WebHandler
+                WebHandler.radio = neu
+            except Exception:                        # noqa: BLE001
+                pass
+            print("  Stick aufgetaucht — Funk angebunden.")
+
     lc.rebind_radio = bind_radio_retry
     lc.firmware_hex = g.firmware
     lc.serial_path = g.serial
@@ -1166,6 +1207,7 @@ def main():
                              "interface": lc.interface_name,
                              "rpc_port": g.rpc_port,
                              "json_port": g.json_port})
+        threading.Thread(target=stick_waechter, daemon=True).start()
         host = g.advertise or ("127.0.0.1" if g.bind == "0.0.0.0" else g.bind)
         print(f"  Weboberflaeche auf http://{host}:{g.web_port}/  "
               f"(hier wird angelernt — HMCCU kann das nicht)")

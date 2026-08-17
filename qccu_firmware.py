@@ -160,6 +160,20 @@ def status(hex_path, radio=None, serial_path=None):
         out["hinweis"] = "Neuer Stick im Bootlader — Firmware einspielen"
         return out
 
+    # ⚠️ Bevor „kein Stick" gemeldet wird: liegt vielleicht doch einer am
+    # seriellen Anschluss, nur noch nicht angebunden? Das kommt vor, wenn er
+    # nach dem Start dazukam. Frueher stand hier trotzdem „Kein Stick
+    # gefunden" — eine Meldung, die den Anwender an der falschen Stelle
+    # suchen laesst (am Geraet statt an der Anbindung).
+    liegt_da = [n for n in _by_id_namen() if "q-culfw" in n]
+    if liegt_da:
+        out["zustand"] = ST_ABSENT
+        out["hinweis"] = ("Ein Stick liegt am Anschluss (" + liegt_da[0] +
+                          "), ist aber noch nicht angebunden. QCCU sieht "
+                          "regelmaessig nach; wenn es dabei bleibt, hilft ein "
+                          "Neustart.")
+        return out
+
     out["zustand"] = ST_ABSENT
     out["hinweis"] = ("Kein Stick gefunden. Ein fabrikneuer CUL meldet sich "
                       "von selbst im Bootlader. Einen bereits benutzten "
@@ -168,6 +182,14 @@ def status(hex_path, radio=None, serial_path=None):
                       + (f" (erwartet: {serial_path})" if serial_path else "")
                       + ".")
     return out
+
+
+def _by_id_namen():
+    """Die Namen unter /dev/serial/by-id, ohne Fehler bei fehlendem Pfad."""
+    try:
+        return sorted(os.listdir(BY_ID))
+    except OSError:
+        return []
 
 
 def to_bootloader(radio, serial_path, wait=10):
