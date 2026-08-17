@@ -12,6 +12,18 @@ Beides läuft gleichzeitig über denselben Stick. Was QCCU grundsätzlich ist un
 kann, steht in der [README](../README.md); Home Assistant daneben in
 [HOMEASSISTANT.md](HOMEASSISTANT.md).
 
+> ⚠️ **FHEM und QCCU auf demselben Rechner: erst die Firmware einspielen, dann
+> FHEM an den USB lassen.** Die mitgelieferte Konfiguration von FHEM enthält
+> `define initialUsbCheck notify global:INITIALIZED usb create`. Findet FHEM
+> beim Start einen CUL im Bootlader, spielt es ihm **culfw** ein — also genau
+> dem Stick, den QCCU dort für q-culfw erwartet. An einem frisch aufgesetzten
+> FHEM beobachtet: `CULflash dfu-programmer atmega32u4 erase && … flash
+> ./FHEM/firmware/CUL_V3.hex`, abgesetzt ohne Rückfrage; es scheiterte allein
+> daran, dass jener Behälter kein `/dev/bus/usb` sah. Wer FHEM nativ oder mit
+> `-v /dev:/dev` betreibt, spielt die Firmware also zuerst über QCCU ein und
+> löscht danach `initialUsbCheck` — oder gibt FHEM nur `/dev/serial/by-id`
+> statt des ganzen `/dev`.
+
 ---
 
 ## 1. Homematic IP über HMCCU
@@ -36,8 +48,19 @@ attr ccu rpcserveraddr <IP des FHEM-Rechners>
 Sonst schaltet alles, aber die Readings stehen still — der Rückruf geht ins
 Leere. Aus demselben Grund braucht QCCU selbst `ADVERTISE` (README).
 
-**Geräte anlegen:** neu angelernte Geräte holt `get ccu update`; danach
-`HMCCUDEV`/`HMCCUCHN` wie gewohnt.
+**Geräte anlegen:** nach dem Anlernen
+
+```
+get ccu ccuConfig
+define <name> HMCCUDEV <adresse>
+```
+
+`get ccu ccuConfig` liest die Geräte neu ein — es meldet dann etwa
+`Devices: 1, Channels: 7`. **Nicht `get ccu update`:** das aktualisiert nur
+schon definierte FHEM-Geräte und antwortet auf ein neues Gerät mit
+`Found no devices to update`. Die Adresse ist die des Geräts
+(`get ccu ccuDevices` zeigt sie); geschaltet wird danach mit `set <name> on`
+bzw. `off`.
 
 ### Anlernen
 

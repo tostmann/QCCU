@@ -131,6 +131,20 @@ footer a{color:var(--mut)} footer a:hover{color:var(--acc)}
   </div>
 </div>
 
+<div class="card" id="karte_nwk" style="display:none">
+  <h2>⚠ Der Stick hat keinen Netzwerkschlüssel</h2>
+  <div class="body">
+    <p>Ohne ihn schlägt <b>jedes Anlernen</b> fehl — der Schlüssel ist das,
+      womit die Zentrale ihr Funknetz zusammenhält.</p>
+    <p class="hint">Er entsteht beim Einrichten von selbst. Bleibt diese
+      Meldung stehen, hilft ein <b>Neustart</b> (Behälter oder Erweiterung);
+      der Stick wird dabei erneut eingerichtet. Sind bereits Geräte
+      eingetragen, wird <b>bewusst keiner</b> erzeugt — das würde alle
+      aussperren, und zwar lautlos. Dann gehört der bisherige Stick zurück,
+      oder die Geräte müssen gelöscht und neu angelernt werden.</p>
+  </div>
+</div>
+
 <div class="card" id="karte_tabellen" style="display:none">
   <h2>⚠ Gerätebeschreibungen fehlen</h2>
   <div class="body">
@@ -336,6 +350,10 @@ async function laden(){
   // mehr, sobald jemand einen Port aendert.
   // Fehlen die Gerätebeschreibungen, ist das die wichtigste Nachricht der
   // Seite — sie steht deshalb ganz oben und nur dann.
+  // Fehlt der Netzwerkschluessel, ist ueberhaupt kein Anlernen moeglich —
+  // das gehoert genauso nach oben wie fehlende Beschreibungen.
+  const kn=$('#karte_nwk');
+  if(kn) kn.style.display = (s.radio&&s.radio.netzschluessel_fehlt) ? '' : 'none';
   const tb=s.tabellen||{};
   const kt=$('#karte_tabellen');
   if(kt){

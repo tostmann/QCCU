@@ -287,6 +287,33 @@ class Radio:
                 return z
         return None
 
+    def _kennung_vorhanden(self):
+        """Hat der Stick schon eine Kennung? (`mG` zeigt sie.)
+
+        Ein fabrikneuer Stick hat noch keine — und OHNE Kennung legt er auch
+        keinen Netzwerkschluessel ab (`nwk_ensure` steigt bei `!id_valid`
+        aus). Genau daran scheiterte das Anlernen auf einem neuen Stick,
+        ohne dass es jemandem auffiel: `mC` antwortet auch dann freundlich
+        mit `Pm rolle=Zentrale`, nur eben ohne `Netzwerkschluessel erzeugt`.
+
+        Rueckgabe True/False, oder None wenn die Antwort nicht zu deuten ist
+        — dann wird NICHT gewuerfelt.
+        """
+        self.ser.reset_input_buffer()
+        self.ser.write(b"mG\r\n")
+        self.ser.flush()
+        ende = time.time() + 2.0
+        while time.time() < ende:
+            try:
+                z = self.ser.readline().decode("ascii", "replace").strip()
+            except Exception:                            # noqa: BLE001
+                return None
+            if "keine Kennung" in z:
+                return False
+            if z.startswith("Pm sgtin="):
+                return True
+        return None
+
     def _netzschluessel_sicherstellen(self):
         """Ohne Netzwerkschluessel im Stick laesst sich kein Geraet anlernen.
 
@@ -322,6 +349,19 @@ class Radio:
 
         print("  Der Stick hat noch keinen Netzwerkschluessel — es wird einer "
               "erzeugt (es ist kein Geraet eingetragen).")
+
+        # ⚠️ ERST die Kennung, DANN der Schluessel. Ohne Kennung legt der Stick
+        # keinen ab, und zwar lautlos — `mC` quittiert trotzdem. Gewuerfelt
+        # wird nur, wenn nachweislich KEINE da ist: `mGN` wirft eine
+        # vorhandene weg, und die steht dann schon in der Zentrale des
+        # Betreibers.
+        if self._kennung_vorhanden() is False:
+            print("  Der Stick hat noch keine Kennung — sie wird erzeugt.")
+            self.ser.write(b"mGN\r\n")
+            self.ser.flush()
+            self._log(">>", "mGN")
+            time.sleep(2.0)
+
         for cmd in ("mKX", "mC"):
             self.ser.write(cmd.encode() + b"\r\n")
             self.ser.flush()
@@ -823,6 +863,11 @@ class Radio:
         self._read_counters()
         return {"counters": self.counters, "budget": self.budget,
                 "own_addr": self.own_addr,
+                # Ohne Netzwerkschluessel schlaegt jedes Anlernen fehl. Der
+                # Zustand stand frueher nur im Protokoll — die Oberflaeche
+                # meldete derweil „Firmware aktuell", und der Anwender suchte
+                # den Fehler beim Geraet.
+                "netzschluessel_fehlt": bool(self.netzschluessel_fehlt),
                 "icmp": dict(self.icmp_seen),
                 "devices": {h: a for h, a in self.by_hmid.items()}}
 
