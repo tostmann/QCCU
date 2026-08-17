@@ -35,7 +35,31 @@ CNT_KEYS = ("rx", "ok", "mic", "dup", "acks", "fwd", "tx", "txerr")
 
 FT_ANSWER = 2
 FT_STATUS = 5
+# ApplicationFrameType.TIME_INFO — Wert aus den Enums des HMIPServer-Jars.
+# Ein frisch angelerntes Geraet fragt die Zeit an und verlangt Antwort; die
+# CCU schickt ihr einen TIME_INFO-Frame zurueck, KEIN ANSWER.
+FT_TIME_INFO = 35
 SDT_BINARY = 8
+
+# Statusdatentyp -> (Parameter, Umrechnung, Einheit fuer die Anzeige).
+#
+# Jede Zeile ist BELEGT, nicht geraten — die Grenzen des Parameters in den
+# Gerätebeschreibungen geben die Umrechnung selbst her:
+#
+#   0  TEMPERATURE       2 Byte  -> ACTUAL_TEMPERATURE: FLOAT, MIN -3276.8,
+#                                  MAX 3276.7 = int16 durch 10 (vorzeichenbehaftet)
+#   6  ERROR_CODE        1 Byte  -> ERROR_CODE: INTEGER 0..255, unverändert
+#   22 FLAG_REGISTER_24  3 Byte  -> WEEK_PROGRAM_CHANNEL_LOCKS: INTEGER
+#                                  0..16777215 = 2^24-1, also genau die 3 Byte
+#
+# Gemeldet wird nur, wo der Kanaltyp den Parameter auch führt (_kanal_fuehrt);
+# alles Übrige bleibt RAW_SDT<n> — ungedeutet ist besser als falsch gedeutet.
+SDT_DEUTUNG = {
+    0:  ("ACTUAL_TEMPERATURE",
+         lambda v: int.from_bytes(v, "big", signed=True) / 10.0, " °C"),
+    6:  ("ERROR_CODE", lambda v: v[0], ""),
+    22: ("WEEK_PROGRAM_CHANNEL_LOCKS", lambda v: int.from_bytes(v, "big"), ""),
+}
 APP_RESP_REQ = 0x80
 RXF_FOR_US = 0x01
 
@@ -583,7 +607,14 @@ class Radio:
             self.devseq[src.lower()] = pt[1]
 
         if for_us and (pt[0] & APP_RESP_REQ) and (pt[0] & 0x3F) != FT_ANSWER:
-            self._answer(src.lower(), pt[1])
+            # Die Zeitanfrage will die ZEIT, nicht bloss eine Quittung: die
+            # echte CCU beantwortet sie mit einem TIME_INFO-Frame (Referenz-
+            # mitschnitt, 10 Zyklen). Ein ANSWER darauf liesse das Geraet
+            # ohne Uhr — und ohne Uhr kann es kein Wochenprofil ausfuehren.
+            if (pt[0] & 0x3F) == FT_TIME_INFO:
+                self._time_info(src.lower(), pt[1])
+            else:
+                self._answer(src.lower(), pt[1])
 
         if len(pt) < 4 or (pt[0] & 0x3F) != FT_STATUS:
             return
@@ -624,14 +655,49 @@ class Radio:
             i += vl
             self._emit(addr, ch, typ, val, flags)
 
+    def _kanal_fuehrt(self, addr, channel, param):
+        """Fuehrt dieser Kanal diesen Parameter ueberhaupt?
+
+        Die Zuordnung Statusdatentyp -> Parameter gilt nur, wo der Kanaltyp den
+        Parameter auch kennt. Sonst wuerde ein Wert unter einem Namen landen,
+        den der Klient nicht kennt — und ein unbekannter Datenpunkt kippt
+        drueben schnell das ganze Geraet.
+        """
+        # Reiner Lesezugriff: die Kanalliste eines Geraets ist unveraenderlich,
+        # solange es eingetragen ist — dafuer braucht es kein Schloss.
+        d = (getattr(self.qccu, "devices", None) or {}).get(addr.upper())
+        if not d or not hasattr(d, "channel_list"):
+            return False
+        ctype = dict(d.channel_list()).get(int(channel))
+        if not ctype:
+            return False
+        return param in (self.t.params_of(ctype) or {})
+
     def _emit(self, addr, channel, sdt, value, flags):
         """Einen Eintrag melden. Gedeutet wird nur, was belegt ist."""
         if sdt == SDT_BINARY:
+            # Ein Byte, drei Aussagen — Bitlage aus der Ground-Truth, und genau
+            # diese drei Parameter fuehrt SWITCH_TRANSMITTER auch:
+            #   bit7 PROCESS · bit6 STATE (das Relais) · bits3..0 SECTION
             state = (value[0] & 0x40) != 0
             self.qccu.set_value_internal(addr, channel, "STATE", state)
+            for param, wert in (("PROCESS", 1 if value[0] & 0x80 else 0),
+                                ("SECTION", value[0] & 0x0F)):
+                if self._kanal_fuehrt(addr, channel, param):
+                    self.qccu.set_value_internal(addr, channel, param, wert)
             if self.verbose:
                 print(f"  <- {addr}:{channel} STATE={state}")
             return
+
+        deutung = SDT_DEUTUNG.get(sdt)
+        if deutung:
+            param, wandeln, einheit = deutung
+            if self._kanal_fuehrt(addr, channel, param):
+                wert = wandeln(bytes(value))
+                self.qccu.set_value_internal(addr, channel, param, wert)
+                if self.verbose:
+                    print(f"  <- {addr}:{channel} {param}={wert}{einheit}")
+                return
 
         raw = "".join(f"{x:02X}" for x in value)
         self.qccu.set_value_internal(addr, channel, f"RAW_SDT{sdt}", raw)
@@ -680,7 +746,11 @@ class Radio:
 
     def _submit(self, cmd, kind, not_before=0.0, expect=None):
         job = _Job(cmd, kind, not_before, expect)
-        (self._ansq if kind == "answer" else self._txq).put(job)
+        # Antworten auf einen empfangenen Frame gehoeren in die Antwort-Schlange:
+        # nur dort wird `not_before` eingehalten. Wer sofort zurueckfunkt, redet
+        # womoeglich, bevor das Geraet wieder zuhoert — die echte Zentrale
+        # laesst rund 130 ms verstreichen.
+        (self._ansq if kind in ("answer", "zeit") else self._txq).put(job)
         return job
 
     def _answer(self, hmid, appseq):
@@ -690,6 +760,41 @@ class Radio:
             return
         self._submit(f"ms{hmid.upper()}02{appseq:02X}00", "answer",
                      time.time() + self.answer_delay)
+
+    @staticmethod
+    def zeit_payload(t):
+        """Die sieben Bytes einer TIME_INFO-Nutzlast aus einer Ortszeit.
+
+        Aufbau, an einem Frame der echten CCU verifiziert
+        (`00 1a 08 4b 96 19 19` = Dienstag, 11.08.2026 22:25:25):
+
+            [0] 0x00      Bedeutung offen — steht im Referenzframe so
+            [1] Jahr-2000     (Jar: `TimeInfoFrame.setPayload`, 2000+p[1])
+            [2] Monat
+            [3] Wochentag<<5 | Tag   (Wochentag: Sonntag=0, Dienstag=2)
+            [4] 0x80 | Stunde        (Bit 7 aus dem Referenzframe, offen)
+            [5] Minute
+            [6] Sekunde
+
+        Geliefert wird ORTSZEIT: im Referenzframe stand die Uhrzeit der
+        Aufnahme, nicht UTC.
+        """
+        wochentag = (t.tm_wday + 1) % 7          # Python Montag=0 -> CCU Sonntag=0
+        return bytes((0x00,
+                      t.tm_year - 2000,
+                      t.tm_mon,
+                      (wochentag << 5) | t.tm_mday,
+                      0x80 | t.tm_hour,
+                      t.tm_min,
+                      t.tm_sec))
+
+    def _time_info(self, hmid, appseq):
+        """Die Zeitanfrage eines Geraets mit der Ortszeit beantworten."""
+        p = self.zeit_payload(time.localtime())
+        self._submit(f"ms{hmid.upper()}{FT_TIME_INFO:02X}{appseq:02X}{p.hex().upper()}",
+                     "zeit", time.time() + self.answer_delay)
+        if self.verbose:
+            print(f"  Zeit an {hmid}: {time.strftime('%a %d.%m.%Y %H:%M:%S')}")
 
     def _icmp(self, payhex, src, dst, sn):
         """Ein ICMPv6-Frame: auswerten, vermerken, beantworten."""

@@ -81,6 +81,13 @@ JSON-Auskunft, mit dem Schlüssel im Feld `key` — siehe
 
 ### Wenn etwas nicht geht
 
+**`Device deleted in CCU`, und nichts schaltet mehr** — das Gerät wurde in
+QCCU gelöscht und neu angelernt. HMCCU merkt sich den Verlust am `HMCCUDEV`
+und nimmt das Gerät auch dann nicht wieder an, wenn es längst wieder da ist.
+`get ccu ccuConfig` liest die Geräte neu ein; danach schaltet dasselbe
+`HMCCUDEV` wieder. (Ein Firmware-Einspielen allein löst das **nicht** aus —
+angelernte Geräte überstehen es, Adresse und Schlüssel bleiben.)
+
 **Readings stehen still, Schalten geht aber** — der Rückruf kommt nicht an:
 `rpcserveraddr` (oben) und `ADVERTISE` prüfen.
 

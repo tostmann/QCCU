@@ -23,8 +23,8 @@ QCCU ist ein Nachbau der CCU-*Schnittstellen*, kein Nachbau der CCU:
 
 * **Ja:** Homematic-IP-Geräte anlernen, lesen, schalten; Zustandsänderungen
   per Rückruf; die Gerätebeschreibungen einer CCU (Datentypen, Grenzen,
-  Wertelisten, Einheiten); mehrere Clients gleichzeitig; BidCoS über den
-  CUL-Zugang.
+  Wertelisten, Einheiten); die **Uhrzeit**, nach der ein frisch angelerntes
+  Gerät fragt; mehrere Clients gleichzeitig; BidCoS über den CUL-Zugang.
 * **Nein:** keine CCU-Weboberfläche, keine Programme, Systemvariablen, Räume
   oder Direktverknüpfungen; keine Gerätekonfiguration (MASTER-Parameter) und
   Wochenprofile; keine Firmware-Aktualisierung der Geräte; keine Übernahme
@@ -105,7 +105,27 @@ Gesucht wird allein nach dem eigenen Namen (`busware.de_q-culfw`). Ein CUL mit a
 
 Beim ersten Betrieb merkt sich QCCU die Seriennummer des Sticks (`stick_serial` in `/data/state/qccu_devices.json`). Danach kommt nur noch dieser eine in Frage; weitere q-culfw-Sticks am selben Rechner bleiben unberührt. Nach einem Stick-Tausch den Eintrag löschen oder `SERIAL` setzen.
 
-Angelernte Geräte überstehen ein Einspielen: Netzwerkschlüssel und Sendezähler liegen im EEPROM des Sticks und bleiben erhalten (ab Firmware 2.0.11 — ältere Fassungen holten den Schlüssel beim Start nicht zurück).
+Angelernte Geräte überstehen ein Einspielen: Netzwerkschlüssel und Sendezähler liegen im EEPROM des Sticks und bleiben erhalten (ab Firmware 2.0.11 — ältere Fassungen holten den Schlüssel beim Start nicht zurück). Nachgeprüft: nach `erase` + `flash` meldet der Stick weiterhin seinen Schlüssel, seinen Zählerstand und seine Kennung.
+
+### Stick auf Werk zurücksetzen
+
+Weitergeben, verkaufen, ein Funknetz endgültig auflösen: der Stick löscht auf
+Verlangen alles, was er selbst abgelegt hat. Über den seriellen Zugang, in
+zwei Schritten — erst fragen, dann löschen:
+
+```
+mV              →  Pm marke=15100514 — loeschen mit mV15100514
+mV15100514      →  löscht und startet neu
+```
+
+Die Marke stammt aus der Seriennummer des Bausteins und ist bei jedem Stick
+eine andere; ein Reihenlauf über mehrere Sticks kann also nichts löschen, ohne
+jeden einzeln zu fragen. Weg sind danach Kennung, Aufkleber- und
+Netzwerkschlüssel, Funkadresse und beide Sendezähler — **alle angelernten
+Geräte müssen neu angelernt werden**. Die bei der Fertigung vergebene
+Geräteadresse am Ende des EEPROMs bleibt unangetastet; sie ließe sich nicht
+wiederherstellen. Genau deshalb macht das die Firmware und nicht der
+Bootlader: ein Löschen von dort träfe sie mit.
 
 Ein fabrikneuer Stick hat noch keinen Netzwerkschlüssel; QCCU legt beim ersten Start einen an. Fehlt er, obwohl bereits Geräte eingetragen sind, wird **kein** neuer erzeugt — das würde alle aussperren, und zwar lautlos. QCCU meldet den Zustand und lässt die Entscheidung beim Betreiber.
 

@@ -123,7 +123,11 @@ Bei einer Schaltsteckdose etwa ein `switch` für den Schaltkanal und ein
 
 Viele Datenpunkte legt die Integration bewusst **deaktiviert** an
 (Wartungswerte, Fehlerzähler). Sie stehen im Geräte-Dialog unter „+N Entitäten
-nicht angezeigt" und lassen sich einzeln einschalten.
+nicht angezeigt" und lassen sich einzeln einschalten. Dort landen auch die
+Werte, die ein Gerät im Wartungskanal von sich aus mitschickt und die QCCU
+deutet: **`ACTUAL_TEMPERATURE`** — bei einer Schaltsteckdose die
+Eigenerwärmung der Elektronik, nicht die Raumtemperatur — und
+**`ERROR_CODE`**.
 
 ---
 
