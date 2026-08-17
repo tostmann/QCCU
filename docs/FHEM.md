@@ -109,8 +109,16 @@ Port nur ein Prozess halten darf. Eingeschaltet wird der Zugang mit
 
 ```
 define qcul CUL <rechner>:2000 1234
+attr qcul rfmode HomeMatic
 attr qcul hmId <6 Hexziffern>
 ```
+
+`rfmode HomeMatic` ist **nicht** optional: ohne ihn führt FHEM den Zugang im
+SlowRF-Modus, und `CUL_HM` steht gar nicht erst in seiner Client-Liste — es
+ließe sich also kein einziges BidCoS-Gerät anlegen. Die Umschaltung schickt
+Registerbefehle (`X21`, `Ar`), die QCCU verwirft und im Protokoll vermerkt
+(`CUL-Zugang: 'Ar' nicht weitergereicht`); das ist richtig so und stört den
+Homematic-IP-Betrieb nicht — der Stick steht ohnehin auf dieser Frequenz.
 
 `hmId` ist die Zentralen-Adresse von CUL_HM und Sache des FHEM-Betreibers —
 ohne sie hört CUL_HM nur mit und sendet nie (das Gerät blinkt dann weiter).
