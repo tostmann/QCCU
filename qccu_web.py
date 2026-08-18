@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Webfrontend der QCCU."""
+import hashlib
 import json
 import os
 import threading
@@ -114,7 +115,7 @@ footer a{color:var(--mut)} footer a:hover{color:var(--acc)}
 
 <header>
   <picture>
-    <source srcset="/logo-dark.png" media="(prefers-color-scheme: dark)">
+    <source id="logo_dark_src" srcset="/logo-dark.png" media="(prefers-color-scheme: dark)">
     <img src="logo.png" alt="busmatic" class="logo" onerror="this.parentNode.remove()">
   </picture>
   <h1>QUICHE</h1><span class="ver" id="ver"></span>
@@ -438,10 +439,23 @@ function zeichneHinweise(){
     +'<button onclick="'+x[4]+'">'+x[3]+'</button></div>').join('');
 }
 
+let LOGO_GESETZT=false;
 async function laden(){
   let s; try{ s=await (await fetch('api/state')).json(); }catch(e){ return; }
   ZUSTAND=s;
   $('#ver').textContent=s.version||'';
+  // Die Fassung an die Bild-Adressen haengen — beim Fassungswechsel ist die
+  // Adresse damit neu, und kein Zwischenspeicher haelt ein altes Zeichen fest.
+  if(s.version && !LOGO_GESETZT){
+    LOGO_GESETZT=true;
+    const v=encodeURIComponent(s.version);
+    const im=document.querySelector('header img.logo');
+    if(im) im.src='logo.png?v='+v;
+    const dk=$('#logo_dark_src');
+    if(dk) dk.srcset='logo-dark.png?v='+v;
+    const ic=document.querySelector('link[rel="icon"]');
+    if(ic) ic.href='favicon.png?v='+v;
+  }
   // Die Angaben, die Home Assistant beim Einrichten verlangt. Sie kommen aus
   // dem laufenden Dienst, nicht aus der Anleitung — sonst stimmen sie nicht
   // mehr, sobald jemand einen Port aendert.
@@ -625,19 +639,35 @@ class WebHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path in ("/", "/index.html"):
             return self._send(200, PAGE, "text/html; charset=utf-8")
-        if self.path in ("/logo.png", "/logo-dark.png", "/favicon.png"):
+        if self.path.split("?")[0] in ("/logo.png", "/logo-dark.png",
+                                       "/favicon.png"):
             datei = self._bild({"/logo-dark.png": "busmatic_logo_dark.png",
                                 "/favicon.png": "busware_icon.png"}
-                               .get(self.path, "busmatic_logo.png"))
+                               .get(self.path.split("?")[0],
+                                    "busmatic_logo.png"))
             try:
                 with open(datei, "rb") as f:
                     daten = f.read()
             except Exception:
                 return self._json({"error": "kein Logo"}, 404)
+            # ⚠️ Bilder liegen unter einem festen Namen, ihr INHALT kann sich
+            # aber aendern — beim Wechsel von busware auf busmatic ist genau
+            # das passiert, und die Browser zeigten einen Tag lang weiter das
+            # alte Zeichen (`max-age=86400`, kein Merkmal zum Vergleichen).
+            # Deshalb ein Fingerabdruck: der Browser fragt kurz nach, bekommt
+            # in aller Regel „unveraendert" zurueck und laedt nichts — sieht
+            # eine Aenderung aber sofort.
+            marke = '"%s"' % hashlib.md5(daten).hexdigest()
+            if self.headers.get("If-None-Match") == marke:
+                self.send_response(304)
+                self.send_header("ETag", marke)
+                self.end_headers()
+                return None
             self.send_response(200)
             self.send_header("Content-Type", "image/png")
             self.send_header("Content-Length", str(len(daten)))
-            self.send_header("Cache-Control", "max-age=86400")
+            self.send_header("ETag", marke)
+            self.send_header("Cache-Control", "max-age=300, must-revalidate")
             self.end_headers()
             return self.wfile.write(daten)
         if self.path == "/api/state":
