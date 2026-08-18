@@ -16,7 +16,7 @@ from xmlrpc.server import SimpleXMLRPCServer, SimpleXMLRPCRequestHandler
 # zugleich die Marke des Abbilds auf Docker Hub UND der Wert von `version`
 # in addon/config.yaml — der Supervisor zieht `<image>:<version>`. Wer hier
 # hochzaehlt, muss beides mitziehen, sonst schlaegt die Installation fehl.
-VERSION = "2026.8.17"
+VERSION = "2026.8.18"
 PRODUKT = "QCCU"
 NAME_UND_FASSUNG = f"{PRODUKT} {VERSION}"
 
@@ -292,6 +292,8 @@ class QCCU:
         self.rf = {}
         self.pair_next_addr = None
         self.stick_serial = None
+        # Vom Anwender vergebene Namen, je Geraet und je Kanal.
+        self.names = {}
         # Wann zuletzt ein Wert von welchem Geraet kam — damit sichtbar ist,
         # wie alt der gesicherte Stand ist.
         self._wert_zeit = {}
@@ -309,6 +311,56 @@ class QCCU:
         self._notify_q = queue.Queue()
         self._notify_thread = None
         self._bestand_gemeldet = {}
+
+    # Ein Name darf die ReGa-Auskunft nicht zerlegen: dort trennt das
+    # Semikolon die Felder und der Zeilenumbruch die Eintraege.
+    NAME_MAX = 80
+
+    @staticmethod
+    def _name_saeubern(name):
+        sauber = "".join(" " if c in ";\r\n\t" else c for c in (name or "")).strip()
+        return sauber[:QCCU.NAME_MAX]
+
+    def set_name(self, address, name):
+        """Einen vom Anwender vergebenen Namen fuehren (Geraet oder Kanal).
+
+        ⚠️ Eine Zentrale von eQ-3 fuehrt die Namen in ihrer ReGa-Datenbank,
+        und die Haussteuerung verlaesst sich darauf. Die Integration
+        „Homematic(IP) Local" haelt ein frisch angelerntes Geraet sogar
+        ABSICHTLICH zurueck, bis der Anwender ihm einen Namen gegeben hat
+        (Docstring ihres Reparatur-Flusses: „Fix flow for delayed devices:
+        allows naming the device before adding it"), und schreibt den Namen
+        anschliessend mit Device.setName / Channel.setName in die Zentrale.
+        Ohne diese Buchfuehrung ging der eingegebene Name lautlos verloren —
+        die Gegenstelle meldete beide Methoden als „not supported by the
+        backend".
+
+        Ein leerer Name loescht den Eintrag; danach gilt wieder der Name aus
+        Geraetetyp und Adresse.
+        """
+        key = (address or "").upper()
+        if not key:
+            return False
+        sauber = self._name_saeubern(name)
+        with self.lock:
+            if sauber:
+                self.names[key] = sauber
+            else:
+                self.names.pop(key, None)
+        self.save_store()
+        return True
+
+    def name_of(self, address, vorgabe=None):
+        """Der gefuehrte Name — oder die Vorgabe, wenn keiner vergeben ist."""
+        return self.names.get((address or "").upper()) or vorgabe
+
+    def _namen_entfernen(self, address):
+        """Beim Loeschen eines Geraets gehen seine Namen mit."""
+        key = (address or "").upper()
+        with self.lock:
+            for k in [k for k in self.names
+                      if k == key or k.startswith(key + ":")]:
+                self.names.pop(k, None)
 
     def add_device(self, address, devtype, firmware="1.0.0", announce=True):
         d = Device(address, devtype, self.t, firmware)
@@ -338,6 +390,10 @@ class QCCU:
         self.pair_next_addr = data.get("pair_next_addr")
         self.stick_serial = data.get("stick_serial")
         self.own_addr = data.get("own_addr")
+        for k, v in (data.get("names") or {}).items():
+            sauber = self._name_saeubern(v if isinstance(v, str) else "")
+            if sauber:
+                self.names[str(k).upper()] = sauber
         n = 0
         for addr, e in (data.get("devices") or {}).items():
             try:
@@ -384,6 +440,8 @@ class QCCU:
                                                for (c, p), v in d.values.items()},
                                     "values_zeit": self._wert_zeit.get(a)}
                                 for a, d in self.devices.items()}}
+        if self.names:
+            data["names"] = dict(self.names)
         if self.pair_next_addr:
             data["pair_next_addr"] = self.pair_next_addr
         if self.stick_serial:
@@ -493,6 +551,7 @@ class QCCU:
             except Exception as ex:                      # noqa: BLE001
                 print(f"  ! Ausschluss von {rf} scheiterte: {ex}")
 
+        self._namen_entfernen(key)
         self.save_store()
         addrs = [x["ADDRESS"] for x in d.descriptions()]
         self._enqueue(("delete", key, addrs))
@@ -899,8 +958,16 @@ class QCCU:
         return ""
 
 
-def chan_name(address):
-    """Der Name, unter dem ein Kanal in der ReGa-Auskunft steht."""
+def chan_name(address, lc=None):
+    """Der Name, unter dem ein Kanal in der ReGa-Auskunft steht.
+
+    Hat der Anwender einen Namen vergeben (Channel.setName), gilt der — so
+    haelt es auch eine Zentrale von eQ-3. Sonst bleibt es beim Aufbau aus der
+    Adresse, der wenigstens eindeutig ist."""
+    if lc is not None:
+        gefuehrt = lc.name_of(address)
+        if gefuehrt:
+            return gefuehrt
     return address.replace(":", "_")
 
 
@@ -944,9 +1011,11 @@ def rega_answer(lc, script):
             chans = d.channel_list()
             for idx, ctype in chans:
                 addr = f"{d.address}:{idx}"
-                out.append(f"C;{addr};{chan_name(addr)};{channel_direction(ctype)}")
+                out.append(f"C;{addr};{chan_name(addr, lc)};"
+                           f"{channel_direction(ctype)}")
             out.append(f"D;{lc.interface_name};{d.address};"
-                       f"{d.address};{d.label};{len(chans)}")
+                       f"{d.address};{lc.name_of(d.address, d.label)};"
+                       f"{len(chans)}")
         out.append(f"I;{lc.interface_name};{lc.interface_name};"
                    f"xmlrpc_bin://{lc.own_host}:{lc.rpc_port}")
         return "\n".join(out) + "\n", f"Geraeteliste ({len(devs)})"
@@ -988,7 +1057,7 @@ def rega_answer(lc, script):
         for addr, values in snapshot:
             for (ch, dpt), v in sorted(values.items()):
                 ca = f"{addr}:{ch}"
-                out.append(f"{chan_name(ca)}={lc.interface_name}.{ca}.{dpt}="
+                out.append(f"{chan_name(ca, lc)}={lc.interface_name}.{ca}.{dpt}="
                            f"{rega_value_out(v)}")
         out.append(str(len(out)))
         return "\n".join(out) + "\n", f"Datenpunkte ({len(out) - 1})"

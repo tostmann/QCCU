@@ -133,6 +133,10 @@ SUPPORTED_METHODS = (
     "Interface.getParamset",
     "Interface.getValue",
     "Interface.getMasterValue",
+    # Namen: die Gegenstelle vergibt sie beim Anlernen und erwartet, dass die
+    # Zentrale sie fuehrt (siehe set_name in qccu.py).
+    "Device.setName",
+    "Channel.setName",
     "Interface.setValue",
     "Interface.putParamset",
     "Device.listAllDetail",
@@ -280,17 +284,62 @@ class JsonRpc:
                 addr = f"{d.address}:{idx}"
                 kanaele.append({
                     "address": addr,
-                    "name": _kanal_name(addr, d.label),
+                    "name": self.q.name_of(addr, _kanal_name(addr, d.label)),
                     "id": _kennung(addr),
                 })
             out.append({
                 "address": d.address,
-                "name": _kanal_name(d.address, d.label),
+                "name": self.q.name_of(d.address,
+                                       _kanal_name(d.address, d.label)),
                 "id": _kennung(d.address),
                 "interface": self.interface,
                 "channels": kanaele,
             })
         return out
+
+    def _adresse_zu_kennung(self, ise_id):
+        """Zu einer Kennung die Adresse suchen.
+
+        Die Kennungen sind ein Hash der Adresse (siehe _kennung) — es gibt
+        also keine Tabelle, die man befragen koennte, wohl aber den kurzen
+        Weg: ueber den Bestand laufen und rechnen. Bei ein paar hundert
+        Kanaelen ist das billiger als eine zweite Buchfuehrung, die mit dem
+        Bestand aus dem Tritt geraten kann.
+        """
+        try:
+            gesucht = int(ise_id)
+        except (TypeError, ValueError):
+            return None
+        with self.q.lock:
+            geraete = list(self.q.devices.values())
+        for d in geraete:
+            if _kennung(d.address) == gesucht:
+                return d.address
+            for idx, _ctype in d.channel_list():
+                addr = f"{d.address}:{idx}"
+                if _kennung(addr) == gesucht:
+                    return addr
+        return None
+
+    def set_name(self, ise_id, name):
+        """Device.setName / Channel.setName — den Namen fuehren.
+
+        ⚠️ Frueher wies die QCCU beides ab. Das war folgerichtig, solange sie
+        keine Namen fuehrte, hatte aber eine Folge, die man erst am lebenden
+        Aufbau sieht: die Integration „Homematic(IP) Local" haelt jedes frisch
+        angelernte Geraet zurueck, bis der Anwender ihm einen Namen gibt, und
+        schreibt ihn dann hierher. Ohne diese Methode verschwand der Name.
+        """
+        adresse = self._adresse_zu_kennung(ise_id)
+        if not adresse:
+            return None, {"name": "InvalidId", "code": -32602,
+                          "message": f"Kennung {ise_id} gehoert zu nichts"}
+        self.q.set_name(adresse, name)
+        gefuehrt = self.q.name_of(adresse)
+        if getattr(self.q, "verbose", False):
+            print(f"  Name {adresse} = "
+                  + (f"„{gefuehrt}\u201c" if gefuehrt else "(zurueckgesetzt)"))
+        return True, None
 
     def run_script(self, script):
         """Die Skript-Auskuenfte.
@@ -639,13 +688,14 @@ class JsonRpc:
                               "message": str(schluessel)}
             return ps[schluessel], None
 
+        if method in ("Device.setName", "Channel.setName"):
+            return self.set_name(p.get("id"), p.get("name"))
+
         # Aenderungswuensche, die wir nicht fuehren: sauber abweisen statt
-        # Erfolg vorzutaeuschen. Ein „stillschweigend angenommen" waere die
-        # schlechtere Auskunft — die Gegenstelle glaubte dann an einen
-        # gesetzten Namen, den niemand kennt. (Diese Methoden stehen auch
-        # nicht in SUPPORTED_METHODS; hier stehen sie nur, damit ein Aufruf
-        # trotzdem eine klare Antwort bekommt.)
-        if method in ("Device.setName", "Channel.setName", "Program.execute",
+        # Erfolg vorzutaeuschen. (Diese Methoden stehen auch nicht in
+        # SUPPORTED_METHODS; hier stehen sie nur, damit ein Aufruf trotzdem
+        # eine klare Antwort bekommt.)
+        if method in ("Program.execute",
                       "SysVar.getValueByName",
                       "Interface.getLinkInfo", "Interface.setLinkInfo",
                       "Interface.suppressServiceMessages"):

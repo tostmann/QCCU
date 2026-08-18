@@ -193,6 +193,26 @@ will, ruft den Dienst **`homematicip_local.confirm_all_delayed_devices`**
 auf. (Geräte, die beim Einrichten der Integration schon angelernt waren,
 erscheinen sofort.)
 
+**Warum die Integration das tut:** Sie will den Namen einmal vergeben lassen,
+*bevor* die Entitäten entstehen — die Docstring ihres Reparatur-Flusses sagt
+es wörtlich: „Fix flow for delayed devices: allows naming the device before
+adding it". Der Grund liegt auf der Hand: die Entitäts-IDs werden beim Anlegen
+aus dem Namen gebildet, und ohne diesen Schritt trägt jede von ihnen für immer
+die Seriennummer. Abschalten lässt sich die Verzögerung nicht; im Code der
+Integration steht sie fest verdrahtet (`delay_new_device_creation=True`).
+
+Der vergebene Name geht dabei **in die Zentrale zurück** (`Device.setName`
+bzw. `Channel.setName`). QCCU führt ihn seit **2026.8.18**: er steht danach in
+`Device.listAllDetail` und in der ReGa-Auskunft, überlebt Neustarts und
+verschwindet mit dem Gerät, wenn es gelöscht wird. Ältere Fassungen wiesen
+beide Methoden ab — der eingegebene Name ging dann verloren, und im Protokoll
+stand `CHECK_SUPPORTED_METHODS: … Channel.setName, Device.setName`.
+
+Wer stattdessen den Dienst `confirm_all_delayed_devices` benutzt, übernimmt
+alle zurückgestellten Geräte **ohne** Namen — sie behalten „Typ + Adresse".
+Nachträglich umbenennen geht in Home Assistant weiterhin, ändert aber nur die
+dortige Anzeige; in QCCU landet der Name nur über den Reparatur-Dialog.
+
 ---
 
 ## 6. Wenn etwas nicht geht
