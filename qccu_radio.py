@@ -328,19 +328,37 @@ class Radio:
             print(f"  Stick eingerichtet (Adresse {own_addr})")
 
     def _stick_zustand(self):
-        """Die Zustandszeile des Sticks holen (`m` -> `Pm ein …`)."""
+        """Die Zustandszeile des Sticks holen (`m` -> `Pm ein …`).
+
+        ⚠️ Der Stick antwortet auf `m` mit DREI Zeilen: Zustand, Sendekonto,
+        Zaehlwerk. Wer nach der ersten aufhoert, laesst zwei liegen — und die
+        naechste Frage geht unter, weil der Stick noch sendet. Genau daran
+        scheiterte auf einem FABRIKNEUEN Stick die Frage nach der Kennung:
+        sie blieb „unklar", also wurde keine erzeugt, also legte der Stick
+        keinen Netzwerkschluessel an, also schlug spaeter jedes Anlernen fehl
+        — und nirgends stand ein Fehler; die Einrichtung meldete „Stick
+        eingerichtet". An echter Hardware gefunden (18.08.2026, q-culfw
+        2.0.29, parallele mCCU-Session).
+
+        Deshalb wird die Antwort zu Ende gelesen, bevor es weitergeht.
+        """
         self.ser.reset_input_buffer()
         self.ser.write(b"m\r\n")
         self.ser.flush()
+        gefunden = None
         ende = time.time() + 1.5
         while time.time() < ende:
             try:
                 z = self.ser.readline().decode("ascii", "replace").strip()
             except Exception:
-                return None
+                return gefunden
+            if not z:
+                if gefunden is not None:
+                    break            # Ruhe auf der Leitung: die Antwort ist durch
+                continue
             if z.startswith("Pm ein") or z.startswith("Pm aus"):
-                return z
-        return None
+                gefunden = z
+        return gefunden
 
     def _kennung_vorhanden(self):
         """Hat der Stick schon eine Kennung? (`mG` zeigt sie.)
@@ -354,19 +372,31 @@ class Radio:
         Rueckgabe True/False, oder None wenn die Antwort nicht zu deuten ist
         — dann wird NICHT gewuerfelt.
         """
-        self.ser.reset_input_buffer()
-        self.ser.write(b"mG\r\n")
-        self.ser.flush()
-        ende = time.time() + 2.0
-        while time.time() < ende:
+        # ⚠️ Zweimal fragen, und vorher aufraeumen. Die Frage folgt direkt auf
+        # die Zustandsabfrage, deren Antwort mehrzeilig ist; deren Reste laufen
+        # dieser hier in die Quere. Bleibt es bei „unklar", wird KEINE Kennung
+        # erzeugt (so soll es sein) — und der Stick bekommt in der Folge auch
+        # keinen Netzwerkschluessel. Einzeln gefragt antwortet er zuverlaessig,
+        # im Ablauf nicht (am Geraet beobachtet, 18.08.2026).
+        for _ in range(2):
             try:
-                z = self.ser.readline().decode("ascii", "replace").strip()
+                self.ser.reset_input_buffer()
+                self.ser.write(b"mG\r\n")
+                self.ser.flush()
             except Exception:                            # noqa: BLE001
                 return None
-            if "keine Kennung" in z:
-                return False
-            if z.startswith("Pm sgtin="):
-                return True
+            ende = time.time() + 2.0
+            while time.time() < ende:
+                try:
+                    z = self.ser.readline().decode("ascii", "replace").strip()
+                except Exception:                        # noqa: BLE001
+                    return None
+                if "keine Kennung" in z:
+                    return False
+                if z.startswith("Pm sgtin="):
+                    return True
+                # Alles andere sind Reste der vorigen Frage — weiterlesen.
+            time.sleep(0.3)
         return None
 
     def _netzschluessel_sicherstellen(self):
