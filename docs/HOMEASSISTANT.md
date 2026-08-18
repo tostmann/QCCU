@@ -213,7 +213,54 @@ alle zurückgestellten Geräte **ohne** Namen — sie behalten „Typ + Adresse"
 Nachträglich umbenennen geht in Home Assistant weiterhin, ändert aber nur die
 dortige Anzeige; in QCCU landet der Name nur über den Reparatur-Dialog.
 
-### d) Ein Gerät wieder entfernen — in QCCU, nicht in Home Assistant
+### d) Warum der Knopf „Anlernmodus aktivieren" in Home Assistant absagt
+
+Die Integration legt zu jeder Zentrale einen Knopf **„Anlernmodus aktivieren"**
+an. Bei QCCU antwortet er mit einer Absage:
+
+> Anlernen nicht möglich: kein Geräteschlüssel hinterlegt. Entweder den
+> Aufkleber des Geräts in der QCCU-Oberfläche eintragen, oder ihn diesem Aufruf
+> im Feld `key` mitgeben (26 Zeichen vom Aufkleber oder 32 Hexziffern).
+
+Das ist kein Fehler, sondern die einzige ehrliche Antwort. Ein HmIP-Gerät lernt
+sich **nur mit seinem Geräteschlüssel** an — der steckt im Aufkleber (die
+26 Zeichen unter dem QR-Code). Ohne ihn kann das Anlernfenster offen stehen,
+solange es will: es kommt nichts zustande. Ein zufriedenes „ok" zurückzugeben
+wäre die schlechtere Auskunft — der Anwender drückt den Knopf und wartet dann
+vergeblich.
+
+**Warum die Integration den Schlüssel nicht mitschickt:** Am Protokoll liegt es
+nicht. Der Aufruf `Interface.setInstallModeHMIP` sieht die Felder `key` und
+`keymode` ausdrücklich vor — die Oberfläche einer CCU füllt sie, wenn man dort
+den Aufkleber einträgt. aiohomematic schickt sie **immer leer**
+(`aiohomematic/client/json_rpc.py`, `set_install_mode_hmip`: `KEY: ""`,
+`KEYMODE: ""`), weil die Integration keine Eingabe dafür hat: der Knopf ist ein
+Knopf, kein Formular. Bei einer echten CCU tippt man den Aufkleber in deren
+eigene Oberfläche — die Integration ist der Client einer Zentrale, nicht das
+Anlernwerkzeug. Eine ausdrückliche Begründung der Autoren dazu ist uns nicht
+bekannt; belegbar ist nur das Verhalten im Code.
+
+**Der normale Weg** ist deshalb die QCCU-Oberfläche: Aufkleber eintragen,
+Fenster öffnen, Taste am Gerät drücken. Wer den Knopf in Home Assistant
+benutzen will, hinterlegt den Schlüssel vorher dort — oder schickt den Aufruf
+mit gefülltem `key` selbst, wie in Schritt a) gezeigt. Beides ist nachgeprüft:
+mit Schlüssel öffnet das Fenster und meldet „Quelle: Aufkleber".
+
+### e) Ein neu angelerntes Gerät erscheint nicht in Home Assistant
+
+Steht das Gerät in QCCU, kommt in Home Assistant aber weder eine Entität noch
+eine Reparatur, dann hat die Integration die Meldung verworfen, **weil sie die
+Adresse in ihrem Zwischenspeicher schon kennt**. Das passiert typischerweise,
+wenn dasselbe Gerät vorher schon einmal angelernt und wieder entfernt wurde.
+QCCU meldet in diesem Fall korrekt (im Protokoll steht
+`newDevices -> <Schnittstelle>: <Adresse>`), es passiert nur nichts damit.
+
+Abhilfe: Dienst **`homematicip_local.clear_cache`** aufrufen und die Integration
+neu laden. Danach erscheint das Gerät als Reparatur und lässt sich mit Namen
+bestätigen. (Am Aufbau nachgestellt; ob das Leeren allein genügt oder das
+Neuladen den Ausschlag gibt, haben wir nicht getrennt gemessen.)
+
+### f) Ein Gerät wieder entfernen — in QCCU, nicht in Home Assistant
 
 ⚠️ **Das Gerät in Home Assistant zu löschen entfernt es nicht.** Die
 Integration räumt dabei nur bei sich auf: `delete_device` in aiohomematic
