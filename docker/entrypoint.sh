@@ -175,6 +175,7 @@ PY
         --devicedir     "$WORK/devicedir" \
         --catalog       "$TABLES/catalog.json" \
         $ERGAENZUNG \
+        --extra-out     "$TABLES/extra_params.json" \
         -o "$TABLES/paramsets.json" || die "Zusammenführen fehlgeschlagen."
 
     log "Tabellen liegen in $TABLES:"
@@ -190,7 +191,15 @@ PY
 }
 
 # ---------------------------------------------------------------------------
-need_tables() { [ -f "$TABLES/paramsets.json" ] && [ -f "$TABLES/catalog.json" ]; }
+# Fehlt eine Tabelle — oder stammt sie aus einer Fassung bis 2026.8.12, die
+# die Kanaltyp-Fassungen noch verschmolzen hat (erkennbar an fehlendem
+# `extra_params.json`) —, wird neu gebaut. Alte Tabellen liest QCCU zwar
+# weiter, liefert damit aber viel zu grosse Paramsets: an einer
+# Schaltsteckdose 1087 Konfigurationsparameter statt 345, samt Farbverlaeufen.
+need_tables() {
+    [ -f "$TABLES/paramsets.json" ] && [ -f "$TABLES/catalog.json" ] \
+        && [ -f "$TABLES/extra_params.json" ]
+}
 
 serve() {
     # ⚠️ Der Tabellenbau laeuft in einer UNTER-SHELL, damit sein `die` (also
@@ -202,7 +211,12 @@ serve() {
     # Oberflaeche sagt, was fehlt und wie es nachzuholen ist. Dieselbe
     # Haltung wie beim fehlenden Stick eine Zeile weiter unten.
     if ! need_tables; then
-        log "erster Start — die Gerätetabellen werden angelegt."
+        if [ -f "$TABLES/paramsets.json" ]; then
+            log "die Gerätetabellen stammen aus einer älteren Fassung und werden"
+            log "neu angelegt (Kanalfassungen je Gerätetyp, Fassung 2026.8.13)."
+        else
+            log "erster Start — die Gerätetabellen werden angelegt."
+        fi
         if ( setup ); then
             :
         else

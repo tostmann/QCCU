@@ -181,6 +181,18 @@ Gerätetyp und dem Hinweis, was noch fehlt. Der Posteingang zeigt nur Geräte,
 die angelernt werden *wollen*, nicht jeden Funkverkehr in Reichweite; ein
 Neustart der Zentrale leert ihn, und Einträge verfallen nach einer Stunde.
 
+### c) Das Gerät in Home Assistant bestätigen
+
+⚠️ Ein Gerät, das **nach** dem Einrichten der Integration angelernt wird,
+legt Home Assistant nicht von selbst an. Die Integration stellt es zurück und
+meldet es unter **Einstellungen → System → Reparaturen** („Neues Gerät …");
+dort einen Namen vergeben und bestätigen — erst dann entstehen Schalter,
+Sensoren und die Gerätekarte. Solange nichts erscheint, ist das der Grund,
+kein Funkproblem. Wer alle zurückgestellten Geräte auf einmal übernehmen
+will, ruft den Dienst **`homematicip_local.confirm_all_delayed_devices`**
+auf. (Geräte, die beim Einrichten der Integration schon angelernt waren,
+erscheinen sofort.)
+
 ---
 
 ## 6. Wenn etwas nicht geht
@@ -207,6 +219,18 @@ Integration hält die Parameterbeschreibungen sonst dauerhaft fest.
 
 **Sensoren ohne Einheit, Aufzählungen ohne Auswahl**
 Ebenfalls ein alter Tabellenstand, gleiche Abhilfe.
+
+**„Inkonsistenz bei Geräte-Paramsets erkannt … Parameter im Schema, die nicht
+im tatsächlichen MASTER-Paramset vorhanden sind"**
+Ein Tabellenstand bis 2026.8.12: dort wurden alle Fassungen eines Kanaltyps
+zu einer Liste verschmolzen — eine Schaltsteckdose bekam 1087
+Konfigurationsparameter angeboten, darunter Farbverläufe, und zu keinem einen
+Wert. Seit 2026.8.13 liefert QCCU je Kanal genau das Paramset, das auch eine
+Zentrale von eQ-3 liefert (an einer HmIP-PS-2 über alle Kanäle nachgemessen:
+345 beschrieben, 345 Werte). Die Tabellen werden beim ersten Start der neuen
+Fassung von selbst neu angelegt (dafür braucht der Rechner einmal Netz zum
+Paketbezug); danach in Home Assistant den Dienst
+**`homematicip_local.clear_cache`** aufrufen und die Integration neu laden.
 
 **Der Anlernknopf meldet einen Fehler**
 Dann ist kein Schlüssel hinterlegt — siehe [Schritt 5a](#a-den-schlüssel-vom-aufkleber-hinterlegen).

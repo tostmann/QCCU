@@ -739,10 +739,9 @@ class Radio:
         d = (getattr(self.qccu, "devices", None) or {}).get(addr.upper())
         if not d or not hasattr(d, "channel_list"):
             return False
-        ctype = dict(d.channel_list()).get(int(channel))
-        if not ctype:
+        if not dict(d.channel_list()).get(int(channel)):
             return False
-        return param in (self.t.params_of(ctype) or {})
+        return param in (self.t.paramset_of(d.devtype, channel, "VALUES") or {})
 
     def _emit(self, addr, channel, sdt, value, flags):
         """Einen Eintrag melden. Gedeutet wird nur, was belegt ist."""

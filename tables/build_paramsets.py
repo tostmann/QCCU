@@ -1,5 +1,27 @@
 #!/usr/bin/env python3
-"""Baut die Parametertabelle je Kanaltyp."""
+"""Baut die Parametertabelle je Kanaltyp UND KANALVERSION.
+
+⚠️ Die Version ist nicht schmueckendes Beiwerk, sie entscheidet ueber den
+Inhalt. Das Archiv fuehrt `MAINTENANCE/v2` (330 Konfigurationsparameter) und
+`MAINTENANCE/v10` (602, darunter 580 Farbeffekt-Parameter) als verschiedene
+Dinge; welche Fassung ein Geraet hat, steht in seiner Beschreibung
+(`<channel type="MAINTENANCE" version="2" index="0">`).
+
+Bis 2026.8.12 hat diese Stufe alle Fassungen zu EINEM Kanaltyp verschmolzen.
+Folge: eine Schaltsteckdose bekam 1087 Konfigurationsparameter angeboten,
+darunter Farbverlaeufe — und Home Assistant meldete zu Recht
+„Parameter im Schema, die nicht im tatsaechlichen MASTER-Paramset vorhanden
+sind" (18.08.2026).
+
+Gegen eine echte Zentrale geprueft (headlessCCU mit RFUSB, HmIP-PS-2, alle
+sieben Kanaele): das ausgelieferte Paramset ist
+
+    Archiv[Kanaltyp/vFassung]  ∪  Geraetebeschreibung[Kanal]  ∪  Ergaenzungen
+
+14 von 14 Faellen exakt. Die Geraete-eigenen Parameter (zweiter Teil) gehoeren
+NICHT in die Kanaltyp-Tabelle — sie stehen im Katalog beim Geraetetyp und
+werden hier nur als Bestand (`extra_params.json`) aufgeloest bereitgelegt.
+"""
 import argparse
 import json
 import os
@@ -190,68 +212,84 @@ def main():
     a.add_argument("--lookup", required=True, help="param_lookup.json")
     a.add_argument("--devicedir", required=True, help="Verzeichnis mit device_*.xml")
     a.add_argument("-o", "--out", default="paramsets.json")
+    a.add_argument("--extra-out", default=None,
+                   help="Bestand der Parameter aus den Geraetebeschreibungen")
     a.add_argument("--compare", help="Ergaenzungen, die in keiner Definition stehen (optional)")
     a.add_argument("--catalog", help="catalog.json — fuehrt auch parameterlose Kanaltypen")
     g = a.parse_args()
+    if not g.extra_out:
+        g.extra_out = os.path.join(os.path.dirname(os.path.abspath(g.out)),
+                                   "extra_params.json")
 
     jar = load(g.jar_paramsets)
     lookup = load(g.lookup)
     dev, nfiles = device_channel_params(g.devicedir)
 
+    # Schluessel bleibt `KANALTYP/vN` — genau wie im Archiv.
     merged = {}
     for key in sorted(jar):
-        name = key.split("/v")[0]
-        ver = key.split("/v")[1] if "/v" in key else "0"
-        tgt = merged.setdefault(name, {})
+        tgt = merged.setdefault(key, {})
         for pset, params in jar[key].items():
-            dst = tgt.setdefault(pset, {})
-            for pn, desc in params.items():
-                if pn not in dst or ver.isdigit():
-                    dst[pn] = desc
+            tgt.setdefault(pset, {}).update(params)
 
-    added, unresolved = 0, {}
+    # Die Parameter aus den Geraetebeschreibungen kommen NICHT in die
+    # Kanaltyp-Tabelle (sie gehoeren einzelnen Geraetetypen). Aufgeloest
+    # werden sie hier trotzdem — als Bestand, aus dem der Katalog schoepft.
+    extra, unresolved = {}, {}
     for ctype, entries in dev.items():
-        tgt = merged.setdefault(ctype, {})
         for pset, pname, sub in sorted(entries):
-            dst = tgt.setdefault(pset, {})
-            if pname in dst:
+            schluessel = f"{pname}@{sub}"
+            if schluessel in extra:
                 continue
-            desc = lookup.get(f"{pname}@{sub}") or lookup.get(f"{pname}@default")
+            desc = lookup.get(schluessel) or lookup.get(f"{pname}@default")
             if desc is None:
                 unresolved.setdefault(pname, 0)
                 unresolved[pname] += 1
                 continue
-            dst[pname] = desc
-            added += 1
+            extra[schluessel] = desc
+    added = len(extra)
 
+    # Ergaenzungen sind an einer echten Zentrale geerntet und nach Kanaltyp
+    # (ohne Fassung) abgelegt — sie gelten daher fuer JEDE Fassung des Typs.
     verified_added = 0
     if g.compare and os.path.exists(g.compare):
         old = load(g.compare)
         for ct, sets in old.items():
-            tgt = merged.setdefault(ct, {})
-            for pset, params in sets.items():
-                dst = tgt.setdefault(pset, {})
-                for pn, desc in params.items():
-                    if pn not in dst:
-                        dst[pn] = desc
-                        verified_added += 1
-        print(f"  aus den Ergaenzungen:              {verified_added} Parameter")
+            ziele = [k for k in merged if k.split("/v")[0] == ct] or [ct]
+            for ziel in ziele:
+                tgt = merged.setdefault(ziel, {})
+                for pset, params in sets.items():
+                    dst = tgt.setdefault(pset, {})
+                    for pn, desc in params.items():
+                        if pn not in dst:
+                            dst[pn] = desc
+                            verified_added += 1
+        print(f"  aus den Ergaenzungen:              {verified_added} Eintraege")
 
     empty = 0
     if g.catalog and os.path.exists(g.catalog):
         cat = load(g.catalog)
         for e in cat.values():
-            for ct in e.get("channels", {}).values():
-                if ct not in merged:
-                    merged[ct] = {"VALUES": {}, "MASTER": {}}
+            for idx, ct in e.get("channels", {}).items():
+                v = (e.get("chinfo", {}).get(idx) or {}).get("v")
+                schluessel = f"{ct}/v{v}" if v is not None else ct
+                if schluessel not in merged:
+                    merged[schluessel] = {"VALUES": {}, "MASTER": {}}
                     empty += 1
-        print(f"  ohne eigene Parameter gefuehrt:  {empty} Kanaltypen")
+        print(f"  ohne eigene Parameter gefuehrt:  {empty} Kanaltyp-Fassungen")
 
     merged = {k: v for k, v in sorted(merged.items())}
 
-    ohne_typ = verwirf_ohne_typ(merged)
-    umgeschrieben = vereinheitliche_typen(merged)
-    ergaenzt = vervollstaendige_grenzen(merged)
+    # ⚠️ Der Bestand aus den Geraetebeschreibungen MUSS dieselbe Nachbereitung
+    # durchlaufen wie die Kanaltyp-Tabelle — er wird spaeter genauso
+    # ausgeliefert. Ohne sie kaeme `BOOLEAN` statt `BOOL` heraus und die
+    # Gegenstelle legte fuer das ganze Geraet keine Datenpunkte an (siehe
+    # Kopf dieser Datei). Dafuer wird er kurz in dieselbe Form gebracht.
+    huelle = {"__bestand__": {"BESTAND": extra}}
+    ohne_typ = verwirf_ohne_typ(merged) + verwirf_ohne_typ(huelle)
+    umgeschrieben = vereinheitliche_typen(merged) + vereinheitliche_typen(huelle)
+    ergaenzt = vervollstaendige_grenzen(merged) + vervollstaendige_grenzen(huelle)
+    extra = huelle["__bestand__"]["BESTAND"]
 
     print(f"  Kanaltyp-Fassungen aus dem Archiv: {len(jar)}")
     print(f"  Datentyp-Schreibweise angeglichen: {umgeschrieben} Parameter")
@@ -261,7 +299,7 @@ def main():
     print(f"  fehlende Grenzen ergaenzt:         {ergaenzt} Felder")
     print(f"  device_*.xml gelesen:              {nfiles}")
     print(f"  Kanaltypen gesamt:                 {len(merged)}")
-    print(f"  aus den Geraete-XML ergaenzt:      {added} Parameter")
+    print(f"  aus den Geraete-XML aufgeloest:    {added} Parameter (Bestand)")
     if unresolved:
         print(f"  ⚠ ohne Definition geblieben:       {len(unresolved)} Namen "
               f"(z.B. {sorted(unresolved)[:5]})")
@@ -271,27 +309,31 @@ def main():
         print(f"\n  Abgleich mit {os.path.basename(g.compare)} "
               f"({len(old)} Kanaltypen):")
         for ct in sorted(old):
-            if ct not in merged:
+            ziele = [k for k in merged if k.split("/v")[0] == ct]
+            if not ziele:
                 print(f"    ⚠ {ct}: FEHLT")
                 continue
             for pset in ("VALUES", "MASTER"):
                 o = old[ct].get(pset, {})
                 if not o:
                     continue
-                n = merged[ct].get(pset, {})
+                n = {}
+                for z in ziele:
+                    n.update(merged[z].get(pset, {}))
                 miss = sorted(set(o) - set(n))
                 mark = "✅" if not miss else "⚠"
                 print(f"    {mark} {ct}/{pset}: erwartet {len(o)}, neu {len(n)}"
                       + (f", fehlend {miss}" if miss else ""))
 
     os.makedirs(os.path.dirname(os.path.abspath(g.out)), exist_ok=True)
-    tmp = g.out + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(merged, f, indent=1, sort_keys=True)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, g.out)
-    print(f"\n  geschrieben: {g.out}")
+    for ziel, inhalt in ((g.out, merged), (g.extra_out, extra)):
+        tmp = ziel + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(inhalt, f, indent=1, sort_keys=True)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, ziel)
+        print(f"  geschrieben: {ziel} ({len(inhalt)} Eintraege)")
     return 0
 
 

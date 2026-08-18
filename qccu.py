@@ -16,7 +16,7 @@ from xmlrpc.server import SimpleXMLRPCServer, SimpleXMLRPCRequestHandler
 # zugleich die Marke des Abbilds auf Docker Hub UND der Wert von `version`
 # in addon/config.yaml — der Supervisor zieht `<image>:<version>`. Wer hier
 # hochzaehlt, muss beides mitziehen, sonst schlaegt die Installation fehl.
-VERSION = "2026.8.12"
+VERSION = "2026.8.13"
 PRODUKT = "QCCU"
 NAME_UND_FASSUNG = f"{PRODUKT} {VERSION}"
 
@@ -40,12 +40,22 @@ class Tables:
         self.catalog = self._load(base, "catalog.json")
         self.paramsets = self._load(base, "paramsets.json")
         self.sdt = self._load(base, "sdt_table.json")
+        # Bestand der Parameter, die nur in den Geraetebeschreibungen stehen.
+        # Fehlt er, ist die Tabelle nach altem Muster gebaut (siehe `alt`).
+        self.extra = self._load(base, "extra_params.json", pflicht=False)
+        # ALTE TABELLEN (bis 2026.8.12) fuehrten je Kanaltyp EINE Liste ueber
+        # alle Fassungen — eine Schaltsteckdose bekam damit 1087
+        # Konfigurationsparameter angeboten, darunter Farbverlaeufe. Neue
+        # Tabellen fuehren `KANALTYP/vN`. Beide werden gelesen; welche
+        # vorliegt, entscheidet der Schluessel.
+        self.alt = not any("/v" in k for k in self.paramsets)
 
-    def _load(self, base, name):
+    def _load(self, base, name, pflicht=True):
         p = os.path.join(base, name)
         if not os.path.exists(p):
-            print(f"  ! Tabelle fehlt: {p}", file=sys.stderr)
-            self.fehlend.append(name)
+            if pflicht:
+                print(f"  ! Tabelle fehlt: {p}", file=sys.stderr)
+                self.fehlend.append(name)
             return {}
         with open(p) as f:
             return json.load(f)
@@ -58,6 +68,7 @@ class Tables:
             "geraetetypen": len(self.catalog),
             "kanaltypen": len(self.paramsets),
             "statusdatentypen": len(self.sdt),
+            "veraltet": self.alt,
         }
 
     def channels_of(self, devtype):
@@ -68,9 +79,51 @@ class Tables:
         e = self.catalog.get(str(devtype))
         return e["label"] if e else f"Typ {devtype}"
 
-    def params_of(self, channel_type, pset="VALUES"):
-        e = self.paramsets.get(channel_type, {})
-        return e.get(pset, {})
+    def params_of(self, channel_type, pset="VALUES", version=None):
+        """Parameter eines Kanaltyps — mit Fassung, wenn die Tabelle sie fuehrt.
+
+        Ohne passende Fassung wird die hoechste gefuehrte genommen: besser eine
+        vollstaendige benachbarte Liste als gar keine.
+        """
+        e = self.paramsets.get(channel_type)
+        if e is None and not self.alt:
+            if version is not None:
+                e = self.paramsets.get(f"{channel_type}/v{version}")
+            if e is None:
+                fassungen = sorted(
+                    (int(k.split("/v")[1]) for k in self.paramsets
+                     if k.startswith(channel_type + "/v") and k.split("/v")[1].isdigit()),
+                    reverse=True)
+                if fassungen:
+                    e = self.paramsets.get(f"{channel_type}/v{fassungen[0]}")
+        return (e or {}).get(pset, {})
+
+    def chinfo_of(self, devtype, kanal):
+        """Fassung und geraeteeigene Parameter eines Kanals."""
+        e = self.catalog.get(str(devtype)) or {}
+        return (e.get("chinfo") or {}).get(str(kanal)) or {}
+
+    def paramset_of(self, devtype, kanal, pset="VALUES"):
+        """Das Paramset eines Kanals bei DIESEM Geraetetyp.
+
+        So setzt es auch eine Zentrale von eQ-3 zusammen (an einer HmIP-PS-2
+        ueber alle sieben Kanaele und beide Paramsets geprueft, 18.08.2026):
+        die Liste der Kanaltyp-Fassung, dazu was die Geraetebeschreibung
+        selbst nennt.
+        """
+        ctype = self.channels_of(devtype).get(str(kanal))
+        if not ctype:
+            return {}
+        info = self.chinfo_of(devtype, kanal)
+        out = dict(self.params_of(ctype, pset, info.get("v")))
+        for schluessel in (info.get("extra") or {}).get(pset, []):
+            name = schluessel.split("@")[0]
+            if name in out:
+                continue
+            desc = self.extra.get(schluessel) or self.extra.get(f"{name}@default")
+            if desc:
+                out[name] = desc
+        return out
 
 
 def channel_direction(ctype):
@@ -532,8 +585,7 @@ class QCCU:
             raise xmlrpc.client.Fault(-2, "Unknown device")
         if not ch:
             return {}
-        ctype = self.t.channels_of(d.devtype).get(ch, "")
-        return self.t.params_of(ctype, paramset)
+        return self.t.paramset_of(d.devtype, ch, paramset)
 
     def getParamset(self, address, paramset):
         addr = address.upper()
@@ -542,8 +594,29 @@ class QCCU:
             d = self.devices.get(base)
         if not d or not ch:
             return {}
-        src = d.master if str(paramset).upper() == "MASTER" else d.values
-        return {p: v for (c, p), v in src.items() if c == int(ch)}
+        pset = str(paramset).upper()
+        src = d.master if pset == "MASTER" else d.values
+        gesetzt = {p: v for (c, p), v in src.items() if c == int(ch)}
+        if pset != "MASTER":
+            return gesetzt
+        # ⚠️ Bei MASTER liefert eine Zentrale von eQ-3 zu JEDEM beschriebenen
+        # Parameter einen Wert — an der HmIP-PS-2 gemessen: 345 beschrieben,
+        # 345 geliefert, in jedem Kanal deckungsgleich. Der Konfigurations-
+        # bestand eines Geraets ist eben immer vollstaendig; was niemand
+        # geaendert hat, steht auf seiner Vorgabe.
+        #
+        # Wir haben diese Werte nicht aus dem Geraet gelesen — sie stammen aus
+        # der Beschreibung. Das ist die ehrlichste verfuegbare Auskunft: die
+        # Alternative waere eine leere Antwort, und die liest die Gegenstelle
+        # als „das Geraet hat die Haelfte seiner Parameter verloren" (Home
+        # Assistant meldete genau das am 18.08.2026).
+        aus_beschreibung = {
+            p: e.get("DEFAULT")
+            for p, e in self.t.paramset_of(d.devtype, ch, "MASTER").items()
+            if isinstance(e, dict) and e.get("DEFAULT") is not None
+        }
+        aus_beschreibung.update(gesetzt)
+        return aus_beschreibung
 
     def getValue(self, address, param):
         base, _, ch = address.upper().partition(":")

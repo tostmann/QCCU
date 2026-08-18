@@ -1,10 +1,27 @@
 #!/usr/bin/env python3
-"""Baut den Geraetekatalog: Geraetetyp -> Beschriftung und Kanal-Layout."""
+"""Baut den Geraetekatalog: Geraetetyp -> Beschriftung, Kanal-Layout und
+was der Kanal bei DIESEM Geraet mitbringt (`chinfo`).
+
+Zu jedem Kanal gehoeren zwei Angaben, die es nur hier gibt:
+
+* **`v`** — die Fassung des Kanaltyps. Sie waehlt in `paramsets.json` die
+  richtige Parameterliste aus; `MAINTENANCE/v2` und `MAINTENANCE/v10` sind
+  verschiedene Dinge (330 gegen 602 Konfigurationsparameter).
+* **`extra`** — die Parameter, die die Geraetebeschreibung selbst nennt
+  (`<parameter type="config|state" subtype="…">NAME</parameter>`), als
+  `NAME@subtype`. Sie stehen nicht in der Kanaltyp-Liste; aufgeloest werden
+  sie ueber `extra_params.json`.
+
+Zusammen mit der Kanaltyp-Liste ergibt das genau das Paramset, das eine
+Zentrale von eQ-3 ausliefert (an einer HmIP-PS-2 ueber alle sieben Kanaele
+geprueft, 18.08.2026).
+"""
 import argparse
 import json
 import os
 import re
 import sys
+import xml.etree.ElementTree as ET
 import zipfile
 
 SPEC = "de/eq3/cbcs/devicedescription/devicespecification/"
@@ -25,9 +42,36 @@ def build(jar_path):
             stats["skipped"] += 1
             continue
 
-        channels = {}
-        for ctype, idx in re.findall(r'<channel type="([A-Z_0-9]+)"[^>]*index="(\d+)"', d):
-            channels.setdefault(int(idx), ctype)
+        channels, chinfo = {}, {}
+        try:
+            wurzel = ET.fromstring(d)
+        except ET.ParseError:
+            stats["skipped"] += 1
+            continue
+        for ch in wurzel.iter("channel"):
+            ctype, idx = ch.get("type"), ch.get("index")
+            if not ctype or idx is None or not idx.isdigit():
+                continue
+            i = int(idx)
+            if i in channels:
+                continue
+            channels[i] = ctype
+            eintrag = {}
+            ver = ch.get("version")
+            if ver and ver.isdigit():
+                eintrag["v"] = int(ver)
+            extra = {}
+            for par in ch.iter("parameter"):
+                name = (par.text or "").strip()
+                pset = {"state": "VALUES", "config": "MASTER"}.get(par.get("type", ""))
+                if not name or not pset:
+                    continue
+                sub = par.get("subtype") or "default"
+                extra.setdefault(pset, []).append(f"{name}@{sub}")
+            if extra:
+                eintrag["extra"] = {k: sorted(set(v)) for k, v in extra.items()}
+            if eintrag:
+                chinfo[i] = eintrag
         if not channels:
             stats["skipped"] += 1
             continue
@@ -38,6 +82,7 @@ def build(jar_path):
             entry = {
                 "label": label,
                 "channels": {str(k): v for k, v in sorted(channels.items())},
+                "chinfo": {str(k): v for k, v in sorted(chinfo.items())},
                 "spec": n.rsplit("/", 1)[-1],
             }
             if fw:
