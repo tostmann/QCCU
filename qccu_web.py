@@ -151,6 +151,9 @@ footer a{color:var(--mut)} footer a:hover{color:var(--acc)}
       die Geräte hier <b>löschen und neu anlernen</b>. Ein Stick, der eben
       erst auf Werk zurückgesetzt oder ausgetauscht wurde, ist der häufigste
       Grund für diese Meldung.</p>
+    <p id="nwk_knopf" style="display:none">
+      <button class="bad" onclick="netzNeu()">Geräte verwerfen und neu beginnen</button>
+      <span class="hint" id="nwk_msg"></span></p>
   </div>
 </div>
 
@@ -288,6 +291,26 @@ function pair(){
                     seconds:+$('#secs').value});
 }
 
+// Der zweite der beiden Wege aus der Warnkarte — als Knopf. Zweimal fragen,
+// denn danach braucht jedes Geraet einen Werksreset: rueckgaengig gibt es das
+// hier nicht.
+async function netzNeu(){
+  const m=$('#nwk_msg'), n=(ZUSTAND.devices||[]).length;
+  if(!confirm('Alle '+n+' Gerät(e) verwerfen und dem Stick einen neuen '
+      +'Netzwerkschlüssel geben?\n\nDie Geräte lassen sich danach nur nach '
+      +'einem Werksreset am Gerät wieder anlernen. Wer stattdessen den '
+      +'bisherigen Stick zurücksteckt, behält alles.')) return;
+  if(m){ m.textContent='läuft …'; m.className='hint'; }
+  try{
+    const r=await fetch('api/netz/neu',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({bestaetigt:true})});
+    const j=await r.json();
+    if(m){ m.textContent=j.meldung||j.error||''; m.className=j.ok?'ok':'bad'; }
+  }catch(e){ if(m){ m.textContent='Aufruf fehlgeschlagen: '+e; m.className='bad'; } }
+  laden();
+}
+
 function flashen(){
   const f=ZUSTAND.firmware||{};
   const frage = f.zustand==='bootlader'
@@ -370,6 +393,8 @@ async function laden(){
     if(mit)  mit.style.display  = n ? '' : 'none';
     const za=$('#nwk_anzahl');
     if(za) za.textContent = (n===1) ? 'ein Gerät' : (n+' Geräte');
+    const kb=$('#nwk_knopf');
+    if(kb) kb.style.display = n ? '' : 'none';
   }
   const tb=s.tabellen||{};
   const kt=$('#karte_tabellen');
@@ -581,6 +606,21 @@ class WebHandler(BaseHTTPRequestHandler):
             addr = (body.get("address") or "").upper()
             self.qccu.deleteDevices(addr)
             return self._json({"ok": True})
+
+        # Der Ausweg aus „Stick ohne Schluessel, aber Geraete eingetragen":
+        # alles verwerfen und neu beginnen. Mit Sicherung — der Aufruf
+        # verlangt `bestaetigt`, damit ihn kein Fehlgriff ausloest.
+        if self.path == "/api/netz/neu":
+            # Die Bestaetigung wird ZUERST geprueft: ein unbestaetigter Aufruf
+            # soll immer abgewiesen werden, auch wenn gerade gar kein Funkpfad
+            # da ist. Sonst haengt die Sicherung am Zustand der Anlage.
+            if not body.get("bestaetigt"):
+                return self._json({"ok": False, "meldung": "nicht bestaetigt"}, 400)
+            r = getattr(self.qccu, "radio", None)
+            if r is None or not hasattr(r, "netz_neu_beginnen"):
+                return self._json({"ok": False, "meldung": "Kein Funkpfad"}, 409)
+            ok, meldung = r.netz_neu_beginnen()
+            return self._json({"ok": ok, "meldung": meldung}, 200 if ok else 500)
 
         self._json({"error": "unbekannt"}, 404)
 

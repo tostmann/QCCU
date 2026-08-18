@@ -462,6 +462,58 @@ class Radio:
             print("  ! Es konnte kein Netzwerkschluessel erzeugt werden — "
                   "Anlernen wird scheitern.")
 
+    def netz_neu_beginnen(self):
+        """Alle Geraete verwerfen und dem Stick einen Schluessel geben lassen.
+
+        Der Ausweg aus der Lage „Stick ohne Netzwerkschluessel, aber Geraete
+        eingetragen" — der zweite der beiden Wege, die die Oberflaeche nennt.
+        Von selbst tut QCCU das NIE (siehe `_netzschluessel_sicherstellen`):
+        ein neuer Schluessel sperrt jedes angelernte Geraet aus, und diese
+        Entscheidung gehoert dem Betreiber.
+
+        ⚠️ Ohne den alten Schluessel ist kein Funk-Ausschluss mehr moeglich —
+        die Geraete hoeren uns nicht mehr. Sie brauchen daher jeweils einen
+        WERKSRESET am Geraet, bevor sie neu angelernt werden koennen. Deshalb
+        wird hier auch nicht `deleteDevices` benutzt: dessen Ausschlussversuch
+        ginge dreimal ins Leere und kostete nur Zeit.
+
+        Rueckgabe: (True, Meldung) oder (False, Grund).
+        """
+        weg = []
+        q = self.qccu
+        try:
+            with q.lock:
+                weg = list(getattr(q, "devices", {}) or {})
+                for k in weg:
+                    q.devices.pop(k, None)
+                    if hasattr(q, "rf"):
+                        q.rf.pop(k, None)
+            for k in weg:
+                self.by_hmid = {h: a for h, a in self.by_hmid.items() if a != k}
+            if hasattr(q, "save_store"):
+                q.save_store()
+            for k in weg:
+                if hasattr(q, "_enqueue"):
+                    q._enqueue(("delete", k, [k]))
+        except Exception as ex:                          # noqa: BLE001
+            return False, f"Die Geraete konnten nicht entfernt werden: {ex}"
+
+        print(f"  Netz neu begonnen: {len(weg)} Geraet(e) verworfen.")
+        self.netzschluessel_fehlt = False
+        try:
+            self._netzschluessel_sicherstellen()
+        except Exception as ex:                          # noqa: BLE001
+            self.netzschluessel_fehlt = True
+            return False, f"Der Schluessel konnte nicht erzeugt werden: {ex}"
+
+        if self.netzschluessel_fehlt:
+            return False, ("Der Stick hat weiterhin keinen Netzwerkschluessel. "
+                           "Sitzt er richtig, und antwortet er auf `V`?")
+        return True, (f"{len(weg)} Geraet(e) verworfen, der Stick hat einen "
+                      f"neuen Netzwerkschluessel. Die Geraete brauchen jetzt "
+                      f"je einen Werksreset, dann koennen sie neu angelernt "
+                      f"werden.")
+
     SEQ_RESERVE = 2048
 
     def _seq_angleichen(self):

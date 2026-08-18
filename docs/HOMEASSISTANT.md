@@ -217,6 +217,14 @@ anlegen (`docker run --rm -v qccu-data:/data tostmann/qccu setup`) und in Home
 Assistant den Dienst **`homematicip_local.clear_cache`** aufrufen — die
 Integration hält die Parameterbeschreibungen sonst dauerhaft fest.
 
+**„Der Stick hat keinen Netzwerkschlüssel"**
+Fast immer nach einem Stick-Wechsel oder einem Werksreset des Sticks. Sind
+noch Geräte eingetragen, erzeugt QCCU absichtlich keinen neuen — er würde sie
+alle aussperren. Zwei Wege, beide in der Warnkarte: den bisherigen Stick
+zurückstecken, oder dort **„Geräte verwerfen und neu beginnen"** drücken (die
+Geräte brauchen danach je einen Werksreset). Ohne eingetragene Geräte genügt
+ein Neustart, dann entsteht der Schlüssel von selbst.
+
 **Sensoren ohne Einheit, Aufzählungen ohne Auswahl**
 Ebenfalls ein alter Tabellenstand, gleiche Abhilfe.
 

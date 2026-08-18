@@ -114,6 +114,8 @@ Angelernte Geräte überstehen ein Einspielen: Netzwerkschlüssel und Sendezähl
 
 Wird ein Gerät nach einem Werksreset neu angelernt, ersetzt die neue Funkadresse die alte — Befehle gehen nicht mehr an die tote Adresse.
 
+**Stick gewechselt oder zurückgesetzt?** Steckt ein Stick ohne Netzwerkschlüssel, während noch Geräte eingetragen sind, erzeugt QCCU **bewusst keinen** — ein neuer Schlüssel würde alle angelernten Geräte lautlos aussperren. Die Oberfläche nennt dann beide Wege: den bisherigen Stick zurückstecken (dann ist alles wie vorher), oder in der Warnkarte **„Geräte verwerfen und neu beginnen"** drücken. Danach hat der Stick einen frischen Schlüssel; die Geräte brauchen je einen Werksreset und werden neu angelernt.
+
 **Gerätetabellen (2026.8.13).** Die Parameterlisten werden jetzt je Gerätetyp und Kanalfassung zusammengesetzt, so wie es eine Zentrale von eQ-3 tut (nachgemessen an einer HmIP-PS-2, alle Kanäle deckungsgleich). Vorher bekam eine Schaltsteckdose 1087 Konfigurationsparameter angeboten — die Vereinigung aller Fassungen, samt Farbverläufen —, was Home Assistant zu Recht als „Inkonsistenz bei Geräte-Paramsets" meldete. Beim ersten Start der neuen Fassung legt QCCU die Tabellen von selbst neu an (einmal Netz für den Paketbezug nötig).
 
 ### Stick auf Werk zurücksetzen
