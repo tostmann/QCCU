@@ -54,7 +54,7 @@ COPY qccu.py qccu_radio.py qccu_web.py qccu_jsonrpc.py sticker_decode.py qccu_fi
 # Die Werkzeuge, die die Tabellen erzeugen
 COPY tables/build_paramsets.py tables/build_catalog.py ./
 COPY --from=uebersetzer /uebersetzt ./jarparam/
-COPY assets/busware_logo.png assets/busware_logo_dark.png assets/busware_icon.png ./
+COPY assets/busmatic_logo.png assets/busmatic_logo_dark.png assets/busware_icon.png ./
 # Ergaenzungen: die wenigen Parameter, die in keiner Definition stehen.
 COPY tables/paramsets_ergaenzung.json ./
 # Die Stick-Firmware, die `flash` einspielt — samt Lizenz und Vermerken

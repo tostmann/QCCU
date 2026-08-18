@@ -115,7 +115,7 @@ footer a{color:var(--mut)} footer a:hover{color:var(--acc)}
 <header>
   <picture>
     <source srcset="/logo-dark.png" media="(prefers-color-scheme: dark)">
-    <img src="logo.png" alt="busware" class="logo" onerror="this.parentNode.remove()">
+    <img src="logo.png" alt="busmatic" class="logo" onerror="this.parentNode.remove()">
   </picture>
   <h1>QUICHE</h1><span class="ver" id="ver"></span>
   <span class="sp"></span>
@@ -502,16 +502,29 @@ class WebHandler(BaseHTTPRequestHandler):
         self._send(code, json.dumps(obj))
 
     _HIER = os.path.dirname(os.path.abspath(__file__))
-    LOGO = os.path.join(_HIER, "busware_logo.png")
-    LOGO_DARK = os.path.join(_HIER, "busware_logo_dark.png")
-    ICON = os.path.join(_HIER, "busware_icon.png")
+
+    @staticmethod
+    def _bild(name):
+        """Ein Bild finden — im Abbild liegt es neben dem Programm, im
+        Arbeitsbaum unter assets/. Ohne beide Orte fehlt beim Lauf aus dem
+        Quellverzeichnis lautlos das Logo."""
+        hier = WebHandler._HIER
+        for pfad in (os.path.join(hier, name), os.path.join(hier, "assets", name)):
+            if os.path.exists(pfad):
+                return pfad
+        return os.path.join(hier, name)
+
+    # Schriftzug hell/dunkel getrennt, weil er in beiden Faellen lesbar sein
+    # muss; das Zeichen (das gruene „b") ist in beiden Marken dasselbe und
+    # dient weiter als Favicon.
 
     def do_GET(self):
         if self.path in ("/", "/index.html"):
             return self._send(200, PAGE, "text/html; charset=utf-8")
         if self.path in ("/logo.png", "/logo-dark.png", "/favicon.png"):
-            datei = {"/logo-dark.png": self.LOGO_DARK,
-                     "/favicon.png": self.ICON}.get(self.path, self.LOGO)
+            datei = self._bild({"/logo-dark.png": "busmatic_logo_dark.png",
+                                "/favicon.png": "busware_icon.png"}
+                               .get(self.path, "busmatic_logo.png"))
             try:
                 with open(datei, "rb") as f:
                     daten = f.read()
