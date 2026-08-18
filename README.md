@@ -107,12 +107,16 @@ Beim ersten Betrieb merkt sich QCCU die Seriennummer des Sticks (`stick_serial` 
 
 Angelernte Geräte überstehen ein Einspielen: Netzwerkschlüssel und Sendezähler liegen im EEPROM des Sticks und bleiben erhalten (ab Firmware 2.0.11 — ältere Fassungen holten den Schlüssel beim Start nicht zurück). Nachgeprüft: nach `erase` + `flash` meldet der Stick weiterhin seinen Schlüssel, seinen Zählerstand und seine Kennung.
 
-**Firmware 2.0.28 (mit 2026.8.12) unbedingt einspielen** — die Oberfläche bietet es an, sobald der Stick älter ist. Zwei Dinge sind darin anders, beide gemessen (Luftmitschnitte gegen eine eq-3-Zentrale, 18.08.2026):
+**Firmware 2.0.29 (mitgeliefert seit 2026.8.17) unbedingt einspielen** — die Oberfläche bietet es an, sobald der Stick älter ist. Zwei Dinge sind darin anders, beide gemessen (Luftmitschnitte gegen eine eq-3-Zentrale, 18.08.2026):
 
 * **Frequenz.** Mit den Registern der eq-3-Zentrale senden und empfangen die CUL-Sticks rund 27 kHz tiefer als sie und alle eq-3-Geräte — außerhalb dessen, was der Empfängerbaustein ausregelt. Ein Nachbargerät kam vorher nur bei jedem vierten Versuch durch, jetzt bei jedem. Die Firmware gleicht das aus (`FSCTRL0`).
 * **Quittung.** Die Zentrale von eq-3 bestätigt jeden Frame sofort mit einer kurzen 6-Byte-Quittung; ohne sie wiederholt ein Gerät jede Sendung dreimal und sucht dann einen Router. Der Stick sendet sie jetzt genauso. Sichtbar: ein Schaltbefehl ist eine Sendung, kein Dreierpack, und die Steckdose antwortet in ~100 ms.
 
 Wird ein Gerät nach einem Werksreset neu angelernt, ersetzt die neue Funkadresse die alte — Befehle gehen nicht mehr an die tote Adresse.
+
+**Startet der Stick neu, bindet QCCU von selbst wieder an (2026.8.17).** Werksreset, Firmware einspielen, ein Wackler am USB — der Stick ist Sekunden später wieder da, oft unter einer anderen Anschlussnummer. Bisher lief QCCU danach blind weiter: die Oberfläche meldete „Funk läuft", während nichts mehr ankam, und half nur ein Neustart. Jetzt wird der Verlust bemerkt, der Stick über seine gemerkte Seriennummer wiedergefunden und neu eingerichtet; im Protokoll steht, was passiert ist. Das gilt auch im Betrieb ganz ohne Oberfläche (FHEM/HMCCU über XML-RPC) — dort gab es die Suche vorher überhaupt nicht.
+
+**Die zuletzt gemeldeten Werte überstehen einen Neustart (2026.8.17).** Bisher stand nach jedem Neustart überall nichts, bis sich jedes Gerät von selbst das nächste Mal meldete — bei Geräten, die das nur alle paar Stunden tun, ist das der Unterschied zwischen einer Anzeige und einem leeren Feld. Die Werte sind dabei der letzte bekannte Stand, nicht die Wahrheit: die steht im Gerät, und von sich aus fragt QCCU weiterhin nichts ab.
 
 **Empfangspegel.** Zu jedem empfangenen Frame meldet QCCU den Pegel als `RSSI_DEVICE` an Kanal 0 — das ist die Messung des eigenen Empfängers: wie stark die Zentrale das Gerät hört. In Home Assistant liegt der Sensor unter „Diagnose" und ist dort von der Integration abgeschaltet; einmal aktivieren, dann läuft er. Den umgekehrten Weg (was das Gerät von der Zentrale hört) meldet ein HmIP-Gerät nicht, deshalb bleibt `RSSI_PEER` leer.
 
