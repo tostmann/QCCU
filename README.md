@@ -118,6 +118,8 @@ Wird ein Gerät nach einem Werksreset neu angelernt, ersetzt die neue Funkadress
 
 **Die zuletzt gemeldeten Werte überstehen einen Neustart (2026.8.17).** Bisher stand nach jedem Neustart überall nichts, bis sich jedes Gerät von selbst das nächste Mal meldete — bei Geräten, die das nur alle paar Stunden tun, ist das der Unterschied zwischen einer Anzeige und einem leeren Feld. Die Werte sind dabei der letzte bekannte Stand, nicht die Wahrheit: die steht im Gerät, und von sich aus fragt QCCU weiterhin nichts ab.
 
+**Gerät entfernen:** in der QCCU-Oberfläche, nicht in Home Assistant. Dort gelöscht verschwindet es nur aus Home Assistant und ist beim nächsten Neuladen der Integration wieder da — die Integration räumt beim Löschen nur bei sich auf und sagt der Zentrale nichts. Über QCCU gelöscht bekommt das Gerät dagegen einen Funk-Ausschluss (es lässt sich danach ohne Werksreset neu anlernen), und Home Assistant räumt von selbst auf.
+
 **Namen (2026.8.18).** Vergibt man in Home Assistant beim Anlernen einen Namen, führt QCCU ihn jetzt selbst: er steht in der Geräteauskunft und in der ReGa-Liste (also auch für FHEM/HMCCU), übersteht Neustarts und geht mit dem Gerät, wenn es gelöscht wird. Vorher wies QCCU `Device.setName` und `Channel.setName` ab und der eingegebene Name verschwand.
 
 **Empfangspegel.** Zu jedem empfangenen Frame meldet QCCU den Pegel als `RSSI_DEVICE` an Kanal 0 — das ist die Messung des eigenen Empfängers: wie stark die Zentrale das Gerät hört. In Home Assistant liegt der Sensor unter „Diagnose" und ist dort von der Integration abgeschaltet; einmal aktivieren, dann läuft er. Den umgekehrten Weg (was das Gerät von der Zentrale hört) meldet ein HmIP-Gerät nicht, deshalb bleibt `RSSI_PEER` leer.

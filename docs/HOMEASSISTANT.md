@@ -213,6 +213,27 @@ alle zurückgestellten Geräte **ohne** Namen — sie behalten „Typ + Adresse"
 Nachträglich umbenennen geht in Home Assistant weiterhin, ändert aber nur die
 dortige Anzeige; in QCCU landet der Name nur über den Reparatur-Dialog.
 
+### d) Ein Gerät wieder entfernen — in QCCU, nicht in Home Assistant
+
+⚠️ **Das Gerät in Home Assistant zu löschen entfernt es nicht.** Die
+Integration räumt dabei nur bei sich auf: `delete_device` in aiohomematic
+löscht Geräteregister und Zwischenspeicher und ruft die Zentrale überhaupt
+nicht. Nachgeprüft am Aufbau — nach dem Löschen in Home Assistant führte QCCU
+das Gerät unverändert weiter, es ging kein einziges Funktelegramm hinaus, und
+beim nächsten Neuladen der Integration war es sofort wieder da.
+
+**Richtig ist der Weg über die QCCU-Oberfläche** (Gerät → entfernen). Dann
+passiert dreierlei: das Gerät bekommt einen Funk-Ausschluss und weiß damit
+selbst, dass es entlassen ist (es lässt sich danach ohne Werksreset wieder
+anlernen — im Protokoll steht `Ausschluss <Adresse>: bestaetigt`, wenn es
+quittiert hat); QCCU meldet die Entfernung allen Gegenstellen; und in Home
+Assistant verschwinden Gerät und Entitäten daraufhin von selbst.
+
+Steht in Home Assistant gerade eine Reparatur „Neues Gerät …" offen, während
+in QCCU gelöscht wird, bleibt der Eintrag stehen. Er ist harmlos: bestätigt man
+ihn, entsteht kein Gerät — die Zentrale kennt die Adresse ja nicht mehr —, und
+die Meldung verschwindet.
+
 ---
 
 ## 6. Wenn etwas nicht geht
