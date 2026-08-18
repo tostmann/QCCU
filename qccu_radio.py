@@ -170,6 +170,8 @@ class Radio:
         self.own_addr = None
         self.netzschluessel_fehlt = False
         self._acked = {}
+        # Funkadresse -> zuletzt gemeldeter Empfangspegel (dBm).
+        self._rssi = {}
         # Funkadresse -> Ereignis: das Geraet hat den Ausschluss angenommen.
         self._exclude_ready = {}
 
@@ -679,6 +681,11 @@ class Radio:
             return
         payhex, src, dst, sec, ct = m.groups()
 
+        # Empfangspegel mitnehmen, bevor irgendein Zweig zurueckspringt: er
+        # steht in JEDER Zeile — auch in Quittungen und Rundrufmeldungen, und
+        # gerade die kommen regelmaessig, wenn sonst nichts passiert.
+        self._rssi_merken(src.lower(), payhex)
+
         if int(ct) == 4 and ACK.search(line):
             ev = self._acked.get(src.lower())
             if ev:
@@ -851,10 +858,20 @@ class Radio:
                     print(f"  <- {addr}:{channel} {param}={wert}{einheit}")
                 return
 
+        # Nicht gedeutet — dann wenigstens beim Namen nennen, unter dem eq-3
+        # den Wert fuehrt. Der Wert selbst bleibt roh: eine Skalierung, die
+        # wir nicht an einem Geraet gemessen haben, waere geraten (und in
+        # Volt oder Prozent faellt so etwas erst spaet auf).
         raw = "".join(f"{x:02X}" for x in value)
         self.qccu.set_value_internal(addr, channel, f"RAW_SDT{sdt}", raw)
         if self.verbose:
-            print(f"  <- {addr}:{channel} SDT{sdt}={raw} (ungedeutet)")
+            name = None
+            try:
+                name = self.t.sdt_name(sdt)
+            except Exception:                            # noqa: BLE001
+                pass
+            wie = f"SDT{sdt} ({name})" if name else f"SDT{sdt}"
+            print(f"  <- {addr}:{channel} {wie}={raw} (ungedeutet)")
 
     def _sender(self):
         """Einziger Schreiber auf der Leitung."""
@@ -947,6 +964,57 @@ class Radio:
                      "zeit", time.time() + self.answer_delay)
         if self.verbose:
             print(f"  Zeit an {hmid}: {time.strftime('%a %d.%m.%Y %H:%M:%S')}")
+
+    # Ab welcher Aenderung ein neuer Pegel gemeldet wird. Der Wert schwankt
+    # von Frame zu Frame um ein bis zwei dB; jede Zuckung zu melden fuellte
+    # die Aufzeichnung der Gegenstelle, ohne etwas zu sagen.
+    RSSI_SCHWELLE = 3
+
+    def _rssi_merken(self, src, payhex):
+        """Empfangspegel eines Geraeteframes festhalten und melden.
+
+        Der Stick haengt an jede Zeile `<rssi><lqi>` hinter die Nutzlast; der
+        Pegel ist ein Zweierkomplement in dBm, wie der CC1101 ihn nach
+        Datenblatt 17.3 liefert (die Umrechnung macht die Firmware).
+
+        Gemeldet wird als **`RSSI_DEVICE`** an Kanal 0 — der Parameter, den
+        eine Zentrale von eQ-3 dort fuehrt (an der HmIP-PS-2 nachgesehen:
+        `RSSI_DEVICE` und `RSSI_PEER`, beide INTEGER −128…127) und den die
+        Gegenstelle als Signalstaerke des Geraets liest
+        (`aiohomematic … device.signal_strength`).
+
+        ⚠️ Was hier steht, ist **unsere Messung: wie stark WIR das Geraet
+        hoeren.** Den umgekehrten Weg — was das Geraet von uns empfaengt —
+        meldet es uns nicht; in keinem Statusframe steckt so ein Wert.
+        `RSSI_PEER` bleibt daher leer, statt eine Zahl zu erfinden.
+        """
+        q = self.qccu
+        addr = self.by_hmid.get(src)
+        if not addr or q is None or not hasattr(q, "set_value_internal"):
+            return
+        try:
+            b = bytes.fromhex(payhex)
+        except ValueError:
+            return
+        if not b:
+            return
+        ln = b[0]
+        if len(b) < 1 + ln + 2:            # ohne <rssi><lqi> nichts zu holen
+            return
+        wert = b[1 + ln] - 256 if b[1 + ln] > 127 else b[1 + ln]
+        if wert == 0 or wert < -128 or wert > 0:
+            # 0 und positive Werte sind kein Pegel, sondern eine Zeile ohne
+            # Messung (oder eine Firmware vor 2.0.22, die falsch rechnete).
+            return
+        vorher = self._rssi.get(src)
+        self._rssi[src] = wert
+        if vorher is not None and abs(wert - vorher) < self.RSSI_SCHWELLE:
+            return
+        try:
+            q.set_value_internal(addr, 0, "RSSI_DEVICE", wert)
+        except Exception as ex:                          # noqa: BLE001
+            if self.verbose:
+                print(f"  ! Pegel nicht vermerkt: {ex}")
 
     def _icmp(self, payhex, src, dst, sn, stick_acked=False):
         """Ein ICMPv6-Frame: auswerten, vermerken, beantworten."""

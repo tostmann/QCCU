@@ -16,7 +16,7 @@ from xmlrpc.server import SimpleXMLRPCServer, SimpleXMLRPCRequestHandler
 # zugleich die Marke des Abbilds auf Docker Hub UND der Wert von `version`
 # in addon/config.yaml — der Supervisor zieht `<image>:<version>`. Wer hier
 # hochzaehlt, muss beides mitziehen, sonst schlaegt die Installation fehl.
-VERSION = "2026.8.15"
+VERSION = "2026.8.16"
 PRODUKT = "QCCU"
 NAME_UND_FASSUNG = f"{PRODUKT} {VERSION}"
 
@@ -49,6 +49,7 @@ class Tables:
         # Tabellen fuehren `KANALTYP/vN`. Beide werden gelesen; welche
         # vorliegt, entscheidet der Schluessel.
         self.alt = not any("/v" in k for k in self.paramsets)
+        self._sdt_namen = None
 
     def _load(self, base, name, pflicht=True):
         p = os.path.join(base, name)
@@ -97,6 +98,23 @@ class Tables:
                 if fassungen:
                     e = self.paramsets.get(f"{channel_type}/v{fassungen[0]}")
         return (e or {}).get(pset, {})
+
+    def sdt_name(self, nummer):
+        """Name eines Statusdatentyps, wie eq-3 ihn fuehrt (`sdt_table.json`).
+
+        Die Tabelle ist nach Namen sortiert (`{"OPERATING_VOLTAGE": {"type": 3,
+        "len": 1}, …}`) — hier wird sie einmal umgedreht. Gebraucht wird das
+        fuer Werte, die wir NOCH NICHT deuten: im Protokoll steht dann nicht
+        bloss „SDT3", sondern der Name, unter dem der Wert bei eq-3 laeuft.
+        So ist beim ersten Geraet, das einen solchen Wert schickt, sofort zu
+        sehen, worum es geht — ohne dass wir eine Skalierung erfinden muessen.
+        """
+        if self._sdt_namen is None:
+            self._sdt_namen = {}
+            for name, e in (self.sdt or {}).items():
+                if isinstance(e, dict) and isinstance(e.get("type"), int):
+                    self._sdt_namen.setdefault(e["type"], name)
+        return self._sdt_namen.get(nummer)
 
     def chinfo_of(self, devtype, kanal):
         """Fassung und geraeteeigene Parameter eines Kanals."""

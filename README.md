@@ -114,6 +114,8 @@ Angelernte Geräte überstehen ein Einspielen: Netzwerkschlüssel und Sendezähl
 
 Wird ein Gerät nach einem Werksreset neu angelernt, ersetzt die neue Funkadresse die alte — Befehle gehen nicht mehr an die tote Adresse.
 
+**Empfangspegel.** Zu jedem empfangenen Frame meldet QCCU den Pegel als `RSSI_DEVICE` an Kanal 0 — das ist die Messung des eigenen Empfängers: wie stark die Zentrale das Gerät hört. In Home Assistant liegt der Sensor unter „Diagnose" und ist dort von der Integration abgeschaltet; einmal aktivieren, dann läuft er. Den umgekehrten Weg (was das Gerät von der Zentrale hört) meldet ein HmIP-Gerät nicht, deshalb bleibt `RSSI_PEER` leer.
+
 **Stick gewechselt oder zurückgesetzt?** Steckt ein Stick ohne Netzwerkschlüssel, während noch Geräte eingetragen sind, erzeugt QCCU **bewusst keinen** — ein neuer Schlüssel würde alle angelernten Geräte lautlos aussperren. Die Oberfläche nennt dann beide Wege: den bisherigen Stick zurückstecken (dann ist alles wie vorher), oder in der Warnkarte **„Geräte verwerfen und neu beginnen"** drücken. Danach hat der Stick einen frischen Schlüssel; die Geräte brauchen je einen Werksreset und werden neu angelernt.
 
 **Gerätetabellen (2026.8.13).** Die Parameterlisten werden jetzt je Gerätetyp und Kanalfassung zusammengesetzt, so wie es eine Zentrale von eQ-3 tut (nachgemessen an einer HmIP-PS-2, alle Kanäle deckungsgleich). Vorher bekam eine Schaltsteckdose 1087 Konfigurationsparameter angeboten — die Vereinigung aller Fassungen, samt Farbverläufen —, was Home Assistant zu Recht als „Inkonsistenz bei Geräte-Paramsets" meldete. Beim ersten Start der neuen Fassung legt QCCU die Tabellen von selbst neu an (einmal Netz für den Paketbezug nötig).

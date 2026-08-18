@@ -217,6 +217,20 @@ anlegen (`docker run --rm -v qccu-data:/data tostmann/qccu setup`) und in Home
 Assistant den Dienst **`homematicip_local.clear_cache`** aufrufen — die
 Integration hält die Parameterbeschreibungen sonst dauerhaft fest.
 
+**Kein Empfangspegel, keine Temperatur, kein Sendezeitkonto zu sehen**
+Diese Werte legt die Integration als **Diagnose-Entitäten an und schaltet sie
+von sich aus ab** (`disabled_by: integration`) — das ist ihre Voreinstellung,
+unabhängig von QCCU. Sie stehen in der Geräteansicht unter „Diagnose"
+(ausgeblendete Entitäten einblenden) und lassen sich dort einzeln aktivieren:
+`…_rssi_device`, `…_duty_cycle`, `…_temperature`, die Zeitprofil-Schalter.
+QCCU liefert den Pegel seit 2026.8.16 zu jedem empfangenen Frame — auch aus
+Quittungen und Nachbarschaftsmeldungen, damit er nicht einschläft, wenn das
+Gerät gerade nichts zu sagen hat.
+
+⚠️ **`RSSI_PEER` bleibt leer.** Das wäre der Pegel, mit dem das *Gerät* die
+Zentrale hört; er steht in keinem Frame, den es sendet. Eine Zahl dort wäre
+erfunden.
+
 **„Der Stick hat keinen Netzwerkschlüssel"**
 Fast immer nach einem Stick-Wechsel oder einem Werksreset des Sticks. Sind
 noch Geräte eingetragen, erzeugt QCCU absichtlich keinen neuen — er würde sie
