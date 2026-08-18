@@ -292,6 +292,11 @@ class QCCU:
         self.rf = {}
         self.pair_next_addr = None
         self.stick_serial = None
+        # Wann zuletzt ein Wert von welchem Geraet kam — damit sichtbar ist,
+        # wie alt der gesicherte Stand ist.
+        self._wert_zeit = {}
+        self._werte_offen = False
+        self._werte_zuletzt = 0.0
         self.own_addr = None
         self.interface_name = "HmIP-RF"
         self.own_host = "127.0.0.1"
@@ -340,6 +345,13 @@ class QCCU:
                                 e.get("firmware", "1.0.0"), announce=False)
                 if e.get("rf"):
                     self.rf[addr.upper()] = e["rf"].lower()
+                gd = self.devices.get(addr.upper())
+                for k, v in (e.get("values") or {}).items():
+                    kanal, _, name = k.partition(":")
+                    if gd is not None and kanal.isdigit() and name:
+                        gd.values[(int(kanal), name)] = v
+                if e.get("values_zeit"):
+                    self._wert_zeit[addr.upper()] = e["values_zeit"]
                 n += 1
             except Exception as ex:
                 print(f"  ! Geraet {addr} nicht ladbar: {ex}")
@@ -358,7 +370,19 @@ class QCCU:
         with self.lock:
             data = {"devices": {a: {"devtype": d.devtype,
                                     "firmware": d.firmware,
-                                    "rf": self.rf.get(a)}
+                                    "rf": self.rf.get(a),
+                                    # Die zuletzt gemeldeten Werte. Sie sind
+                                    # nicht die Wahrheit — die steht im Geraet
+                                    # —, aber sie sind der letzte bekannte
+                                    # Stand, und ohne sie steht nach einem
+                                    # Neustart bis zur naechsten Meldung
+                                    # ueberall nichts. Bei Geraeten, die sich
+                                    # nur alle paar Stunden ruehren, ist das
+                                    # der Unterschied zwischen einer Anzeige
+                                    # und einem leeren Feld.
+                                    "values": {f"{c}:{p}": v
+                                               for (c, p), v in d.values.items()},
+                                    "values_zeit": self._wert_zeit.get(a)}
                                 for a, d in self.devices.items()}}
         if self.pair_next_addr:
             data["pair_next_addr"] = self.pair_next_addr
@@ -392,9 +416,28 @@ class QCCU:
             if not d:
                 return False
             d.values[(int(channel), param)] = value
+            self._wert_zeit[key] = int(time.time())
         self.note_reachable(key, True)
         self._notify(f"{key}:{channel}", param, value)
+        self._werte_sichern()
         return True
+
+    # Wie oft die Werte hoechstens auf die Platte gehen. Bei jeder Meldung zu
+    # schreiben waere teuer und unnoetig: was zaehlt, ist dass nach einem
+    # Neustart ein brauchbarer Stand da ist, nicht der allerletzte.
+    WERTE_ABSTAND = 20.0
+
+    def _werte_sichern(self, sofort=False):
+        """Die Werte sichern — hoechstens alle paar Sekunden."""
+        if not self.store:
+            return
+        jetzt = time.time()
+        self._werte_offen = True
+        if not sofort and jetzt - self._werte_zuletzt < self.WERTE_ABSTAND:
+            return
+        self._werte_zuletzt = jetzt
+        self._werte_offen = False
+        self.save_store()
 
     def setInstallMode(self, on, seconds=60, mode=1, address=None):
         with self.lock:
@@ -1215,6 +1258,7 @@ def main():
         Anschluss ueberhaupt noch existiert; ist er weg, wird der Pfad
         verworfen und von vorn gesucht. (Am Aufbau nachgestellt: Stick von der
         virtuellen Maschine getrennt — der Zustand blieb auf „angebunden".)
+
         """
         while True:
             time.sleep(pause)
@@ -1338,10 +1382,27 @@ def main():
               f"(hier wird angelernt — HMCCU kann das nicht)")
     print("  bereit — mit Strg-C beenden")
 
+    # Docker/HA halten den Behaelter mit SIGTERM an, nicht mit Strg-C. Der
+    # ausstehende Wertestand gehoert dabei noch auf die Platte: gesichert wird
+    # gedrosselt, also fehlten sonst die letzten Sekunden — und das ist genau
+    # der Stand, den ein Neustart sehen soll.
+    try:
+        import signal
+
+        def _term(_sig, _frm):
+            raise KeyboardInterrupt
+        signal.signal(signal.SIGTERM, _term)
+    except Exception:                                # noqa: BLE001
+        pass
+
     try:
         while True:
             time.sleep(3600)
     except KeyboardInterrupt:
+        try:
+            lc._werte_sichern(sofort=True)
+        except Exception:                            # noqa: BLE001
+            pass
         print("\n  beendet")
     return 0
 
