@@ -161,6 +161,12 @@ class Radio:
         # da ist (ein verschwundenes Geraet laesst das Objekt bestehen).
         self.port = port
         self.ser = serial.serial_for_url(port, baud, timeout=0.3, exclusive=True)
+        # Ist der Zugang unbrauchbar geworden? Das Objekt bleibt danach
+        # bestehen (andere Faeden halten es noch), taugt aber zu nichts mehr;
+        # der Waechter in qccu.py sieht hier nach und bindet neu an.
+        self.tot = False
+        self.tot_grund = None
+        self._lesefehler = 0
         self.by_hmid = {}
         self.appseq = {}
         self.devseq = {}
@@ -576,11 +582,66 @@ class Radio:
             pass
         self.ser = None
 
+    # Wie viele Lesefehler in Folge geduldet werden, wenn der Fehler nicht
+    # schon von sich aus eindeutig ist. Je Fehler wird eine halbe Sekunde
+    # gewartet — nach fuenf Sekunden ohne einen einzigen brauchbaren Zugriff
+    # ist der Anschluss nicht bloss kurz beschaeftigt.
+    LESEFEHLER_GRENZE = 10
+
+    @staticmethod
+    def _zugang_hin(ex):
+        """Sagt dieser Fehler schon fuer sich, dass der Anschluss weg ist?"""
+        if isinstance(ex, serial.SerialException):
+            return True
+        if isinstance(ex, AttributeError):        # ser ist None (Einspielen)
+            return True
+        if isinstance(ex, OSError):
+            # 5 Ein-/Ausgabefehler · 6 kein solches Geraet · 9 falscher
+            # Deskriptor · 19 Geraet existiert nicht · 77 Deskriptor kaputt
+            return getattr(ex, "errno", None) in (5, 6, 9, 19, 77)
+        return False
+
+    def _abmelden(self, grund):
+        """Den Zugang aufgeben und den Anschluss loslassen.
+
+        ⚠️ Nach einem Neustart des Sticks — Werksreset, Wachhund, Einspielen,
+        kurz abgezogen — ist der geoeffnete Anschluss unbrauchbar, AUCH WENN
+        das Geraet gleich darauf wieder da ist: der alte Deskriptor gehoert
+        zu einer Verbindung, die es nicht mehr gibt, und der Pfad kann beim
+        Wiederkommen sogar eine andere Nummer tragen. Wer hier weiterliest,
+        bekommt bis in alle Ewigkeit denselben Fehler — und QCCU meldete
+        derweil munter „Funk laeuft", waehrend nichts mehr ankam. (Am Aufbau
+        nachgestellt: nach `mV` und nach dem Wachhund-Neustart.)
+
+        Das Anbinden macht absichtlich NICHT dieser Faden, sondern der
+        Waechter in qccu.py — dort liegt sie schon, samt Suche nach der
+        gemerkten Seriennummer, Einrichtung und CUL-Zugang.
+        """
+        if self.tot:
+            return
+        self.tot = True
+        self.tot_grund = str(grund)
+        print(f"  ! Funkzugang verloren ({grund}) — der Stick wird neu gesucht.")
+        try:
+            self.stop()
+        except Exception:                            # noqa: BLE001
+            pass
+        try:
+            if self.ser is not None:
+                self.ser.close()
+        except Exception:                            # noqa: BLE001
+            pass
+
     def _loop(self):
         while not self._stop:
             try:
                 line = self.ser.readline().decode("ascii", "replace").strip()
-            except Exception:
+                self._lesefehler = 0
+            except Exception as ex:                  # noqa: BLE001
+                self._lesefehler += 1
+                if self._zugang_hin(ex) or self._lesefehler >= self.LESEFEHLER_GRENZE:
+                    self._abmelden(f"Lesen: {ex}")
+                    return
                 time.sleep(0.5)
                 continue
             if line:
@@ -900,9 +961,17 @@ class Radio:
                 self.ser.write(job.cmd.encode() + b"\r\n")
                 self.ser.flush()
                 self._log(">>", f"{job.cmd}  [{job.kind}]")
-            except Exception as ex:
+            except Exception as ex:                  # noqa: BLE001
                 self._log("##", f"Schreiben scheiterte: {ex}")
                 job.verdict = "err"
+                # Ein geschlossener oder verschwundener Anschluss meldet sich
+                # auch hier — und zwar frueher als beim Lesen, wenn gerade
+                # niemand sendet.
+                if self._zugang_hin(ex):
+                    job.written.set()
+                    job.done.set()
+                    self._abmelden(f"Schreiben: {ex}")
+                    return
             job.written.set()
 
             if job.expect is not None:
@@ -1188,6 +1257,7 @@ class Radio:
         self._read_counters()
         return {"counters": self.counters, "budget": self.budget,
                 "own_addr": self.own_addr,
+                "tot": bool(self.tot), "tot_grund": self.tot_grund,
                 # Ohne Netzwerkschluessel schlaegt jedes Anlernen fehl. Der
                 # Zustand stand frueher nur im Protokoll — die Oberflaeche
                 # meldete derweil „Firmware aktuell", und der Anwender suchte

@@ -1259,14 +1259,29 @@ def main():
         verworfen und von vorn gesucht. (Am Aufbau nachgestellt: Stick von der
         virtuellen Maschine getrennt — der Zustand blieb auf „angebunden".)
 
+        ⚠️ Und umgekehrt: der Anschluss kann DA sein und trotzdem tot. Startet
+        der Stick neu — Werksreset, Wachhund, Einspielen, ein kurzer Wackler —,
+        dann kommt das Geraet binnen Sekunden zurueck, oft unter einer anderen
+        Nummer, waehrend der geoeffnete Deskriptor zu einer Verbindung gehoert,
+        die es nicht mehr gibt. Der Pfad existiert also, und die Pruefung oben
+        griffe nie. Der Funkpfad meldet sich in diesem Fall selbst ab (`tot`),
+        und hier wird er wie ein verschwundener behandelt: loesen, suchen,
+        einrichten. Gesucht wird ueber die gemerkte Seriennummer, damit die
+        neue Nummer des Anschlusses egal ist.
         """
         while True:
             time.sleep(pause)
             r = getattr(lc, "radio", None)
             if r is not None:
                 pfad = getattr(r, "port", None) or getattr(lc, "serial_path", None)
-                if pfad and not os.path.exists(pfad):
-                    print(f"  ! Der Stick ist weg ({pfad}) — Funk wird geloest.")
+                weg  = bool(pfad) and not os.path.exists(pfad)
+                tot  = bool(getattr(r, "tot", False))
+                if weg or tot:
+                    if weg:
+                        print(f"  ! Der Stick ist weg ({pfad}) — Funk wird geloest.")
+                    else:
+                        print(f"  ! Der Zugang zum Stick ist tot "
+                              f"({getattr(r, 'tot_grund', None)}) — Funk wird geloest.")
                     try:
                         r.stop()
                     except Exception:                # noqa: BLE001
@@ -1277,7 +1292,11 @@ def main():
                         WebHandler.radio = None
                     except Exception:                # noqa: BLE001
                         pass
-                    g.serial = None
+                    # Den festen Pfad nur dann aufgeben, wenn wir den Stick an
+                    # seiner Seriennummer wiederfinden koennen; sonst bliebe
+                    # nach einem Neustart gar nichts, woran zu suchen waere.
+                    if lc.stick_serial or weg:
+                        g.serial = None
                 else:
                     continue
             try:
@@ -1376,16 +1395,27 @@ def main():
                              "interface": lc.interface_name,
                              "rpc_port": g.rpc_port,
                              "json_port": g.json_port})
-        threading.Thread(target=stick_waechter, daemon=True).start()
         host = g.advertise or ("127.0.0.1" if g.bind == "0.0.0.0" else g.bind)
         print(f"  Weboberflaeche auf http://{host}:{g.web_port}/  "
               f"(hier wird angelernt — HMCCU kann das nicht)")
+    # Der Waechter gehoert NICHT zur Oberflaeche: dass der Stick spaeter
+    # dazukommt oder neu startet, passiert genauso bei einem Betrieb allein
+    # ueber XML-RPC (FHEM/HMCCU). Frueher hing er am Web-Zweig — wer die
+    # Oberflaeche abschaltete, hatte auch keine Wiederanbindung.
+    threading.Thread(target=stick_waechter, daemon=True).start()
     print("  bereit — mit Strg-C beenden")
 
-    # Docker/HA halten den Behaelter mit SIGTERM an, nicht mit Strg-C. Der
-    # ausstehende Wertestand gehoert dabei noch auf die Platte: gesichert wird
-    # gedrosselt, also fehlten sonst die letzten Sekunden — und das ist genau
-    # der Stand, den ein Neustart sehen soll.
+    def beenden(grund):
+        # Der ausstehende Wertestand gehoert noch auf die Platte: gesichert
+        # wird gedrosselt, also fehlen sonst die letzten Sekunden — und das
+        # ist genau der Stand, den ein Neustart sehen soll.
+        try:
+            lc._werte_sichern(sofort=True)
+        except Exception:                            # noqa: BLE001
+            pass
+        print(f"\n  beendet ({grund})")
+
+    # Docker/HA halten den Behaelter mit SIGTERM an, nicht mit Strg-C.
     try:
         import signal
 
@@ -1399,11 +1429,7 @@ def main():
         while True:
             time.sleep(3600)
     except KeyboardInterrupt:
-        try:
-            lc._werte_sichern(sofort=True)
-        except Exception:                            # noqa: BLE001
-            pass
-        print("\n  beendet")
+        beenden("Abbruch")
     return 0
 
 
