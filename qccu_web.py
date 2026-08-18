@@ -136,12 +136,21 @@ footer a{color:var(--mut)} footer a:hover{color:var(--acc)}
   <div class="body">
     <p>Ohne ihn schlägt <b>jedes Anlernen</b> fehl — der Schlüssel ist das,
       womit die Zentrale ihr Funknetz zusammenhält.</p>
-    <p class="hint">Er entsteht beim Einrichten von selbst. Bleibt diese
-      Meldung stehen, hilft ein <b>Neustart</b> (Behälter oder Erweiterung);
-      der Stick wird dabei erneut eingerichtet. Sind bereits Geräte
-      eingetragen, wird <b>bewusst keiner</b> erzeugt — das würde alle
-      aussperren, und zwar lautlos. Dann gehört der bisherige Stick zurück,
-      oder die Geräte müssen gelöscht und neu angelernt werden.</p>
+    <!-- Zwei Lagen, zwei Ratschläge. Welcher zutrifft, hängt allein daran,
+         ob schon Geräte eingetragen sind; bisher stand beides als ein Absatz
+         da, und wer den Stick gewechselt hatte, las den falschen. Denselben
+         Unterschied macht der Start im Protokoll. -->
+    <p class="hint" id="nwk_leer">Er entsteht beim Einrichten von selbst.
+      Bleibt diese Meldung stehen, hilft ein <b>Neustart</b> (Behälter oder
+      Erweiterung); der Stick wird dabei erneut eingerichtet.</p>
+    <p class="hint" id="nwk_geraete" style="display:none">Es sind
+      <b id="nwk_anzahl">Geräte</b> eingetragen, deshalb wird
+      <b>bewusst keiner erzeugt</b> — ein neuer Schlüssel würde sie alle
+      aussperren, und zwar lautlos. Zwei Wege führen weiter: den
+      <b>bisherigen Stick zurückstecken</b> (dann ist alles wie vorher), oder
+      die Geräte hier <b>löschen und neu anlernen</b>. Ein Stick, der eben
+      erst auf Werk zurückgesetzt oder ausgetauscht wurde, ist der häufigste
+      Grund für diese Meldung.</p>
   </div>
 </div>
 
@@ -353,7 +362,15 @@ async function laden(){
   // Fehlt der Netzwerkschluessel, ist ueberhaupt kein Anlernen moeglich —
   // das gehoert genauso nach oben wie fehlende Beschreibungen.
   const kn=$('#karte_nwk');
-  if(kn) kn.style.display = (s.radio&&s.radio.netzschluessel_fehlt) ? '' : 'none';
+  if(kn){
+    kn.style.display = (s.radio&&s.radio.netzschluessel_fehlt) ? '' : 'none';
+    // Welcher der beiden Ratschläge gilt, entscheidet die Zahl der Geräte.
+    const n=(s.devices||[]).length, leer=$('#nwk_leer'), mit=$('#nwk_geraete');
+    if(leer) leer.style.display = n ? 'none' : '';
+    if(mit)  mit.style.display  = n ? '' : 'none';
+    const za=$('#nwk_anzahl');
+    if(za) za.textContent = (n===1) ? 'ein Gerät' : (n+' Geräte');
+  }
   const tb=s.tabellen||{};
   const kt=$('#karte_tabellen');
   if(kt){
