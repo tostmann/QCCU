@@ -19,19 +19,28 @@ except ImportError:
 
 DEC = re.compile(r"^PM([0-9A-Fa-f]+)\s+src=([0-9A-Fa-f]{6})\s+dst=([0-9A-Fa-f]{6})"
                  r"\s+sec=(\d+)\s+ct=(\d+)")
-ACK = re.compile(r"\bct=4\b.*\bar=1\b")
+# ct=4 mit ack=: `ar=1` quittiert eine Quittung, `ar=3` einen inhaltlichen
+# Frame — beides bestaetigt, dass unser Frame beim Geraet war.
+ACK = re.compile(r"\bct=4\b.*\back=")
 ACKSEQ = re.compile(r"\back=([0-9A-Fa-f]{8})")
+# Kurzquittung (q-culfw >= 2.0.26): 6-Byte-Frame des Peers auf unseren letzten
+# Frame — DAS ist die MAC-Quittung, die die echte Zentrale und die Geraete
+# austauschen (Luftmitschnitt 18.08.2026); ct=4 folgt nur auf die CONFIRMATION.
+KURZQUITTUNG = re.compile(r"^PK from=([0-9A-Fa-f]{6}) for=([0-9A-Fa-f]{6})")
 FLAGS = re.compile(r"\bf=([0-9A-Fa-f]{2})\b")
 SEQ = re.compile(r"\bsn=([0-9A-Fa-f]{8})")
+# k6tx/k6rx (Kurzquittungen gesendet/empfangen) gibt es seit q-culfw 2.0.26;
+# aeltere Sticks lassen die beiden Felder weg — beides muss passen.
 CNT = re.compile(r"^Pm\s+rx=(\d+)\s+ok=(\d+)\s+mic=(\d+)\s+dup=(\d+)"
-                 r"\s+acks=(\d+)\s+fwd=(\d+)\s+tx=(\d+)\s+txerr=(\d+)")
+                 r"\s+acks=(\d+)(?:\s+k6tx=(\d+)\s+k6rx=(\d+))?"
+                 r"\s+fwd=(\d+)\s+tx=(\d+)\s+txerr=(\d+)")
 RAW = re.compile(r"^P([0-9A-Fa-f]{4,})$")
 STICKSEQ = re.compile(r"^Pm (?:ein|aus) .*\bsn=([0-9A-Fa-f]{8})")
 BUDGET = re.compile(r"^Pm budget=(\d) credit=(\d+)/(\d+) lovf=(\d+)")
 TX_OK = re.compile(r"^Pm tx ok")
 TX_NO = re.compile(r"^(?:Pm (?:ERR|NUR-LESEN)|\?\s*$)")
 
-CNT_KEYS = ("rx", "ok", "mic", "dup", "acks", "fwd", "tx", "txerr")
+CNT_KEYS = ("rx", "ok", "mic", "dup", "acks", "k6tx", "k6rx", "fwd", "tx", "txerr")
 
 FT_ANSWER = 2
 FT_STATUS = 5
@@ -267,9 +276,22 @@ class Radio:
                 print(f"  ! ZAEHLERSTAND NICHT GESICHERT: {ex}")
 
     def bind(self, hmid, ccu_address):
-        """Funkadresse und Zentralen-Adresse einander zuordnen."""
+        """Funkadresse und Zentralen-Adresse einander zuordnen.
+
+        Ein Geraet hat genau EINE Funkadresse. Wird dieselbe Kennung neu
+        angelernt (Werksreset, dann wieder Taste), bekommt sie eine neue
+        Adresse — die alte Zuordnung muss weg, sonst gehen Befehle weiter an
+        die tote Adresse (18.08.2026: ecd412 statt ecd413, „keine Quittung
+        nach 3 Versuchen", obwohl das Geraet gerade sauber angelernt war).
+        """
         with self.lock:
-            self.by_hmid[hmid.lower()] = ccu_address.upper()
+            ccu = ccu_address.upper()
+            for alt in [h for h, a in self.by_hmid.items()
+                        if a == ccu and h != hmid.lower()]:
+                del self.by_hmid[alt]
+                if self.verbose:
+                    print(f"  Funk {alt} <-> {ccu} ersetzt")
+            self.by_hmid[hmid.lower()] = ccu
         if hasattr(self.qccu, "note_rf"):
             self.qccu.note_rf(ccu_address, hmid)
         if self.verbose:
@@ -524,6 +546,15 @@ class Radio:
                 job.done.set()
             return
 
+        mk = KURZQUITTUNG.match(line)
+        if mk:
+            peer = mk.group(1).lower()
+            ev = self._acked.get(peer)
+            if ev:
+                self._log("##", f"Kurzquittung von {peer}")
+                ev.set()
+            return
+
         msq = STICKSEQ.match(line)
         if msq:
             v = int(msq.group(1), 16)
@@ -540,7 +571,7 @@ class Radio:
 
         mc = CNT.match(line)
         if mc:
-            self.counters = dict(zip(CNT_KEYS, (int(x) for x in mc.groups())))
+            self.counters = dict(zip(CNT_KEYS, (int(x or 0) for x in mc.groups())))
             self._cnt_ev.set()
             return
 
@@ -575,6 +606,19 @@ class Radio:
                 ev.set()
             return
 
+        # HUCKEPACK-Quittung: hat das Geraet auf unseren Frame gleich etwas
+        # zu sagen (Statusmeldung auf einen Schaltbefehl), setzt es im Kopf
+        # seines naechsten Frames das piggybackACK-Bit statt eine eigene
+        # Kurzquittung zu senden — so macht es das auch bei der eq-3-Zentrale
+        # (Luftmitschnitt 18.08.2026). Der Frame ist damit Quittung UND
+        # Inhalt: vermerken und normal weiterverarbeiten.
+        mf = FLAGS.search(line)
+        if mf and int(mf.group(1), 16) & 0x40:
+            ev = self._acked.get(src.lower())
+            if ev:
+                self._log("##", f"Huckepack-Quittung von {src.lower()}")
+                ev.set()
+
         if (self._pair_expect and src.lower() == self._pair_expect
                 and int(sec) >= 1):
             self._pair_ok.set()
@@ -595,8 +639,12 @@ class Radio:
 
         if int(ct) == CT_ICMP:
             ms = SEQ.search(line)
+            # `a=1`: der Stick hat den Rundruf schon selbst quittiert
+            # (q-culfw icmp_ack, Vorgabe an) — dann keine zweite Quittung
+            # von hier; die Zentrale von eq-3 schickt genau eine.
             self._icmp(payhex, src.lower(), dst.lower(),
-                       ms.group(1) if ms else None)
+                       ms.group(1) if ms else None,
+                       stick_acked=(" a=1" in line))
             return
 
         if int(ct) != 0 or int(sec) < 1:
@@ -819,7 +867,7 @@ class Radio:
         if self.verbose:
             print(f"  Zeit an {hmid}: {time.strftime('%a %d.%m.%Y %H:%M:%S')}")
 
-    def _icmp(self, payhex, src, dst, sn):
+    def _icmp(self, payhex, src, dst, sn, stick_acked=False):
         """Ein ICMPv6-Frame: auswerten, vermerken, beantworten."""
         try:
             raw = bytes.fromhex(payhex)
@@ -852,7 +900,7 @@ class Radio:
 
         to_group = dst in GROUP_ADDR
 
-        if t == ICMP_NEIGHBOR_ADVERTISEMENT and to_group and sn:
+        if t == ICMP_NEIGHBOR_ADVERTISEMENT and to_group and sn and not stick_acked:
             self._submit(f"mT41{src.upper()}00{MAC_ROLE_CENTRAL:02X}{sn.upper()}",
                          "answer")
             return
@@ -1067,14 +1115,22 @@ class Radio:
                 return "LocalKey ist keine gueltige Hexzahl"
             src = "LocalKey"
         elif st:
-            if len(st) != 26:
-                return (f"Aufkleber hat {len(st)} statt 26 Zeichen "
-                        f"(Form ABCEF-GHJKL-MNPQR-STUWX-YZ2345)")
-            try:
-                key = sticker_to_local_key(st)
-            except ValueError as ex:
-                return f"Aufkleber enthaelt ein unzulaessiges Zeichen ({ex})"
-            src = "Aufkleber"
+            # Wer die 32 Hexziffern zur Hand hat, soll sie hier eintragen
+            # duerfen — die Anleitung nennt beide Formen, und ein Anwender
+            # kann nicht wissen, dass sie intern in zwei Feldern liegen.
+            if len(st) == 32 and all(c in "0123456789ABCDEF" for c in st):
+                key = bytes.fromhex(st)
+                src = "LocalKey"
+            else:
+                if len(st) != 26:
+                    return (f"Aufkleber hat {len(st)} statt 26 Zeichen "
+                            f"(Form ABCEF-GHJKL-MNPQR-STUWX-YZ2345) — "
+                            f"oder 32 Hexziffern")
+                try:
+                    key = sticker_to_local_key(st)
+                except ValueError as ex:
+                    return f"Aufkleber enthaelt ein unzulaessiges Zeichen ({ex})"
+                src = "Aufkleber"
         else:
             return "Aufkleber oder LocalKey noetig"
 
@@ -1173,7 +1229,12 @@ class Radio:
         self._pair_ok.clear()
         self._pair_expect = newa.hex().lower()
 
-        self._submit("As" + bytes([len(acc)]).hex().upper() + acc.hex().upper(), "cmd")
+        # ⚠️ `As` ist das EINZIGE Kommando, auf das der Stick kein `Pm tx ok`
+        # gibt (culfw-Stil: rohes Senden, kein Echo). Als "cmd" eingereiht
+        # wartete der Sender 1,2 s vergeblich auf das Urteil — und in genau
+        # dieser Zeit fragt das frisch angelernte Geraet schon nach der Zeit.
+        # Der Beweis, dass das Angebot raus war, ist ohnehin die Bestaetigung.
+        self._submit("As" + bytes([len(acc)]).hex().upper() + acc.hex().upper(), "raw")
         self.pair_last = f"Angebot gesendet, Geraet bekommt {newa.hex()}"
         self._log("##", f"ANLERNEN Angebot -> {newa.hex()}")
 
@@ -1188,18 +1249,31 @@ class Radio:
                 print("  ! Anlernen: keine Bestaetigung, nichts eingetragen")
             return
 
-        time.sleep(2.5)
+        # ZUERST das Geraet eintragen und die Funkadresse binden — vor allem
+        # anderen. Die erste Anfrage des Geraets (Zeit, Zustand) kommt rund
+        # eine Sekunde nach der Bestaetigung; wer sie als „fremden Absender"
+        # verwirft, treibt das Geraet in die Router-Suche (E00002), und aus
+        # der kommt es ohne Werksreset nicht mehr heraus — es wiederholt dann
+        # JEDE Sendung dreifach. Am Geraet gemessen, 17.08.2026.
+        ccu_addr = sgtin.hex()[-14:].upper()
+        self.qccu.add_device(ccu_addr, devtype)
+        self.bind(newa.hex(), ccu_addr)
+
+        # Wegemeldung wie die echte Zentrale: rund 185 ms nach ihrer Quittung
+        # (fester Takt, in allen Referenzzyklen gleich). Nicht 2,5 s — in der
+        # Luecke suchte das Geraet bereits einen Router.
+        time.sleep(0.15)
         self._submit("mT31f00002" + "01" + newa.hex() + "0000004017", "cmd")
-        time.sleep(0.3)
+
+        # Die beiden Verknuepfungen wie bisher spaeter — zu frueh gesendet
+        # nimmt das Geraet sie nicht an (am echten Geraet gemessen).
+        time.sleep(2.35)
         self._submit("ms" + newa.hex().upper() + "C1050101"
                      + newa.hex().upper() + "030000", "cmd")
         time.sleep(0.3)
         self._submit("ms" + newa.hex().upper() + "C1070301"
                      + newa.hex().upper() + "010000", "cmd")
 
-        ccu_addr = sgtin.hex()[-14:].upper()
-        self.qccu.add_device(ccu_addr, devtype)
-        self.bind(newa.hex(), ccu_addr)
         self.pair_last = f"{ccu_addr} angelernt als {newa.hex()} (Typ {devtype})"
         self._log("##", f"ANLERNEN fertig {ccu_addr} -> {newa.hex()}")
         if self.verbose:

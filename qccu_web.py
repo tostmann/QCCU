@@ -588,6 +588,15 @@ class WebHandler(BaseHTTPRequestHandler):
             lc = qccu_obj
             hexp = getattr(lc, "firmware_hex", None)
             spath = getattr(lc, "serial_path", None)
+            # War der Stick VOR dem Einspielen angebunden, ist es eine
+            # Aktualisierung DESSELBEN Sticks — dann bleibt seine Seriennummer
+            # verbindlich. Sonst greift die Suche waehrend seiner
+            # Bootlader-Phase den erstbesten anderen q-culfw am Rechner, merkt
+            # sich DEN als Zentrale und die Anlage haengt stillschweigend an
+            # einem fremden Stick mit fremdem Netzwerkschluessel (17.08.2026,
+            # zwei Sticks am Rechner). Nur beim Erstflash aus dem Bootlader
+            # (kein Funk vorher) darf ohne Seriennummer gesucht werden.
+            aktualisierung = lc.radio is not None
             try:
                 if lc.radio is not None:
                     sag("Funk wird angehalten, Stick geht in den Bootlader …")
@@ -600,12 +609,13 @@ class WebHandler(BaseHTTPRequestHandler):
                 if not ok:
                     return
                 sag("Warte auf den Stick …")
-                # Wer hier eingespielt hat, meint DIESEN Stick — auch wenn die
-                # Anlage bisher an einem anderen hing. Ohne das Vergessen wuerde
-                # der frisch eingespielte nicht uebernommen: die Suche liesse
-                # nur die gemerkte Seriennummer zu. Auf Platte bleibt die alte
-                # stehen, bis der neue wirklich antwortet.
-                lc.stick_serial = None
+                # Erstflash aus dem Bootlader: wer hier eingespielt hat, meint
+                # DIESEN Stick — auch wenn die Anlage bisher an einem anderen
+                # hing; die gemerkte Seriennummer wuerde ihn sonst ausschliessen.
+                # Bei einer AKTUALISIERUNG dagegen bleibt sie stehen: gewartet
+                # wird auf genau den Stick, der eben noch lief.
+                if not aktualisierung:
+                    lc.stick_serial = None
                 rb = getattr(lc, "rebind_radio", None)
                 neu = rb() if rb else None
                 if neu:
