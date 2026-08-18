@@ -199,10 +199,28 @@ footer a{color:var(--mut)} footer a:hover{color:var(--acc)}
   <h2>Funk</h2><div class="body" id="radio"></div>
 </div>
 
+<div class="card" id="karte_ereignisse" style="display:none">
+  <h2>Zuletzt geschehen</h2>
+  <div class="body flush"><table id="ereignisse"><tbody></tbody></table></div>
+</div>
+
+<p id="meldung" style="display:none"></p>
+
+<div class="card" id="karte_post" style="display:none">
+  <h2>Posteingang</h2>
+  <div class="body">
+    <p class="hint">Geräte, die gerade angelernt werden <b>wollen</b> — sie
+      haben eben ihre Anlerntaste gesehen. QCCU kann sie nur mit dem Schlüssel
+      vom Aufkleber aufnehmen; ohne ihn bleibt es beim Zusehen.</p>
+    <div class="body flush"><table id="post"><tbody></tbody></table></div>
+  </div>
+</div>
+
 <div class="card">
   <h2>Geräte</h2>
   <div class="body flush"><table id="devs"><thead><tr>
-    <th>Adresse</th><th>Typ</th><th>Funk</th><th class="right">Kanäle</th><th></th>
+    <th>Name</th><th>Adresse</th><th>Typ</th><th>Zuletzt gehört</th>
+    <th class="right">Pegel</th><th></th>
   </tr></thead><tbody></tbody></table></div>
 </div>
 
@@ -222,6 +240,15 @@ footer a{color:var(--mut)} footer a:hover{color:var(--acc)}
          sie von selbst. Die Funkadresse vergibt sie dabei selbst.</p>
     </div>
     <p class="hint" id="pairinfo"></p>
+    <div class="hint" id="nachher" style="display:none">
+      <b>Und jetzt in Home Assistant:</b> das Gerät erscheint dort nicht von
+      selbst. Unter <b>Einstellungen → System → Reparaturen</b> steht „Neues
+      Gerät …" — dort einen Namen vergeben und bestätigen; erst danach gibt es
+      Schalter und Sensoren. Der Name landet auch hier in der Zentrale.
+      <br>Steht dort nichts, kennt die Integration die Adresse noch aus einem
+      früheren Anlauf: Dienst <code>homematicip_local.clear_cache</code>
+      aufrufen und die Integration neu laden.
+    </div>
   </div>
   <div class="dfoot">
     <button onclick="dlgPair.close()">Schließen</button>
@@ -271,10 +298,48 @@ const $=s=>document.querySelector(s);
 const esc=t=>String(t==null?'':t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 let ZUSTAND={}, fwOffen=false;
 
+// ⚠️ Die Antwort wird AUSGEWERTET. Vorher flog sie weg: wer 25 statt 26
+// Zeichen eintippte, bekam vom Dienst eine klare Auskunft („Aufkleber hat 25
+// statt 26 Zeichen") und sah in der Oberflaeche — nichts. Der Knopf schien
+// kaputt. Genau dieses Feld ist das erste, an dem jeder Neue sitzt.
+// „vor 3 min" liest sich schneller als ein Zeitstempel — und sagt genau das,
+// was hier zaehlt: meldet sich das Geraet noch.
+function alterText(sek){
+  if(sek==null) return '—';
+  if(sek<90) return 'gerade eben';
+  if(sek<5400) return 'vor '+Math.round(sek/60)+' min';
+  if(sek<172800) return 'vor '+Math.round(sek/3600)+' h';
+  return 'vor '+Math.round(sek/86400)+' Tagen';
+}
+function uhr(t){
+  const d=new Date(t*1000);
+  return ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2)
+        +':'+('0'+d.getSeconds()).slice(-2);
+}
+
 async function post(u,b){
-  await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},
-                 body:JSON.stringify(b||{})});
-  return laden();
+  let j=null;
+  try{
+    const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},
+                           body:JSON.stringify(b||{})});
+    try{ j=await r.json(); }catch(e){ j=null; }
+    if(!r.ok || (j&&j.error)) melde((j&&j.error)||('Fehler '+r.status),'bad');
+    else melde('', '');
+  }catch(e){ melde('Keine Verbindung zur Zentrale.','bad'); }
+  await laden();
+  return j;
+}
+
+// Eine Stelle fuer Rueckmeldungen — sichtbar, wo gerade gearbeitet wird:
+// steht ein Dialog offen, gehoert sie dorthin, sonst nach oben.
+function melde(text,art){
+  const im=$('#pairinfo'), oben=$('#meldung');
+  const offen=$('#dlgPair')&&$('#dlgPair').open;
+  const ziel = offen ? im : oben;
+  if(oben && !offen){ oben.innerHTML = text ? '<span class="'+(art||'')+'">'+esc(text)+'</span>' : '';
+                      oben.style.display = text ? '' : 'none'; }
+  if(offen && im) im.innerHTML = text ? '<span class="'+(art||'')+'">'+esc(text)+'</span>' : '';
+  if(text && ziel===oben && oben) oben.scrollIntoView({block:'nearest'});
 }
 
 function oeffneAnlernen(){ $('#dlgPair').showModal(); }
@@ -431,14 +496,43 @@ async function laden(){
   }
   const dv=s.devices||[];
   $('#devs').tBodies[0].innerHTML = dv.length ? dv.map(d=>
-    '<tr><td><code>'+esc(d.address)+'</code></td><td>'+esc(d.label)+'</td>'
-   +'<td><code class="mut">'+esc(d.rf||'—')+'</code></td>'
-   +'<td class="right">'+d.channels+'</td>'
+    '<tr><td>'+esc(d.name||d.label)
+   +(d.unreach?' <span class="warn" title="meldet sich nicht">·</span>':'')+'</td>'
+   +'<td><code>'+esc(d.address)+'</code>'
+   +'<span class="mut" style="font-size:.85em"> · '+esc(d.rf||'—')+'</span></td>'
+   +'<td class="mut">'+esc(d.label)+' · '+d.channels+' Kan.</td>'
+   +'<td class="mut">'+alterText(d.vor_sek)+'</td>'
+   +'<td class="right mut">'+(d.rssi==null?'—':(d.rssi+' dBm'))+'</td>'
    +'<td class="right"><button class="quiet" onclick="if(confirm(\'Gerät '
-   +esc(d.address)+' entfernen?\'))post(\'api/device/delete\',{address:\''
+   +esc(d.name||d.address)+' entfernen?\\n\\nEs bekommt dabei einen '
+   +'Funk-Ausschluss und lässt sich danach ohne Werksreset neu anlernen.\'))'
+   +'post(\'api/device/delete\',{address:\''
    +esc(d.address)+'\'})">entfernen</button></td></tr>').join('')
-   : '<tr><td colspan="5" class="empty">Noch kein Gerät angelernt.<br>'
+   : '<tr><td colspan="6" class="empty">Noch kein Gerät angelernt.<br>'
     +'<span style="font-size:.9em">Über „Gerät anlernen" beginnen.</span></td></tr>';
+
+  // Posteingang: nur zeigen, wenn wirklich jemand anklopft.
+  const pe=s.posteingang||[], kp=$('#karte_post');
+  if(kp){
+    kp.style.display = pe.length ? '' : 'none';
+    if(pe.length) $('#post').tBodies[0].innerHTML = pe.map(e=>
+      '<tr><td><code>'+esc(e.hmid||e.address||'—')+'</code></td>'
+     +'<td>'+esc(e.label||('Typ '+(e.devtype||'?')))+'</td>'
+     +'<td class="mut">'+esc(e.hinweis||'')+'</td>'
+     +'<td class="right"><button class="quiet" onclick="oeffneAnlernen()">'
+     +'anlernen</button></td></tr>').join('');
+  }
+
+  // Was zuletzt geschah — die kurze Fassung dessen, was sonst im Protokoll
+  // zwischen tausenden Abrufen der Haussteuerung untergeht.
+  const ev=s.ereignisse||[], ke=$('#karte_ereignisse');
+  if(ke){
+    ke.style.display = ev.length ? '' : 'none';
+    if(ev.length) $('#ereignisse').tBodies[0].innerHTML = ev.map(e=>
+      '<tr><td class="mut" style="white-space:nowrap">'+uhr(e.zeit)+'</td>'
+     +'<td'+(e.art==='bad'?' class="bad"':e.art==='warn'?' class="warn"':'')
+     +'>'+esc(e.text)+'</td></tr>').join('');
+  }
 
   const r=s.radio||{}, f=s.firmware||{};
   const anJa = f.zustand==='laeuft';
@@ -465,8 +559,18 @@ async function laden(){
   $('#radio').innerHTML=h;
 
   const p=s.pairing||{};
-  $('#pairinfo').textContent = p.open ? ('Fenster offen, noch '+p.seconds_left+' s.')
-                                      : (p.last||'');
+  if(!$('#dlgPair').open || !$('#pairinfo').querySelector('.bad'))
+    $('#pairinfo').textContent = p.open ? ('Fenster offen, noch '+p.seconds_left+' s.')
+                                        : (p.last||'');
+  // ⚠️ „angelernt" ist NICHT das Ende des Weges. Home Assistant stellt jedes
+  // frisch angelernte Geraet zurueck, bis es in den Reparaturen bestaetigt
+  // wurde — wer das nicht weiss, sucht den Fehler beim Funk. Der Hinweis
+  // steht deshalb genau dort, wo die Erfolgsmeldung steht.
+  const nh=$('#nachher');
+  if(nh){
+    const fertig = !p.open && /angelernt als/.test(p.last||'');
+    nh.style.display = fertig ? '' : 'none';
+  }
   $('#pairgo').disabled=!!p.open;
   if(fwOffen) zeichneFirmware();
   zeichneHinweise();
@@ -549,10 +653,29 @@ class WebHandler(BaseHTTPRequestHandler):
         if self.radio:
             with self.radio.lock:
                 rf = {a: h for h, a in self.radio.by_hmid.items()}
+        jetzt = time.time()
         for addr, d in items:
+            # Was der Anwender wissen will, steht bisher nur in Home
+            # Assistant: lebt das Geraet noch, wie stark kommt es an, wann hat
+            # es zuletzt etwas gesagt. Die Angaben liegen alle hier.
+            pegel = d.values.get((0, "RSSI_DEVICE"))
+            # Behutsam abfragen: die Auskunft laeuft auch gegen Zentralen, die
+            # nicht jede dieser Buecher fuehren (Pruefstaende, Schwesterlinie).
+            zuletzt = (getattr(d, "last_seen", None)
+                       or getattr(lc, "_wert_zeit", {}).get(addr))
+            benannt = getattr(lc, "name_of", None)
             devs.append({"address": addr, "rf": rf.get(addr),
-                         "label": d.label, "channels": len(d.channel_list())})
+                         "label": d.label,
+                         "name": benannt(addr, d.label) if benannt else d.label,
+                         "channels": len(d.channel_list()),
+                         "rssi": pegel if isinstance(pegel, (int, float)) else None,
+                         "unreach": bool(getattr(d, "unreach", False)),
+                         "vor_sek": int(jetzt - zuletzt) if zuletzt else None})
+        ereignisse = getattr(lc, "ereignis_liste", None)
+        posteingang = getattr(self.radio, "inbox_liste", None) if self.radio else None
         out = {"version": self.version, "devices": devs,
+               "ereignisse": ereignisse() if ereignisse else [],
+               "posteingang": posteingang() if posteingang else [],
                "pairing": self.radio.pair_state() if self.radio
                           else {"open": False, "seconds_left": 0,
                                 "next_addr": "—", "last": "kein Funk angebunden"}}

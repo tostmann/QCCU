@@ -622,6 +622,9 @@ class Radio:
         self.tot = True
         self.tot_grund = str(grund)
         print(f"  ! Funkzugang verloren ({grund}) — der Stick wird neu gesucht.")
+        merke = getattr(self.qccu, "merke_ereignis", None)
+        if merke:
+            merke("bad", "Funkzugang zum Stick verloren — er wird neu gesucht")
         try:
             self.stop()
         except Exception:                            # noqa: BLE001
@@ -1497,6 +1500,9 @@ class Radio:
         self._log("##", f"ANLERNEN fertig {ccu_addr} -> {newa.hex()}")
         if self.verbose:
             print(f"  Anlernen abgeschlossen: {ccu_addr} -> {newa.hex()}")
+        merke = getattr(self.qccu, "merke_ereignis", None)
+        if merke:
+            merke("ok", f"{ccu_addr} angelernt (Funkadresse {newa.hex()})")
 
         nxt = (int(self.pair_next_addr, 16) + 1) & 0xFFFFFF
         self.pair_next_addr = f"{nxt:06x}"

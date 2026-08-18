@@ -825,7 +825,26 @@ class JsonRpcHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(antwort)
 
+    # ⚠️ Diese Aufrufe kommen im Sekundentakt, solange eine Haussteuerung
+    # angebunden ist: gemessen 1264x Session.login, 1262x Session.renew und
+    # 801x Sammelabruf in EINEM Protokoll von 4000 Zeilen — die 59 Zeilen, um
+    # die es ging, waren darin nicht mehr zu finden. Wer ein Protokoll zur
+    # Fehlersuche schickt, soll darin etwas sehen koennen. Mit `--verbose`
+    # steht wieder alles da.
+    LEISE = frozenset((
+        "Session.login", "Session.renew", "Session.logout",
+        "ReGa.runScript", "Program.getAll", "SysVar.getAll",
+        "Room.getAll", "Subsection.getAll", "SysVar.getValue",
+        "CCU.getAuthEnabled", "CCU.getHttpsRedirectEnabled",
+    ))
+
+    laut = False
+
     def _melden(self, method, ergebnis, fehler):
+        # Ein FEHLER wird immer gemeldet, auch bei den leisen Methoden — er
+        # ist das Gegenteil von Rauschen.
+        if not fehler and method in self.LEISE and not self.laut:
+            return
         if fehler:
             print(f"  JSON-RPC: {method} -> {fehler.get('name')}")
         elif isinstance(ergebnis, list):
@@ -838,7 +857,7 @@ class JsonRpcHandler(BaseHTTPRequestHandler):
 
 
 def serve(qccu, bind, port, verbose=False, interface=None, rpc_port=2010,
-          hostname=None):
+          hostname=None, laut=False):
     """Startet die Auskunft in einem eigenen Faden.
 
     `rpc_port` ist der Port der XML-RPC-Auskunft — er geht in
@@ -849,6 +868,9 @@ def serve(qccu, bind, port, verbose=False, interface=None, rpc_port=2010,
     JsonRpcHandler.api = JsonRpc(qccu, interface=interface, rpc_port=rpc_port,
                                  hostname=hostname)
     JsonRpcHandler.verbose = verbose
+    # `laut` trennt zwei Dinge, die vorher eines waren: DASS gemeldet wird
+    # (verbose) und OB auch der Dauerverkehr dazugehoert.
+    JsonRpcHandler.laut = laut
     srv = HTTPServer((bind, port), JsonRpcHandler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv

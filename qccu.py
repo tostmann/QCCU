@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """QCCU — die Quiche-Zentrale: gibt sich gegenueber Hausautomationen als solche aus."""
 import argparse
+import collections
 import json
 import os
 import queue
@@ -16,7 +17,7 @@ from xmlrpc.server import SimpleXMLRPCServer, SimpleXMLRPCRequestHandler
 # zugleich die Marke des Abbilds auf Docker Hub UND der Wert von `version`
 # in addon/config.yaml — der Supervisor zieht `<image>:<version>`. Wer hier
 # hochzaehlt, muss beides mitziehen, sonst schlaegt die Installation fehl.
-VERSION = "2026.8.18"
+VERSION = "2026.8.19"
 PRODUKT = "QCCU"
 NAME_UND_FASSUNG = f"{PRODUKT} {VERSION}"
 
@@ -294,6 +295,10 @@ class QCCU:
         self.stick_serial = None
         # Vom Anwender vergebene Namen, je Geraet und je Kanal.
         self.names = {}
+        # Die letzten Ereignisse, die den Anwender angehen. Nicht das
+        # Protokoll — dort steht auch der Verkehr; hier steht, was passiert
+        # IST: angelernt, entfernt, Stick verloren, Name vergeben.
+        self.ereignisse = collections.deque(maxlen=60)
         # Wann zuletzt ein Wert von welchem Geraet kam — damit sichtbar ist,
         # wie alt der gesicherte Stand ist.
         self._wert_zeit = {}
@@ -311,6 +316,23 @@ class QCCU:
         self._notify_q = queue.Queue()
         self._notify_thread = None
         self._bestand_gemeldet = {}
+
+    def merke_ereignis(self, art, text):
+        """Ein Ereignis fuer die Oberflaeche festhalten.
+
+        ⚠️ Das Protokoll des Behaelters taugt dafuer nicht: dort gehen die
+        paar wichtigen Zeilen zwischen tausenden Abrufen der Haussteuerung
+        unter (gemessen: 4000 Zeilen Protokoll, davon 59 zur Sache). Wer
+        wissen will, was mit seiner Anlage geschehen ist, soll es in der
+        Oberflaeche sehen und nicht in einer Datei suchen muessen.
+
+        `art` steuert nur die Darstellung: ok · warn · bad · info.
+        """
+        self.ereignisse.append({"zeit": time.time(), "art": art, "text": text})
+
+    def ereignis_liste(self, anzahl=25):
+        """Die juengsten Ereignisse zuerst."""
+        return list(self.ereignisse)[-anzahl:][::-1]
 
     # Ein Name darf die ReGa-Auskunft nicht zerlegen: dort trennt das
     # Semikolon die Felder und der Zeilenumbruch die Eintraege.
@@ -343,10 +365,15 @@ class QCCU:
             return False
         sauber = self._name_saeubern(name)
         with self.lock:
+            vorher = self.names.get(key)
             if sauber:
                 self.names[key] = sauber
             else:
                 self.names.pop(key, None)
+        if sauber != vorher:
+            self.merke_ereignis("info",
+                                f"{key} heisst jetzt „{sauber}“" if sauber
+                                else f"{key} traegt wieder seinen Vorgabenamen")
         self.save_store()
         return True
 
@@ -545,11 +572,29 @@ class QCCU:
         # Erst dem Geraet Bescheid sagen, dann die Buecher fuehren: ohne den
         # Ausschluss ueber Funk merkt es nichts vom Rauswurf und liesse sich
         # nur noch mit einem Werksreset von Hand wieder anlernen.
+        quittiert = None
         if rf and self.radio is not None:
             try:
-                self.radio.funk_exclude(rf)
+                quittiert = self.radio.funk_exclude(rf)
             except Exception as ex:                      # noqa: BLE001
                 print(f"  ! Ausschluss von {rf} scheiterte: {ex}")
+                quittiert = False
+
+        # ⚠️ Ob das Geraet den Ausschluss quittiert hat, ist die einzige
+        # Angabe, aus der der Anwender etwas ableiten kann: ohne Quittung hat
+        # es den Rauswurf nicht mitbekommen und braucht vor dem naechsten
+        # Anlernen einen Werksreset. Das stand bisher nur im Protokoll.
+        name = self.name_of(key, key)
+        if quittiert is True:
+            self.merke_ereignis("ok", f"{name} entfernt — das Geraet hat den "
+                                      f"Funk-Ausschluss quittiert")
+        elif quittiert is False:
+            self.merke_ereignis("warn", f"{name} entfernt, aber OHNE Quittung "
+                                        f"— das Geraet braucht vor dem naechsten "
+                                        f"Anlernen einen Werksreset")
+        else:
+            self.merke_ereignis("info", f"{name} entfernt (kein Funk — das "
+                                        f"Geraet weiss nichts davon)")
 
         self._namen_entfernen(key)
         self.save_store()
@@ -1163,6 +1208,11 @@ def main():
                         "jedem Start leer.")
     a.add_argument("--state", default="qccu_state.json",
                    help="Datei fuer die Zaehlerstaende (ueberdauert Neustarts)")
+    a.add_argument("--json-log", action="store_true",
+                   help="auch den Dauerverkehr der Haussteuerung ins "
+                        "Protokoll schreiben (Anmeldungen, Sammelabrufe). "
+                        "Ohne das stehen dort nur Vorgaenge, die etwas "
+                        "bedeuten — Fehler immer.")
     a.add_argument("--raw-log", default=None, metavar="DATEI",
                    help="MESSBETRIEB: jede Stickzeile roh mit Zeitstempel "
                         "mitschreiben, dazu das Sendeurteil des Sticks und die "
@@ -1348,6 +1398,8 @@ def main():
                 if weg or tot:
                     if weg:
                         print(f"  ! Der Stick ist weg ({pfad}) — Funk wird geloest.")
+                        lc.merke_ereignis("bad", "Der Stick ist nicht mehr da "
+                                                 "— Funk geloest, es wird gesucht")
                     else:
                         print(f"  ! Der Zugang zum Stick ist tot "
                               f"({getattr(r, 'tot_grund', None)}) — Funk wird geloest.")
@@ -1389,6 +1441,7 @@ def main():
             except Exception:                        # noqa: BLE001
                 pass
             print("  Stick aufgetaucht — Funk angebunden.")
+            lc.merke_ereignis("ok", "Stick wieder angebunden")
 
     lc.rebind_radio = bind_radio_retry
     lc.firmware_hex = g.firmware
@@ -1441,7 +1494,8 @@ def main():
                 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
                 import qccu_jsonrpc
             qccu_jsonrpc.serve(lc, g.bind, g.json_port, verbose=lc.verbose,
-                               rpc_port=g.rpc_port, hostname=g.advertise or None)
+                               rpc_port=g.rpc_port, hostname=g.advertise or None,
+                               laut=bool(getattr(g, "json_log", False)))
         except OSError as ex:
             print(f"  ! JSON-RPC auf {g.bind}:{g.json_port} nicht moeglich: {ex}")
             print(f"    Home Assistant findet die Zentrale so NICHT. Anderen "
