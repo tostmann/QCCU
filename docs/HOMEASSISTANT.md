@@ -89,6 +89,13 @@ echte CCU oder an OpenCCU.
 Quellen für dasselbe Verzeichnis führen zu Zuständen, die niemand
 nachvollziehen kann.)
 
+**QCCU sagt es auch dort, wo du suchst.** Ein frisch angelerntes Gerät steht
+so lange im **Posteingang** der Integration (`sensor.<name>_inbox`), bis du es
+in den Reparaturen aufgenommen hast — mit genau diesem Satz als Name. Wer also
+angelernt hat und das Gerät nicht findet, sieht dort, was noch fehlt, ohne die
+QCCU-Oberfläche zu öffnen. Der Eintrag verschwindet von selbst, sobald die
+Bestätigung erfolgt ist.
+
 Danach: **Einstellungen → Geräte & Dienste → Integration hinzufügen →
 Homematic(IP) Local.** Dann:
 

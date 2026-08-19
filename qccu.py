@@ -17,7 +17,7 @@ from xmlrpc.server import SimpleXMLRPCServer, SimpleXMLRPCRequestHandler
 # zugleich die Marke des Abbilds auf Docker Hub UND der Wert von `version`
 # in addon/config.yaml — der Supervisor zieht `<image>:<version>`. Wer hier
 # hochzaehlt, muss beides mitziehen, sonst schlaegt die Installation fehl.
-VERSION = "2026.8.24"
+VERSION = "2026.8.25"
 PRODUKT = "QCCU"
 NAME_UND_FASSUNG = f"{PRODUKT} {VERSION}"
 
@@ -295,6 +295,9 @@ class QCCU:
         self.stick_serial = None
         # Vom Anwender vergebene Namen, je Geraet und je Kanal.
         self.names = {}
+        # Frisch angelernte Geraete, die in der Haussteuerung noch bestaetigt
+        # werden muessen: Adresse -> Zeitpunkt des Anlernens.
+        self.frisch_angelernt = {}
         # Die letzten Ereignisse, die den Anwender angehen. Nicht das
         # Protokoll — dort steht auch der Verkehr; hier steht, was passiert
         # IST: angelernt, entfernt, Stick verloren, Name vergeben.
@@ -316,6 +319,36 @@ class QCCU:
         self._notify_q = queue.Queue()
         self._notify_thread = None
         self._bestand_gemeldet = {}
+
+    # Wie lange ein frisch angelerntes Geraet im Posteingang steht, falls die
+    # Bestaetigung ausbleibt. Wer nach einer Stunde nicht bestaetigt hat, will
+    # es vermutlich nicht — dann soll der Hinweis auch nicht ewig stehen.
+    FRISCH_HALTBARKEIT = 3600.0
+
+    def merke_frisch_angelernt(self, address):
+        """Ein Geraet ist angelernt — die Haussteuerung muss es noch aufnehmen.
+
+        ⚠️ Der Grund steht in einer Anwendermeldung (19.08.2026): jemand hat
+        erfolgreich angelernt und **das Geraet danach nicht gefunden**. Die
+        Integration „Homematic(IP) Local" stellt jedes frisch angelernte Geraet
+        absichtlich zurueck, bis es in den Reparaturen bestaetigt wurde — bis
+        dahin gibt es in der Haussteuerung weder Schalter noch Sensoren, und
+        wer das nicht weiss, sucht den Fehler beim Funk.
+
+        Deshalb erscheint es solange im **Posteingang**, den die Integration
+        selbst anzeigt (`sensor.<name>_inbox`) — mit dem Satz, der zu tun ist.
+        Der Eintrag verschwindet, sobald die Bestaetigung erfolgt ist; sie ist
+        daran zu erkennen, dass die Gegenstelle den Namen zurueckschreibt.
+        """
+        self.frisch_angelernt[(address or "").upper()] = time.time()
+
+    def frisch_offen(self):
+        """Die noch nicht bestaetigten Geraete — juengste zuerst."""
+        jetzt = time.time()
+        with self.lock:
+            offen = [(t, a) for a, t in self.frisch_angelernt.items()
+                     if jetzt - t < self.FRISCH_HALTBARKEIT and a in self.devices]
+        return [a for _t, a in sorted(offen, reverse=True)]
 
     def merke_ereignis(self, art, text):
         """Ein Ereignis fuer die Oberflaeche festhalten.
@@ -370,6 +403,10 @@ class QCCU:
                 self.names[key] = sauber
             else:
                 self.names.pop(key, None)
+        # ⚠️ Schreibt die Gegenstelle einen Namen, hat sie das Geraet aufgenommen
+        # — genau das ist der letzte Schritt ihres Reparatur-Dialogs. Damit ist
+        # der Hinweis im Posteingang erledigt.
+        self.frisch_angelernt.pop(key.split(":")[0], None)
         if sauber != vorher:
             self.merke_ereignis("info",
                                 f"{key} heisst jetzt „{sauber}“" if sauber
@@ -597,6 +634,7 @@ class QCCU:
                                         f"Geraet weiss nichts davon)")
 
         self._namen_entfernen(key)
+        self.frisch_angelernt.pop(key, None)
         self.save_store()
         addrs = [x["ADDRESS"] for x in d.descriptions()]
         self._enqueue(("delete", key, addrs))

@@ -1573,6 +1573,9 @@ class Radio:
         merke = getattr(self.qccu, "merke_ereignis", None)
         if merke:
             merke("ok", f"{ccu_addr} angelernt (Funkadresse {newa.hex()})")
+        frisch = getattr(self.qccu, "merke_frisch_angelernt", None)
+        if frisch:
+            frisch(ccu_addr)
 
         nxt = (int(self.pair_next_addr, 16) + 1) & 0xFFFFFF
         self.pair_next_addr = f"{nxt:06x}"

@@ -387,11 +387,23 @@ class JsonRpc:
         return ""
 
     def _posteingang(self):
-        """Geraete, die funken, aber nicht angelernt sind.
+        """Was im Posteingang steht — zwei Dinge, die dasselbe Ziel haben.
 
-        Ohne diese Auskunft drueckt der Anwender in Home Assistant den
-        Anlernknopf und sieht nie, ob ueberhaupt etwas ankommt. Der Name jedes
-        Eintrags sagt ihm, was noch fehlt."""
+        1. **Geraete, die funken, aber nicht angelernt sind.** Ohne diese
+           Auskunft drueckt der Anwender den Anlernknopf und sieht nie, ob
+           ueberhaupt etwas ankommt.
+        2. **Frisch angelernte Geraete, die die Gegenstelle noch aufnehmen
+           muss.** ⚠️ Aus einer Anwendermeldung (19.08.2026): jemand hat
+           erfolgreich angelernt und das Geraet danach nicht gefunden. Die
+           Integration stellt jedes frische Geraet zurueck, bis es in den
+           Reparaturen bestaetigt wurde — bis dahin gibt es dort weder Schalter
+           noch Sensoren. Der Posteingang ist die einzige Stelle, an der wir
+           ihm das SAGEN koennen, ohne dass er unsere Oberflaeche oeffnet: die
+           Integration zeigt ihn selbst an (`sensor.<name>_inbox`).
+
+        Der Name jedes Eintrags traegt die Handlungsanweisung — er ist das
+        Einzige, was in der Haussteuerung davon ankommt.
+        """
         radio = getattr(self.q, "radio", None)
         liste = []
         if radio is not None and hasattr(radio, "inbox_liste"):
@@ -399,6 +411,23 @@ class JsonRpc:
                 liste = radio.inbox_liste()
             except Exception:                        # noqa: BLE001
                 liste = []
+
+        offen = getattr(self.q, "frisch_offen", None)
+        for adresse in (offen() if offen else []):
+            geraet = self.q.devices.get(adresse)
+            typ = geraet.label if geraet is not None else "Geraet"
+            name = self.q.name_of(adresse, typ)
+            liste.append({
+                "id": _kennung(adresse),
+                "address": adresse,
+                "name": (f"{name} — angelernt, aber hier noch nicht aufgenommen: "
+                         f"unter Einstellungen → System → Reparaturen bestaetigen "
+                         f"(dabei den Namen vergeben). Erscheint dort nichts: "
+                         f"Dienst homematicip_local.clear_cache aufrufen und die "
+                         f"Integration neu laden."),
+                "type": typ,
+                "interface": self.interface,
+            })
         return json.dumps(liste, ensure_ascii=False)
 
     def _aufnehmen(self, skript):
@@ -412,6 +441,14 @@ class JsonRpc:
         wartete auf ein Geraet, das nie erscheint."""
         m = re.search(r'sDeviceAddress\s*=\s*"([^"]*)"', skript)
         adresse = (m.group(1) if m else "").strip()
+
+        # Steht die Adresse fuer ein Geraet, das wir schon fuehren, ist nichts
+        # anzulernen: der Eintrag war nur der Hinweis, es in der Haussteuerung
+        # aufzunehmen. Dann gilt er als gelesen.
+        if adresse and adresse.upper() in self.q.devices:
+            self.q.frisch_angelernt.pop(adresse.upper(), None)
+            return json.dumps({"success": True, "error": ""})
+
         radio = getattr(self.q, "radio", None)
         if radio is None:
             return json.dumps({"success": False, "error": "kein Funkpfad"})
