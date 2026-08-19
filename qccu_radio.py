@@ -775,7 +775,7 @@ class Radio:
         # nicht im Bestand, ist das eine Auskunft und kein Rauschen — deshalb
         # wird sie hier abgegriffen, bevor die Verarbeitung sie verwirft.
         if int(sec) >= 1:
-            self._pruefe_verwaist(src.lower())
+            self._pruefe_verwaist(src.lower(), dst.lower())
 
         if int(ct) == 4 and ACK.search(line):
             ev = self._acked.get(src.lower())
@@ -1677,9 +1677,22 @@ class Radio:
     VERWAIST_MELDEPAUSE = 3600.0     # nicht oefter als stuendlich melden
     VERWAIST_MAX = 20
 
-    def _pruefe_verwaist(self, hmid):
-        """Ein entschluesselbarer Frame von jemandem, den wir nicht fuehren."""
+    def _pruefe_verwaist(self, hmid, ziel=""):
+        """Ein entschluesselbarer Frame von jemandem, den wir nicht fuehren.
+
+        ⚠️ Gemeldet wird NUR, was an UNS gerichtet ist (`ziel == own_addr`).
+        Ein Geraet, das noch glaubt zu uns zu gehoeren, schickt seine
+        Meldungen an die Zentralenadresse — das ist das Signal. Rundrufe
+        genuegen NICHT: am 19.08.2026 stand nach einer Viertelstunde die
+        Funkadresse einer ZWEITEN Zentrale aus dem Labor in der Liste, mit dem
+        Rat „Werksreset am Geraet" — falsch und irrefuehrend. Warum deren
+        Rundruf sich hier entschluesseln liess, ist offen; die Lehre ist
+        unabhaengig davon: fremder Rundruf ist kein Beleg dafuer, dass jemand
+        uns fuer seine Zentrale haelt.
+        """
         jetzt = time.time()
+        if not ziel or ziel != (self.own_addr or ""):
+            return
         with self.lock:
             if hmid in self.by_hmid or hmid == (self.own_addr or ""):
                 return
