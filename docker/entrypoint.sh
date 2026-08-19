@@ -32,7 +32,8 @@ except Exception:
 # Nur bekannte Schluessel, damit eine erweiterte Oberflaeche hier nichts
 # Unerwartetes in die Umgebung schiebt.
 for name in ("SERIAL", "OWN_ADDR", "RPC_PORT", "REGA_PORT",
-             "WEB_PORT", "JSON_PORT", "CUL_PORT", "ADVERTISE"):
+             "WEB_PORT", "JSON_PORT", "CUL_PORT", "ADVERTISE",
+             "SOFORT_MELDEN"):
     wert = o.get(name.lower())
     if wert is None or wert == "":
         continue
@@ -244,6 +245,8 @@ serve() {
         --json-port "$JSON_PORT" \
         --cul-port "$CUL_PORT"
     [ -n "$ADVERTISE" ] && set -- "$@" --advertise "$ADVERTISE"
+    # Ohne Posteingang (FHEM/HMCCU): frisch Angelerntes sofort melden.
+    [ "$SOFORT_MELDEN" = "1" ] && set -- "$@" --sofort-melden
     log "Zentrale startet — Web auf $WEB_PORT, XML-RPC auf $RPC_PORT, JSON-RPC auf $JSON_PORT."
     exec "$@"
 }

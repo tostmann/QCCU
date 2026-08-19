@@ -425,6 +425,26 @@ class JsonRpc:
             except Exception:                        # noqa: BLE001
                 liste = []
 
+        # ⚠️ Zwei Faelle, je nachdem ob QCCU zurueckhaelt:
+        # (a) Warteraum an (Vorgabe): das Geraet ist der Gegenstelle noch
+        #     gar nicht gemeldet — hier steht es, hier wird es aufgenommen.
+        # (b) Warteraum aus: es ist gemeldet und wartet auf die Bestaetigung
+        #     unter „Reparaturen"; dann ist der Hinweis das Einzige, was hilft.
+        wartend = getattr(self.q, "warteraum_liste", None)
+        for adresse in (wartend() if wartend else []):
+            geraet = self.q.devices.get(adresse)
+            typ = geraet.label if geraet is not None else "Geraet"
+            name = self.q.name_of(adresse, typ)
+            liste.append({
+                "id": _kennung(adresse),
+                "address": adresse,
+                "name": (f"{name} — angelernt, hier aufnehmen: Namen "
+                         f"eintragen und auf ‚aufnehmen' druecken. Erst dann "
+                         f"entstehen Schalter und Sensoren."),
+                "type": typ,
+                "interface": self.interface,
+            })
+
         offen = getattr(self.q, "frisch_offen", None)
         for adresse in (offen() if offen else []):
             geraet = self.q.devices.get(adresse)
@@ -460,6 +480,14 @@ class JsonRpc:
         # anzulernen: der Eintrag war nur der Hinweis, es in der Haussteuerung
         # aufzunehmen. Dann gilt er als gelesen.
         if adresse and adresse.upper() in self.q.devices:
+            # Ein Geraet, das wir schon fuehren: entweder wartet es noch auf
+            # die Freigabe (dann geht sie jetzt hinaus — das ist der
+            # `ReadyConfig(true)`-Moment einer Zentrale von eq-3), oder der
+            # Eintrag war nur der Hinweis, es in der Haussteuerung
+            # aufzunehmen; dann gilt er als gelesen.
+            aufnehmen = getattr(self.q, "aufnehmen", None)
+            if aufnehmen:
+                aufnehmen(adresse)
             self.q.frisch_angelernt.pop(adresse.upper(), None)
             return json.dumps({"success": True, "error": ""})
 

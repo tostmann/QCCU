@@ -221,25 +221,32 @@ des Geräts selbst). Ein Neustart der Zentrale leert die Liste ebenfalls.
 
 ### c) Das Gerät in Home Assistant bestätigen
 
-⚠️ Ein Gerät, das **nach** dem Einrichten der Integration angelernt wird,
-legt Home Assistant nicht von selbst an — es wird zurückgestellt, bis jemand
-es bestätigt. Erst dann entstehen Schalter, Sensoren und die Gerätekarte.
-Solange nichts erscheint, ist das der Grund, kein Funkproblem.
+Ein frisch angelerntes Gerät gehört ab sofort zur Anlage, ist aber noch nicht
+**in Betrieb genommen** — genau wie bei einer Zentrale von eQ-3 (dort heißt das
+Merkmal `ReadyConfig`). QCCU meldet es der Haussteuerung deshalb **noch nicht**,
+sondern lässt es im **Posteingang** warten:
 
-**Der kurze Weg — an einer Stelle, mit Namen:** in der Seitenleiste
-**HM Device Configuration** öffnen; das Gerät steht dort im **Posteingang**.
-Namen eintragen, **„aufnehmen"** drücken — fertig. Die Integration nimmt es
-auf, schreibt den Namen in die Zentrale zurück und quittiert die dazugehörige
-Reparatur selbst (im Code: „Auto-confirmed inbox device"). Der Umweg über
-Einstellungen entfällt damit.
+**Seitenleiste → HM Device Configuration → Posteingang.** Namen eintragen,
+**aufnehmen** drücken — fertig. Erst dann meldet QCCU das Gerät, die Integration
+legt Schalter und Sensoren an und schreibt den Namen zurück. Ein Umweg über
+Reparaturen entsteht dabei nicht; falls die Integration doch kurz eine anlegt,
+quittiert sie sie selbst (im Code: „Auto-confirmed inbox device").
 
-Es geht auch anders, wenn man den Posteingang nicht benutzen mag:
-**Einstellungen → System → Reparaturen** („Neues Gerät …") führt zum selben
-Ergebnis, und wer alle zurückgestellten Geräte auf einmal übernehmen will,
-ruft den Dienst **`homematicip_local.confirm_all_delayed_devices`** auf —
-dann allerdings **ohne** Namen (siehe unten). Geräte, die beim Einrichten der
-Integration schon angelernt waren, erscheinen ohnehin sofort; ebenso solche,
-die Home Assistant bereits kennt (etwa nach `clear_cache`).
+In der QCCU-Oberfläche steht das Gerät währenddessen mit dem Vermerk **wartet
+auf Aufnahme** in der Geräteliste — dort ist es schaltbar, die Haussteuerung
+kennt es nur noch nicht.
+
+**Wer keine Gegenstelle mit Posteingang benutzt** (FHEM/HMCCU kennt keinen),
+schaltet in den Add-on-Einstellungen **`sofort_melden`** ein — dann geht jedes
+frisch angelernte Gerät wie früher sofort hinaus. Ohne diese Einstellung gibt es
+den Knopf **melden** in der QCCU-Geräteliste, der dasselbe für ein einzelnes
+Gerät tut.
+
+Wird sofort gemeldet, gilt wieder der alte Weg: Home Assistant stellt das Gerät
+zurück und verlangt eine Bestätigung unter **Einstellungen → System →
+Reparaturen** („Neues Gerät …"); wer alle auf einmal übernehmen will, ruft
+**`homematicip_local.confirm_all_delayed_devices`** auf — dann allerdings
+**ohne** Namen (siehe unten).
 
 **Warum die Integration das tut:** Sie will den Namen einmal vergeben lassen,
 *bevor* die Entitäten entstehen — die Docstring ihres Reparatur-Flusses sagt

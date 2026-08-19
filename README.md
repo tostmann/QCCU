@@ -172,6 +172,8 @@ Zwei Teile, und der erste lässt sich nicht umgehen:
 1. **Schlüssel vom Aufkleber beibringen** — Weboberfläche → *Gerät anlernen*, Key vom Aufkleber des Geräts (26 Zeichen; alternativ die 32 Hexziffern). Oder als Feld `key` am Anlern-Aufruf über JSON-RPC (`Interface.setInstallModeHMIP`), siehe [docs/SCHNITTSTELLEN.md](docs/SCHNITTSTELLEN.md#json-rpc-8082) — dann entfällt die Weboberfläche. Eine Zentrale von eQ-3 beschafft sich den Geräteschlüssel selbst, QCCU kann das nicht.
 2. **Anlernfenster öffnen** — in der Weboberfläche oder aus Home Assistant heraus (Anlernknopf der Integration; HMCCU hat keinen Anlern-Befehl). Dann die Anlerntaste am Gerät drücken.
 
+Ein frisch angelerntes Gerät wartet danach im **Posteingang** der Haussteuerung, bis es dort aufgenommen und benannt wurde — so hält es auch eine Zentrale von eQ-3 (`ReadyConfig`). Für Gegenstellen ohne Posteingang (FHEM/HMCCU) gibt es die Einstellung `sofort_melden` und den Knopf **melden** in der Geräteliste.
+
 Ohne hinterlegten Aufkleber lehnt QCCU das Anlernen ab und nennt den Grund. Die Funkadresse vergibt die Zentrale. Geräte, die angelernt werden wollen und noch unbekannt sind, erscheinen unter **Anlernwünsche** (in Home Assistant im Posteingang der Integration, `sensor.<name>_inbox`). Der Eintrag verfällt, sobald das Gerät aufhört zu rufen.
 
 BidCoS-Geräte lernt FHEM über `CUL_HM` an wie an jedem CUL — siehe [docs/FHEM.md](docs/FHEM.md).

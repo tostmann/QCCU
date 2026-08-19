@@ -17,7 +17,7 @@ from xmlrpc.server import SimpleXMLRPCServer, SimpleXMLRPCRequestHandler
 # zugleich die Marke des Abbilds auf Docker Hub UND der Wert von `version`
 # in addon/config.yaml — der Supervisor zieht `<image>:<version>`. Wer hier
 # hochzaehlt, muss beides mitziehen, sonst schlaegt die Installation fehl.
-VERSION = "2026.8.28"
+VERSION = "2026.8.29"
 PRODUKT = "QCCU"
 NAME_UND_FASSUNG = f"{PRODUKT} {VERSION}"
 
@@ -298,6 +298,19 @@ class QCCU:
         # Frisch angelernte Geraete, die in der Haussteuerung noch bestaetigt
         # werden muessen: Adresse -> Zeitpunkt des Anlernens.
         self.frisch_angelernt = {}
+        # ⚠️ Der Warteraum — das `ReadyConfig` einer Zentrale von eq-3.
+        # Ein frisch angelerntes Geraet gehoert zur Anlage, ist aber noch
+        # nicht „in Betrieb genommen": es wird den Gegenstellen NICHT
+        # gemeldet, sondern steht in deren Posteingang, bis jemand es dort
+        # aufnimmt (und dabei benennt). Erst dann geht `newDevices` hinaus.
+        # Grund: die Haussteuerung stellt jedes neu gemeldete Geraet ohnehin
+        # zurueck und verlangt eine Bestaetigung unter „Reparaturen" — ein
+        # zweiter Ort fuer dieselbe Sache. Wer zuerst aufnimmt, sieht die
+        # Reparatur gar nicht; sie wird beim Melden automatisch quittiert.
+        self.warteraum = set()
+        # Aus: alles wird sofort gemeldet (wie bis 2026.8.28). Fuer
+        # Gegenstellen ohne Posteingang — FHEM/HMCCU kennt keinen.
+        self.zurueckhalten = True
         # Die letzten Ereignisse, die den Anwender angehen. Nicht das
         # Protokoll — dort steht auch der Verkehr; hier steht, was passiert
         # IST: angelernt, entfernt, Stick verloren, Name vergeben.
@@ -439,17 +452,58 @@ class QCCU:
                       if k == key or k.startswith(key + ":")]:
                 self.names.pop(k, None)
 
-    def add_device(self, address, devtype, firmware="1.0.0", announce=True):
+    def add_device(self, address, devtype, firmware="1.0.0", announce=True,
+                   neu_angelernt=False):
         d = Device(address, devtype, self.t, firmware)
         with self.lock:
             self.devices[d.address] = d
         if self.verbose:
             print(f"  + {d.address} {d.label} ({len(d.channel_list())} Kanaele)")
-        if announce and self.subscribers:
+        if announce and neu_angelernt and self.zurueckhalten:
+            # Nicht melden — der Anwender nimmt es im Posteingang auf.
+            with self.lock:
+                self.warteraum.add(d.address)
+            self.merke_ereignis("info", f"{d.label} {d.address} angelernt — "
+                                        f"wartet auf Aufnahme in der "
+                                        f"Haussteuerung")
+        elif announce and self.subscribers:
             self._notify_new(d)
         if announce:
             self.save_store()
         return d
+
+    def aufnehmen(self, address):
+        """Ein wartendes Geraet freigeben und den Gegenstellen melden.
+
+        Das ist `ReadyConfig(true)` einer Zentrale von eq-3: erst jetzt
+        erfaehrt die Haussteuerung von dem Geraet. Rueckgabe: True, wenn
+        dadurch etwas geschehen ist.
+        """
+        key = (address or "").upper().split(":")[0]
+        with self.lock:
+            d = self.devices.get(key)
+            wartete = key in self.warteraum
+            self.warteraum.discard(key)
+        if d is None:
+            return False
+        if wartete:
+            self.merke_ereignis("ok", f"{self.name_of(key, d.label)} "
+                                      f"aufgenommen — an die Haussteuerung "
+                                      f"gemeldet")
+            if self.subscribers:
+                self._notify_new(d)
+            self.save_store()
+        return wartete
+
+    def wartet(self, address):
+        """Steht dieses Geraet noch im Warteraum?"""
+        with self.lock:
+            return (address or "").upper().split(":")[0] in self.warteraum
+
+    def warteraum_liste(self):
+        """Die wartenden Geraete, juengste zuerst."""
+        with self.lock:
+            return [a for a in self.devices if a in self.warteraum]
 
     def set_store(self, path):
         self.store = path
@@ -465,6 +519,9 @@ class QCCU:
             print(f"  ! Geraetespeicher nicht lesbar: {ex}")
             return 0
         self.pair_next_addr = data.get("pair_next_addr")
+        # ⚠️ VOR dem Laden der Geraete: `add_device` fragt ihn nicht, aber die
+        # Menge muss stehen, bevor irgendetwas gemeldet wird.
+        self.warteraum = {str(a).upper() for a in (data.get("warteraum") or [])}
         self.stick_serial = data.get("stick_serial")
         self.own_addr = data.get("own_addr")
         for k, v in (data.get("names") or {}).items():
@@ -517,6 +574,8 @@ class QCCU:
                                                for (c, p), v in d.values.items()},
                                     "values_zeit": self._wert_zeit.get(a)}
                                 for a, d in self.devices.items()}}
+        if self.warteraum:
+            data["warteraum"] = sorted(self.warteraum)
         if self.names:
             data["names"] = dict(self.names)
         if self.pair_next_addr:
@@ -648,6 +707,8 @@ class QCCU:
 
         self._namen_entfernen(key)
         self.frisch_angelernt.pop(key, None)
+        with self.lock:
+            self.warteraum.discard(key)
         self.save_store()
         addrs = [x["ADDRESS"] for x in d.descriptions()]
         self._enqueue(("delete", key, addrs))
@@ -772,9 +833,17 @@ class QCCU:
         return ""
 
     def listDevices(self, interface_id=None):
+        """Was die Gegenstelle als Bestand sieht.
+
+        ⚠️ Wartende Geraete gehoeren NICHT hinein: sonst holt sich die
+        Gegenstelle beim naechsten Anmelden genau das Geraet, das wir ihr
+        gerade nicht melden wollten — und der Warteraum waere wirkungslos.
+        """
         out = []
         with self.lock:
-            for d in self.devices.values():
+            for a, d in self.devices.items():
+                if a in self.warteraum:
+                    continue
                 out.extend(d.descriptions())
         if self.verbose:
             print(f"  listDevices -> {len(out)} Eintraege")
@@ -1251,6 +1320,12 @@ def main():
                    help="jede ReGa-Anfrage vollstaendig in diese Datei schreiben")
     a.add_argument("--device", action="append", default=[], metavar="ADRESSE:TYP[:FUNKADRESSE]",
                    help="Geraet vorab anlegen, z.B. 00AABBCCDDEEFF:490:3a5b01")
+    a.add_argument("--sofort-melden", action="store_true",
+                   help="frisch angelernte Geraete SOFORT an die Gegenstellen "
+                        "melden, statt sie im Posteingang warten zu lassen. "
+                        "Fuer Gegenstellen ohne Posteingang (FHEM/HMCCU) — "
+                        "dort erscheint das Geraet sonst erst, wenn es in der "
+                        "QCCU-Oberflaeche aufgenommen wurde.")
     a.add_argument("--serial", default=None,
                    help="Stick anbinden, z.B. /dev/serial/by-id/usb-busware.de_q-culfw-if00")
     a.add_argument("--own-addr", default=None,
@@ -1289,6 +1364,10 @@ def main():
           f"{len(t.paramsets)} Kanaltypen, {len(t.sdt)} Statusdatentypen")
 
     lc = QCCU(t)
+    # ⚠️ VOR dem Laden des Speichers setzen: der Warteraum wird von dort
+    # uebernommen, und wer sofort melden will, soll auch beim ersten Start
+    # nichts festhalten.
+    lc.zurueckhalten = not g.sofort_melden
     lc.rega_log = g.rega_log
     lc.rpc_port = g.rpc_port
     lc.own_host = g.advertise or g.bind if g.bind != "0.0.0.0" else (g.advertise or "127.0.0.1")
@@ -1568,7 +1647,7 @@ def main():
         parts = spec.split(":")
         if len(parts) >= 2 and parts[1].isdigit():
             addr, dt = parts[0], int(parts[1])
-            lc.add_device(addr, dt)
+            lc.add_device(addr, dt, announce=False)
             if len(parts) >= 3 and parts[2]:
                 vorgemerkte_rf.append((parts[2], addr))
 

@@ -1,12 +1,12 @@
 name: QCCU
 # ⚠️ `version` ist NICHT nur eine Anzeige: der Supervisor zieht das Abbild als
-# `<image>:<version>` — hier also `tostmann/qccu:2026.8.28`. Steht hier etwas,
+# `<image>:<version>` — hier also `tostmann/qccu:2026.8.29`. Steht hier etwas,
 # das es auf Docker Hub nicht als Marke gibt, bricht schon die Installation ab
 # („Failed to fetch manifest … 404"), und `latest` wird NICHT ersatzweise
 # genommen. Sie ist dieselbe Fassung wie `VERSION` in qccu.py; wer hochzählt,
 # zieht beide mit und veröffentlicht die Marke — genau
 # daran erkennt der Supervisor auch, dass eine Aktualisierung vorliegt.
-version: "2026.8.28"
+version: "2026.8.29"
 slug: qccu
 description: >-
   Zentrale für Homematic-IP-Geräte am busware-Funkstick — ohne CCU.
@@ -77,6 +77,7 @@ options:
   advertise: ""
   cul_port: 2000
   json_port: 8082
+  sofort_melden: false
 schema:
   # Leer lassen: QCCU sucht den Stick selbst. Nur nötig, wenn mehrere
   # busware-Sticks stecken.
@@ -89,3 +90,8 @@ schema:
   advertise: "str?"
   cul_port: "port?"
   json_port: "port?"
+  # Frisch angelernte Geräte sofort melden, statt sie im Posteingang warten
+  # zu lassen. ⚠️ Nur einschalten, wenn die Gegenstelle keinen Posteingang
+  # hat (FHEM/HMCCU) — Home Assistant verlangt sonst zusätzlich eine
+  # Bestätigung unter „Einstellungen → System → Reparaturen".
+  sofort_melden: "bool?"

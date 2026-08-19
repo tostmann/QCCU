@@ -555,13 +555,20 @@ async function laden(){
   const dv=s.devices||[];
   $('#devs').tBodies[0].innerHTML = dv.length ? dv.map(d=>
     '<tr><td>'+esc(d.name||d.label)
-   +(d.unreach?' <span class="warn" title="meldet sich nicht">·</span>':'')+'</td>'
+   +(d.unreach?' <span class="warn" title="meldet sich nicht">·</span>':'')
+   +(d.wartet?'<div class="warn" style="font-size:.85em">wartet auf Aufnahme — '
+     +'in der Haussteuerung im Posteingang aufnehmen (dabei benennen)</div>':'')+'</td>'
    +'<td><code>'+esc(d.address)+'</code>'
    +'<span class="mut" style="font-size:.85em"> · '+esc(d.rf||'—')+'</span></td>'
    +'<td class="mut">'+esc(d.label)+' · '+d.channels+' Kan.</td>'
    +'<td class="mut">'+alterText(d.vor_sek)+'</td>'
    +'<td class="right mut">'+(d.rssi==null?'—':(d.rssi+' dBm'))+'</td>'
-   +'<td class="right"><button class="quiet" title="sendet die Uhrzeit und '
+   +'<td class="right">'
+   +(d.wartet?'<button class="quiet" title="meldet das Gerät jetzt an die '
+     +'Haussteuerung — nötig nur, wenn diese keinen Posteingang hat (FHEM)" '
+     +'onclick="post(\'api/device/aufnehmen\',{address:\''+esc(d.address)+'\'})">'
+     +'melden</button> ':'')
+   +'<button class="quiet" title="sendet die Uhrzeit und '
    +'wartet auf die Quittung" onclick="pruefe(\''+esc(d.address)+'\')">prüfen</button> '
    +'<button class="quiet" onclick="if(confirm(\'Gerät '
    +esc(d.name||d.address)+' entfernen?\\n\\nEs bekommt dabei einen '
@@ -743,6 +750,7 @@ class WebHandler(BaseHTTPRequestHandler):
             with self.radio.lock:
                 rf = {a: h for h, a in self.radio.by_hmid.items()}
         jetzt = time.time()
+        wartet = getattr(lc, "wartet", None)
         for addr, d in items:
             # Was der Anwender wissen will, steht bisher nur in Home
             # Assistant: lebt das Geraet noch, wie stark kommt es an, wann hat
@@ -759,6 +767,7 @@ class WebHandler(BaseHTTPRequestHandler):
                          "channels": len(d.channel_list()),
                          "rssi": pegel if isinstance(pegel, (int, float)) else None,
                          "unreach": bool(getattr(d, "unreach", False)),
+                         "wartet": bool(wartet(addr)) if wartet else False,
                          "vor_sek": int(jetzt - zuletzt) if zuletzt else None})
         ereignisse = getattr(lc, "ereignis_liste", None)
         wuensche = getattr(self.radio, "anlernwuensche_liste", None) if self.radio else None
@@ -825,6 +834,15 @@ class WebHandler(BaseHTTPRequestHandler):
             if self.radio:
                 self.radio.stop_pairing()
             return self._json({"ok": True})
+
+        if self.path == "/api/device/aufnehmen":
+            # Der Notausgang fuer Gegenstellen ohne Posteingang (FHEM/HMCCU):
+            # was hier freigegeben wird, geht als `newDevices` hinaus.
+            adresse = str(body.get("address") or "").upper()
+            aufnehmen = getattr(self.qccu, "aufnehmen", None)
+            if aufnehmen is None:
+                return self._json({"error": "nicht verfuegbar"}, 409)
+            return self._json({"ok": True, "gemeldet": bool(aufnehmen(adresse))})
 
         if self.path == "/api/ereignisse/loeschen":
             # „Zuletzt geschehen" ist eine Erinnerungshilfe, kein Protokoll:

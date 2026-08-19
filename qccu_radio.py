@@ -1571,7 +1571,7 @@ class Radio:
         # der kommt es ohne Werksreset nicht mehr heraus — es wiederholt dann
         # JEDE Sendung dreifach. Am Geraet gemessen, 17.08.2026.
         ccu_addr = sgtin.hex()[-14:].upper()
-        self.qccu.add_device(ccu_addr, devtype)
+        self.qccu.add_device(ccu_addr, devtype, neu_angelernt=True)
         self.bind(newa.hex(), ccu_addr)
 
         # Wegemeldung wie die echte Zentrale: rund 185 ms nach ihrer Quittung
