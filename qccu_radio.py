@@ -1269,6 +1269,54 @@ class Radio:
                 "icmp": dict(self.icmp_seen),
                 "devices": {h: a for h, a in self.by_hmid.items()}}
 
+    # Wie lange auf die Kurzquittung gewartet wird. Die Gegenstelle antwortet
+    # binnen weniger Millisekunden; eine Sekunde ist reichlich und haelt den
+    # Knopf in der Oberflaeche flott.
+    PING_WARTEN = 1.0
+
+    def erreichbarkeit_pruefen(self, hmid, warten=None):
+        """Aktiv nachsehen, ob ein Geraet noch antwortet.
+
+        ⚠️ Ohne das faellt Stille erst auf, wenn jemand vergeblich schaltet:
+        `unreach` wird gesetzt, wenn ein Befehl dreimal unquittiert bleibt —
+        und ein Geraet, das niemand schaltet, gilt beliebig lange als in
+        Ordnung. Am Aufbau gemessen (19.08.2026): eine PS-2 war zwei Stunden
+        aus dem Netz, die Oberflaeche meldete unveraendert „erreichbar".
+
+        Gesendet wird die **Uhrzeit** — dieselbe Auskunft, die die Zentrale
+        einem fragenden Geraet ohnehin gibt. Sie aendert am Geraet nichts und
+        ist die harmloseste Sendung, die es gibt. Die Antwort ist nicht der
+        Inhalt, sondern die **Kurzquittung**: jeden Unicast quittiert ein
+        HmIP-Geraet mit sechs Byte, ohne Zaehler und ohne Verschluesselung.
+        Kommt sie, lebt das Geraet und hoert uns.
+
+        ⚠️ Das kostet Sendezeit — sparsam benutzen, nicht im Minutentakt.
+
+        Rueckgabe: True (antwortet), False (keine Antwort), None (kein Funk
+        oder Geraet unbekannt).
+        """
+        hmid = (hmid or "").lower()
+        if not hmid or hmid not in self.by_hmid:
+            return None
+        ev = threading.Event()
+        self._acked[hmid] = ev
+        try:
+            self._time_info(hmid, self._next_seq(hmid))
+            antwortet = ev.wait(warten or self.PING_WARTEN)
+        finally:
+            self._acked.pop(hmid, None)
+        addr = self.by_hmid.get(hmid)
+        if addr:
+            try:
+                self.qccu.note_reachable(addr, bool(antwortet))
+            except Exception as ex:                  # noqa: BLE001
+                print(f"  ! Erreichbarkeit nicht vermerkt: {ex}")
+        if self.verbose:
+            print(f"  Erreichbarkeit {hmid}: "
+                  + ("antwortet" if antwortet else "keine Antwort"))
+        self._log("##", f"PING {hmid} -> {'ok' if antwortet else 'keine Antwort'}")
+        return bool(antwortet)
+
     def funk_exclude(self, hmid, warten=2.5):
         """Ein Geraet ueber Funk ausschliessen — wie die CCU beim Loeschen.
 

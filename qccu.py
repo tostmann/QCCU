@@ -17,7 +17,7 @@ from xmlrpc.server import SimpleXMLRPCServer, SimpleXMLRPCRequestHandler
 # zugleich die Marke des Abbilds auf Docker Hub UND der Wert von `version`
 # in addon/config.yaml — der Supervisor zieht `<image>:<version>`. Wer hier
 # hochzaehlt, muss beides mitziehen, sonst schlaegt die Installation fehl.
-VERSION = "2026.8.22"
+VERSION = "2026.8.23"
 PRODUKT = "QCCU"
 NAME_UND_FASSUNG = f"{PRODUKT} {VERSION}"
 
@@ -864,6 +864,10 @@ class QCCU:
         if changed:
             if self.verbose:
                 print(f"  {key}: {'NICHT erreichbar' if not reachable else 'wieder erreichbar'}")
+            name = self.name_of(key, key)
+            self.merke_ereignis("warn" if not reachable else "ok",
+                                f"{name} meldet sich nicht mehr" if not reachable
+                                else f"{name} ist wieder da")
             self._notify(f"{key}:0", "UNREACH", not reachable)
 
     def getServiceMessages(self, *rest):
@@ -1443,23 +1447,73 @@ def main():
             print("  Stick aufgetaucht — Funk angebunden.")
             lc.merke_ereignis("ok", "Stick wieder angebunden")
 
+    def stille_waechter(pause=300.0, stille=1800.0):
+        """Nachsehen, wenn ein Geraet lange nichts gesagt hat.
+
+        ⚠️ Ohne das faellt Stille erst auf, wenn jemand vergeblich schaltet:
+        `unreach` wird gesetzt, wenn ein Befehl dreimal unquittiert bleibt.
+        Ein Geraet, das niemand schaltet, gilt bis dahin als in Ordnung — am
+        Aufbau gemessen (19.08.2026): eine PS-2 war zwei Stunden aus dem Netz,
+        die Oberflaeche meldete unveraendert „erreichbar".
+
+        Gefragt wird sparsam: nur Geraete, die laenger als `stille` Sekunden
+        nichts gesagt haben, und pro Durchgang nur EINES — die Sendezeit ist
+        ein knappes Gut, und wer wirklich weg ist, ist es auch in fuenf
+        Minuten noch. Jede Frage kostet eine Sendung; die Antwort ist die
+        Kurzquittung des Geraets.
+        """
+        while True:
+            time.sleep(pause)
+            r = getattr(lc, "radio", None)
+            if r is None or not hasattr(r, "erreichbarkeit_pruefen"):
+                continue
+            jetzt = time.time()
+            faellig = []
+            with lc.lock:
+                for addr, d in lc.devices.items():
+                    zuletzt = getattr(d, "last_seen", None) or lc._wert_zeit.get(addr)
+                    rf = lc.rf.get(addr)
+                    if not rf:
+                        continue
+                    # Wer noch nie etwas gesagt hat, wird ebenso gefragt.
+                    alter = (jetzt - zuletzt) if zuletzt else stille + 1
+                    if alter > stille:
+                        faellig.append((alter, addr, rf))
+            if not faellig:
+                continue
+            faellig.sort(reverse=True)          # der Stillste zuerst
+            _alter, addr, rf = faellig[0]
+            try:
+                r.erreichbarkeit_pruefen(rf)
+            except Exception as ex:              # noqa: BLE001
+                if lc.verbose:
+                    print(f"  ! Erreichbarkeitsprobe {addr}: {ex}")
+
     lc.rebind_radio = bind_radio_retry
     lc.firmware_hex = g.firmware
     lc.serial_path = g.serial
     if g.serial:
         radio = None if not os.path.exists(g.serial) else True
 
+    # ⚠️ Die Funkadresse aus `--device ADDR:TYP:FUNKADRESSE` wird GEMERKT, nicht
+    # sofort gebunden: der Funkpfad steht hier noch gar nicht, er wird erst ein
+    # paar Zeilen weiter angebunden. Wer sie hier eintrug, sah sie stillschweigend
+    # verfallen — das Geraet stand dann ohne Funkadresse da und liess sich weder
+    # schalten noch pruefen.
+    vorgemerkte_rf = []
     for spec in g.device:
         parts = spec.split(":")
         if len(parts) >= 2 and parts[1].isdigit():
             addr, dt = parts[0], int(parts[1])
             lc.add_device(addr, dt)
-            if lc.radio and len(parts) >= 3:
-                lc.radio.bind(parts[2], addr)
+            if len(parts) >= 3 and parts[2]:
+                vorgemerkte_rf.append((parts[2], addr))
 
     if radio:
         radio = bind_radio()
         if radio:
+            for rf, addr in vorgemerkte_rf:
+                radio.bind(rf, addr)
             print(f"  Funk angebunden ueber {g.serial}")
             if g.cul_port:
                 start_cul(radio)
@@ -1526,6 +1580,7 @@ def main():
     # ueber XML-RPC (FHEM/HMCCU). Frueher hing er am Web-Zweig — wer die
     # Oberflaeche abschaltete, hatte auch keine Wiederanbindung.
     threading.Thread(target=stick_waechter, daemon=True).start()
+    threading.Thread(target=stille_waechter, daemon=True).start()
     print("  bereit — mit Strg-C beenden")
 
     def beenden(grund):

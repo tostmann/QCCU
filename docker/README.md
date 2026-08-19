@@ -9,7 +9,7 @@ System unter [../docs/](../docs/).
 ./docker/build.sh                                  # tostmann/qccu:dev für diese Maschine
 DEBMATIC_VERSION=3.85.8-124 ./docker/build.sh      # andere debmatic-Fassung
 QCULFW=/pfad/zum/q-culfw ./docker/build.sh         # neuere Stick-Firmware übernehmen
-TAG=tostmann/qccu:2026.8.22 ./docker/build.sh       # eigene Marke
+TAG=tostmann/qccu:2026.8.23 ./docker/build.sh       # eigene Marke
 ```
 
 `build.sh` nimmt `firmware/q-culfw-CUL_V3.hex` aus dem Repo; mit `QCULFW=<pfad>` wird `q-culfw-CUL_V3.hex` und `THIRD-PARTY-NOTICES.md` von dort kopiert. Bei Host-MTU < 1500 baut es mit `--network=host`.

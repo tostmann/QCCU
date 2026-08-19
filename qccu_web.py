@@ -357,6 +357,14 @@ function pair(){
                     seconds:+$('#secs').value});
 }
 
+// Aktiv nachsehen, ob ein Geraet noch da ist. Kostet EINE Sendung.
+async function pruefe(addr){
+  const j = await post('api/device/ping', {address: addr});
+  if(j && j.ok) melde(j.antwortet ? 'Das Gerät antwortet.'
+                                  : 'Keine Antwort — das Gerät meldet sich nicht.',
+                      j.antwortet ? '' : 'warn');
+}
+
 // Der zweite der beiden Wege aus der Warnkarte — als Knopf. Zweimal fragen,
 // denn danach braucht jedes Geraet einen Werksreset: rueckgaengig gibt es das
 // hier nicht.
@@ -517,7 +525,9 @@ async function laden(){
    +'<td class="mut">'+esc(d.label)+' · '+d.channels+' Kan.</td>'
    +'<td class="mut">'+alterText(d.vor_sek)+'</td>'
    +'<td class="right mut">'+(d.rssi==null?'—':(d.rssi+' dBm'))+'</td>'
-   +'<td class="right"><button class="quiet" onclick="if(confirm(\'Gerät '
+   +'<td class="right"><button class="quiet" title="sendet die Uhrzeit und '
+   +'wartet auf die Quittung" onclick="pruefe(\''+esc(d.address)+'\')">prüfen</button> '
+   +'<button class="quiet" onclick="if(confirm(\'Gerät '
    +esc(d.name||d.address)+' entfernen?\\n\\nEs bekommt dabei einen '
    +'Funk-Ausschluss und lässt sich danach ohne Werksreset neu anlernen.\'))'
    +'post(\'api/device/delete\',{address:\''
@@ -776,6 +786,26 @@ class WebHandler(BaseHTTPRequestHandler):
         # Der Ausweg aus „Stick ohne Schluessel, aber Geraete eingetragen":
         # alles verwerfen und neu beginnen. Mit Sicherung — der Aufruf
         # verlangt `bestaetigt`, damit ihn kein Fehlgriff ausloest.
+        if self.path == "/api/device/ping":
+            # Aktiv nachsehen, ob ein Geraet noch antwortet. Gesendet wird die
+            # Uhrzeit; die Antwort ist die Kurzquittung des Geraets.
+            if not self.radio:
+                return self._json({"error": "kein Funk angebunden"}, 409)
+            adresse = str(body.get("address") or "").upper()
+            with self.radio.lock:
+                rf = {a: h for h, a in self.radio.by_hmid.items()}.get(adresse)
+            if not rf:
+                return self._json({"error": "Geraet hat keine Funkadresse — "
+                                            "es wurde noch nie gehoert."}, 409)
+            antwortet = self.radio.erreichbarkeit_pruefen(rf)
+            if antwortet is None:
+                return self._json({"error": "Geraet ist dem Funkpfad unbekannt."}, 409)
+            name = self.qccu.name_of(adresse, adresse)
+            self.qccu.merke_ereignis("ok" if antwortet else "warn",
+                                     f"{name} " + ("antwortet" if antwortet
+                                                   else "antwortet nicht"))
+            return self._json({"ok": True, "antwortet": bool(antwortet)})
+
         if self.path == "/api/netz/neu":
             # Die Bestaetigung wird ZUERST geprueft: ein unbestaetigter Aufruf
             # soll immer abgewiesen werden, auch wenn gerade gar kein Funkpfad
