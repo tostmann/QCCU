@@ -414,6 +414,14 @@ class JsonRpc:
                 felder = ("id", "address", "name", "type", "interface")
                 liste = [{k: e[k] for k in felder if k in e}
                          for e in radio.anlernwuensche_liste()]
+                # ⚠️ `id` MUSS eine Zahl sein. Vergibt jemand im Posteingang
+                # der Gegenstelle einen Namen, rechnet sie `int(device_id)`
+                # (websocket_api.ws_accept_inbox_device → rename_device) — eine
+                # Funkadresse wie „1aff5f" wirft dort einen ValueError, den
+                # niemand faengt. Kennungen sind bei einer Zentrale von eq-3
+                # immer Zahlen; das gilt hier genauso.
+                for e in liste:
+                    e["id"] = _kennung(e.get("address", ""))
             except Exception:                        # noqa: BLE001
                 liste = []
 
@@ -425,11 +433,12 @@ class JsonRpc:
             liste.append({
                 "id": _kennung(adresse),
                 "address": adresse,
-                "name": (f"{name} — angelernt, aber hier noch nicht aufgenommen: "
-                         f"unter Einstellungen → System → Reparaturen bestaetigen "
-                         f"(dabei den Namen vergeben). Erscheint dort nichts: "
-                         f"Dienst homematicip_local.clear_cache aufrufen und die "
-                         f"Integration neu laden."),
+                "name": (f"{name} — angelernt, hier noch nicht aufgenommen: in "
+                         f"DIESER Liste auf ‚aufnehmen‘ druecken und dabei benennen "
+                         f"(Seitenleiste → HM Device Configuration → Posteingang). "
+                         f"Auch moeglich: Einstellungen → System → Reparaturen. "
+                         f"Steht dort nichts: Dienst homematicip_local.clear_cache, "
+                         f"dann Integration neu laden."),
                 "type": typ,
                 "interface": self.interface,
             })

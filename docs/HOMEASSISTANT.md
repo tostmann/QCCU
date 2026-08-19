@@ -222,14 +222,24 @@ des Geräts selbst). Ein Neustart der Zentrale leert die Liste ebenfalls.
 ### c) Das Gerät in Home Assistant bestätigen
 
 ⚠️ Ein Gerät, das **nach** dem Einrichten der Integration angelernt wird,
-legt Home Assistant nicht von selbst an. Die Integration stellt es zurück und
-meldet es unter **Einstellungen → System → Reparaturen** („Neues Gerät …");
-dort einen Namen vergeben und bestätigen — erst dann entstehen Schalter,
-Sensoren und die Gerätekarte. Solange nichts erscheint, ist das der Grund,
-kein Funkproblem. Wer alle zurückgestellten Geräte auf einmal übernehmen
-will, ruft den Dienst **`homematicip_local.confirm_all_delayed_devices`**
-auf. (Geräte, die beim Einrichten der Integration schon angelernt waren,
-erscheinen sofort.)
+legt Home Assistant nicht von selbst an — es wird zurückgestellt, bis jemand
+es bestätigt. Erst dann entstehen Schalter, Sensoren und die Gerätekarte.
+Solange nichts erscheint, ist das der Grund, kein Funkproblem.
+
+**Der kurze Weg — an einer Stelle, mit Namen:** in der Seitenleiste
+**HM Device Configuration** öffnen; das Gerät steht dort im **Posteingang**.
+Namen eintragen, **„aufnehmen"** drücken — fertig. Die Integration nimmt es
+auf, schreibt den Namen in die Zentrale zurück und quittiert die dazugehörige
+Reparatur selbst (im Code: „Auto-confirmed inbox device"). Der Umweg über
+Einstellungen entfällt damit.
+
+Es geht auch anders, wenn man den Posteingang nicht benutzen mag:
+**Einstellungen → System → Reparaturen** („Neues Gerät …") führt zum selben
+Ergebnis, und wer alle zurückgestellten Geräte auf einmal übernehmen will,
+ruft den Dienst **`homematicip_local.confirm_all_delayed_devices`** auf —
+dann allerdings **ohne** Namen (siehe unten). Geräte, die beim Einrichten der
+Integration schon angelernt waren, erscheinen ohnehin sofort; ebenso solche,
+die Home Assistant bereits kennt (etwa nach `clear_cache`).
 
 **Warum die Integration das tut:** Sie will den Namen einmal vergeben lassen,
 *bevor* die Entitäten entstehen — die Docstring ihres Reparatur-Flusses sagt
@@ -249,7 +259,8 @@ stand `CHECK_SUPPORTED_METHODS: … Channel.setName, Device.setName`.
 Wer stattdessen den Dienst `confirm_all_delayed_devices` benutzt, übernimmt
 alle zurückgestellten Geräte **ohne** Namen — sie behalten „Typ + Adresse".
 Nachträglich umbenennen geht in Home Assistant weiterhin, ändert aber nur die
-dortige Anzeige; in QCCU landet der Name nur über den Reparatur-Dialog.
+dortige Anzeige; in QCCU landet der Name nur über den Posteingang oder den
+Reparatur-Dialog.
 
 ### d) Warum der Knopf „Anlernmodus aktivieren" in Home Assistant absagt
 
