@@ -160,7 +160,7 @@ der Kopf `!# name: <datei>`, wie aiohomematic seine Skripte kennzeichnet:
 | `get_backend_info.fn` | `version`, `product` = `QCCU`, `hostname` |
 | `get_serial.fn` | `QCCU` + Funkadresse |
 | `get_system_update_info.fn` | nichts steht an |
-| `get_inbox_devices.fn` | Posteingang: Geräte, die angelernt werden wollen. Er lebt im Arbeitsspeicher — ein Neustart der Zentrale leert ihn; ein Anlernwunsch ist eine Momentaufnahme, keine Bestandsliste. Einträge verfallen nach einer Stunde, höchstens 20 |
+| `get_inbox_devices.fn` | Posteingang: Geräte, die angelernt werden wollen (in der QCCU-Oberfläche: **Anlernwünsche**), dazu frisch angelernte, die die Gegenstelle noch aufnehmen muss. Er lebt im Arbeitsspeicher — ein Neustart der Zentrale leert ihn; ein Anlernwunsch ist eine Momentaufnahme, keine Bestandsliste. Ein Eintrag verfällt, wenn drei erwartete Rufe ausbleiben (mindestens 5 min, höchstens 1 h); höchstens 20 |
 | `accept_device_in_inbox.fn` | öffnet das Anlernfenster; ohne Aufkleber `success: false` mit Grund |
 | `get_service_messages.fn`, `get_alarm_messages.fn`, `get_program_descriptions.fn`, `get_system_variable_descriptions.fn` | `[]` |
 | alles andere | leere Zeichenkette |

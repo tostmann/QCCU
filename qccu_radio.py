@@ -1586,8 +1586,17 @@ class Radio:
         self.pair_until = 0.0
         self._pair_busy = False
 
-    # -- Posteingang: gehoerte, aber unbekannte Geraete -------------------
-    FREMDE_HALTBARKEIT = 3600.0   # eine Stunde; danach war es wohl nichts
+    # -- Anlernwuensche: gehoerte, aber unbekannte Geraete ----------------
+    #
+    # ⚠️ NICHT „Posteingang". In einer Zentrale von eq-3 heisst so die Liste
+    # der bereits ANGELERNTEN, nur noch nicht in Betrieb genommenen Geraete.
+    # Was hier steht, ist das Gegenteil: Geraete, die noch gar nicht dazu
+    # gehoeren und darum bitten. Denselben Namen fuer beides zu benutzen,
+    # laesst den Anwender vergeblich nach einem Geraet suchen, das er zu
+    # besitzen glaubt (Dirk, 19.08.2026).
+    FREMDE_GRUNDFRIST = 300.0     # untere Schranke — auch beim ersten Ruf
+    FREMDE_FEHLRUFE = 3           # so viele ausgebliebene Rufe = verstummt
+    FREMDE_HOECHSTFRIST = 3600.0  # obere Schranke
     FREMDE_MAX = 20
 
     def _merke_anlernwunsch(self, air):
@@ -1626,24 +1635,92 @@ class Radio:
             if self.verbose:
                 print(f"  Anlernwunsch: {hmid}, Typ {devtype}")
 
-    def inbox_liste(self):
-        """Der Posteingang, wie ihn eine Zentrale ausweist.
+    def _fremde_frist(self, e):
+        """Wie lange ein Anlernruf nachhallt — aus seiner eigenen Kadenz.
 
-        ⚠️ Der Name traegt die Handlungsanweisung. Eine Zentrale von eq-3 kann
-        ein HmIP-Geraet ohne Zutun aufnehmen, weil sie an dessen Schluessel
-        kommt; wir koennen das nicht (nachgewiesen am 12.08.2026 — der Riegel
-        ist der Hauptschluessel im Silizium). Ohne Schluessel bleibt es beim
-        Zusehen, und genau das soll der Anwender lesen, anstatt vergeblich auf
-        ein Geraet zu warten.
+        ⚠️ Ein Anlernwunsch ist ein WIEDERHOLTER Ruf, kein Zustand. Wer den
+        Knopf gedrueckt hat und aufgibt — oder sich anderswo anlernt —, hoert
+        auf zu rufen. Bleibt der Eintrag trotzdem stehen, zeigt die Liste
+        Geraete an, die niemand mehr anbietet, und der Anwender wartet auf
+        etwas, das nicht mehr kommt (Dirk, 19.08.2026).
+
+        Wie lange „ausgeblieben" dauert, misst der Eintrag selbst: der
+        mittlere Abstand seiner bisherigen Rufe, mal FREMDE_FEHLRUFE. Ein
+        langsam rufendes Geraet bekommt dadurch von allein mehr Zeit als ein
+        schnelles — ohne dass wir eine Ruf-Kadenz behaupten muessten, die wir
+        nicht gemessen haben. Beim ersten Ruf gibt es keinen Abstand; dann
+        gilt die Grundfrist.
+        """
+        anzahl = e.get("anzahl", 1)
+        spanne = e["zuletzt"] - e["zuerst"]
+        if anzahl < 2 or spanne <= 0:
+            return self.FREMDE_GRUNDFRIST
+        abstand = spanne / (anzahl - 1)
+        return max(self.FREMDE_GRUNDFRIST,
+                   min(self.FREMDE_HOECHSTFRIST, self.FREMDE_FEHLRUFE * abstand))
+
+    def fremde_aufraeumen(self):
+        """Verstummte Anlernrufe wegwerfen — und sagen, dass sie weg sind.
+
+        Frueher wurden zu alte Eintraege beim Anzeigen nur uebersprungen: sie
+        blieben im Speicher, zaehlten gegen FREMDE_MAX und verdraengten
+        aktuelle Rufe. Jetzt werden sie wirklich entfernt, und das Wegfallen
+        steht unter „Zuletzt geschehen" — sonst ist die Liste ohne Erklaerung
+        leer, und das sieht aus wie ein Fehler.
+        """
+        jetzt = time.time()
+        weg = []
+        with self.lock:
+            for hmid, e in list(self._fremde.items()):
+                if jetzt - e["zuletzt"] > self._fremde_frist(e):
+                    weg.append((hmid, e))
+                    del self._fremde[hmid]
+        for hmid, e in weg:
+            typ = self._typname(e["devtype"])
+            self._log("<<", f"Anlernwunsch {hmid} verstummt — aus der Liste")
+            merke = getattr(self.qccu, "merke_ereignis", None)
+            if merke:
+                merke("info", f"{typ or 'Geraet'} {hmid} ruft nicht mehr — "
+                              f"aus den Anlernwuenschen entfernt")
+        return len(weg)
+
+    def _typname(self, devtype):
+        """Der Name aus dem Katalog, wenn er dort steht — sonst nichts.
+
+        Erfunden wird kein Typname; ein leerer ist ehrlicher als ein falscher.
+        """
+        try:
+            return self.t.label_of(devtype) or ""
+        except Exception:                            # noqa: BLE001
+            return ""
+
+    def anlernwuensche_liste(self):
+        """Wer gerade angelernt werden WILL — der Ruf, nicht der Bestand.
+
+        ⚠️ Der Name jedes Eintrags traegt die Handlungsanweisung. Eine
+        Zentrale von eq-3 kann ein HmIP-Geraet ohne Zutun aufnehmen, weil sie
+        an dessen Schluessel kommt; wir koennen das nicht (nachgewiesen am
+        12.08.2026 — der Riegel ist der Hauptschluessel im Silizium). Ohne
+        Schluessel bleibt es beim Zusehen, und genau das soll der Anwender
+        lesen, anstatt vergeblich auf ein Geraet zu warten.
 
         Der Hinweis nennt BEIDE Wege, den Schluessel beizubringen — die
-        Oberflaeche und das Feld `key` am Anlern-Aufruf. Nur einen zu nennen
-        hiesse, den anderen zu verschweigen; wer aus Home Assistant heraus
-        arbeitet, wuerde in eine Oberflaeche geschickt, die er nicht braucht.
+        QCCU-Oberflaeche und das Feld `key` am Anlern-Aufruf. Nur einen zu
+        nennen hiesse, den anderen zu verschweigen; wer aus Home Assistant
+        heraus arbeitet, wuerde in eine Oberflaeche geschickt, die er nicht
+        braucht.
 
-        ⚠️ Der Posteingang lebt im Arbeitsspeicher: ein Neustart der Zentrale
-        leert ihn. Das ist beabsichtigt — ein Anlernwunsch ist eine Momentaufnahme
-        („hier wurde gerade der Knopf gedrueckt"), keine Bestandsliste."""
+        ⚠️ Die Liste lebt im Arbeitsspeicher: ein Neustart der Zentrale leert
+        sie. Das ist beabsichtigt — ein Anlernwunsch ist eine Momentaufnahme
+        („hier wurde gerade der Knopf gedrueckt"), keine Bestandsliste. Wer
+        verstummt, faellt heraus (`fremde_aufraeumen`).
+
+        Zwei Namensfamilien in einem Eintrag, mit Absicht: `id/address/name/
+        type/interface` ist das, was die Haussteuerung liest (Feldnamen einer
+        eq-3-Zentrale, nicht unsere Wahl); `hmid/label/devtype/hinweis/
+        vor_sek/anzahl` ist das, was die eigene Oberflaeche zeigt.
+        """
+        self.fremde_aufraeumen()
         jetzt = time.time()
         hat_schluessel = bool(self.pair_key)
         hinweis = ("bereit zum Anlernen" if hat_schluessel
@@ -1654,21 +1731,22 @@ class Radio:
         with self.lock:
             eintraege = sorted(self._fremde.items(),
                                key=lambda kv: kv[1]["zuletzt"], reverse=True)
+            eintraege = [(k, dict(v)) for k, v in eintraege]
         for hmid, e in eintraege:
-            if jetzt - e["zuletzt"] > self.FREMDE_HALTBARKEIT:
-                continue
-            # Den Typnamen aus dem Katalog, wenn er dort steht — sonst die
-            # blosse Nummer. Erfunden wird nichts.
-            try:
-                typ = self.t.label_of(e["devtype"])
-            except Exception:                        # noqa: BLE001
-                typ = ""
+            typ = self._typname(e["devtype"])
             out.append({
                 "id": hmid,
                 "address": hmid.upper(),
                 "name": f"{typ or 'Unbekanntes Geraet'} {hmid} — {hinweis}",
                 "type": typ,
                 "interface": getattr(self.qccu, "interface_name", "HmIP-RF"),
+                # ab hier: nur fuer die eigene Oberflaeche
+                "hmid": hmid,
+                "label": typ,
+                "devtype": e["devtype"],
+                "hinweis": hinweis,
+                "vor_sek": max(0.0, jetzt - e["zuletzt"]),
+                "anzahl": e.get("anzahl", 1),
             })
         return out
 

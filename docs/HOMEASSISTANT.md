@@ -207,11 +207,17 @@ Entweder gleich in der QCCU-Oberfläche, oder in Home Assistant über
 hinterlegten Schlüssel; wer den `rest_command` oben benutzt, öffnet damit
 das Fenster ohnehin schon). Dann die Anlerntaste am Gerät drücken.
 
-Meldet sich ein Gerät, das QCCU nicht kennt, erscheint es im **Posteingang**
-(`sensor.<name>_posteingang`, Einträge im Attribut `devices`) — mit
-Gerätetyp und dem Hinweis, was noch fehlt. Der Posteingang zeigt nur Geräte,
-die angelernt werden *wollen*, nicht jeden Funkverkehr in Reichweite; ein
-Neustart der Zentrale leert ihn, und Einträge verfallen nach einer Stunde.
+Meldet sich ein Gerät, das QCCU nicht kennt, erscheint es im **Posteingang der
+Integration** (`sensor.<name>_inbox`, Einträge im Attribut `devices`) — mit
+Gerätetyp und dem Hinweis, was noch fehlt. In der QCCU-Oberfläche heißt diese
+Liste **Anlernwünsche**: anders als der Posteingang einer Zentrale von eq-3
+führt sie keine angelernten Geräte, sondern nur solche, die angelernt werden
+*wollen* — und auch nicht jeden Funkverkehr in Reichweite.
+
+Ein Anlernwunsch ist ein wiederholter Ruf, kein Zustand: **hört das Gerät auf
+zu rufen, fällt der Eintrag heraus** (frühestens nach fünf Minuten; ruft ein
+Gerät langsamer, wartet QCCU entsprechend länger — gemessen wird die Kadenz
+des Geräts selbst). Ein Neustart der Zentrale leert die Liste ebenfalls.
 
 ### c) Das Gerät in Home Assistant bestätigen
 

@@ -17,7 +17,7 @@ from xmlrpc.server import SimpleXMLRPCServer, SimpleXMLRPCRequestHandler
 # zugleich die Marke des Abbilds auf Docker Hub UND der Wert von `version`
 # in addon/config.yaml — der Supervisor zieht `<image>:<version>`. Wer hier
 # hochzaehlt, muss beides mitziehen, sonst schlaegt die Installation fehl.
-VERSION = "2026.8.25"
+VERSION = "2026.8.26"
 PRODUKT = "QCCU"
 NAME_UND_FASSUNG = f"{PRODUKT} {VERSION}"
 
@@ -366,6 +366,19 @@ class QCCU:
     def ereignis_liste(self, anzahl=25):
         """Die juengsten Ereignisse zuerst."""
         return list(self.ereignisse)[-anzahl:][::-1]
+
+    def ereignisse_leeren(self):
+        """„Zuletzt geschehen" auf Wunsch leeren (Dirk, 19.08.2026).
+
+        Die Liste ist eine Erinnerungshilfe, kein Protokoll: wer sie gelesen
+        und abgearbeitet hat, will mit leerem Blatt weitersehen, ob etwas
+        Neues passiert. Das Protokoll der Zentrale bleibt unberuehrt — dort
+        steht der Verlauf weiter, nachvollziehbar auch nach dem Leeren.
+        """
+        with self.lock:
+            n = len(self.ereignisse)
+            self.ereignisse.clear()
+        return n
 
     # Ein Name darf die ReGa-Auskunft nicht zerlegen: dort trennt das
     # Semikolon die Felder und der Zeilenumbruch die Eintraege.
@@ -1505,6 +1518,16 @@ def main():
             r = getattr(lc, "radio", None)
             if r is None or not hasattr(r, "erreichbarkeit_pruefen"):
                 continue
+            # Verstummte Anlernrufe wegraeumen. Das geschieht sonst nur, wenn
+            # jemand die Liste liest — eine Anlage, die niemand ansieht, haette
+            # den Eintrag ewig stehen. Kostet keine Sendung.
+            aufraeumen = getattr(r, "fremde_aufraeumen", None)
+            if aufraeumen:
+                try:
+                    aufraeumen()
+                except Exception as ex:              # noqa: BLE001
+                    if lc.verbose:
+                        print(f"  ! Anlernwuensche aufraeumen: {ex}")
             jetzt = time.time()
             faellig = []
             with lc.lock:

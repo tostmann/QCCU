@@ -406,9 +406,14 @@ class JsonRpc:
         """
         radio = getattr(self.q, "radio", None)
         liste = []
-        if radio is not None and hasattr(radio, "inbox_liste"):
+        if radio is not None and hasattr(radio, "anlernwuensche_liste"):
             try:
-                liste = radio.inbox_liste()
+                # Die eigene Oberflaeche bekommt mehr Felder als die
+                # Haussteuerung; hier geht nur hinaus, was die Gegenstelle
+                # liest (`InboxDeviceData` in aiohomematic, fuenf Felder).
+                felder = ("id", "address", "name", "type", "interface")
+                liste = [{k: e[k] for k in felder if k in e}
+                         for e in radio.anlernwuensche_liste()]
             except Exception:                        # noqa: BLE001
                 liste = []
 

@@ -47,6 +47,8 @@ header .sp{flex:1}
   box-shadow:var(--shadow);margin-bottom:1rem}
 .card>h2{font-size:.8rem;text-transform:uppercase;letter-spacing:.05em;
   color:var(--mut);margin:0;padding:.75rem 1rem;border-bottom:1px solid var(--line)}
+.card>h2.mitknopf{display:flex;align-items:center;justify-content:space-between;
+  padding-top:.3rem;padding-bottom:.3rem}
 .card>.body{padding:1rem}
 .card>.body.flush{padding:0}
 
@@ -201,19 +203,23 @@ footer a{color:var(--mut)} footer a:hover{color:var(--acc)}
 </div>
 
 <div class="card" id="karte_ereignisse" style="display:none">
-  <h2>Zuletzt geschehen</h2>
+  <h2 class="mitknopf">Zuletzt geschehen
+    <button class="quiet" onclick="ereignisseLoeschen()">löschen</button></h2>
   <div class="body flush"><table id="ereignisse"><tbody></tbody></table></div>
 </div>
 
 <p id="meldung" style="display:none"></p>
 
 <div class="card" id="karte_post" style="display:none">
-  <h2>Posteingang</h2>
+  <h2>Anlernwünsche</h2>
   <div class="body">
     <p class="hint">Geräte, die gerade angelernt werden <b>wollen</b> — sie
-      haben eben ihre Anlerntaste gesehen. QCCU kann sie nur mit dem Schlüssel
-      vom Aufkleber aufnehmen; ohne ihn bleibt es beim Zusehen.</p>
-    <div class="body flush"><table id="post"><tbody></tbody></table></div>
+      haben eben ihre Anlerntaste gesehen und rufen. QCCU kann sie nur mit dem
+      Schlüssel vom Aufkleber aufnehmen; ohne ihn bleibt es beim Zusehen.
+      Wer aufhört zu rufen, verschwindet hier wieder von selbst.</p>
+    <div class="body flush"><table id="post"><thead><tr>
+      <th>Adresse</th><th>Typ</th><th>Zuletzt gerufen</th><th></th>
+    </tr></thead><tbody></tbody></table></div>
   </div>
 </div>
 
@@ -315,11 +321,22 @@ function alterText(sek){
   if(sek<172800) return 'vor '+Math.round(sek/3600)+' h';
   return 'vor '+Math.round(sek/86400)+' Tagen';
 }
+// Anlernrufe kommen im Sekundentakt-Bereich — hier ist „gerade eben" zu
+// grob: man will sehen, OB das Gerät noch ruft.
+function rufAlter(sek){
+  if(sek==null) return '—';
+  if(sek<60) return 'vor '+Math.round(sek)+' s';
+  return alterText(sek);
+}
 function uhr(t){
   const d=new Date(t*1000);
   return ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2)
         +':'+('0'+d.getSeconds()).slice(-2);
 }
+
+// „Zuletzt geschehen" leeren. Die Liste ist eine Erinnerungshilfe, kein
+// Protokoll — wer sie gelesen hat, will sie wegräumen können.
+async function ereignisseLoeschen(){ await post('api/ereignisse/loeschen',{}); }
 
 async function post(u,b){
   let j=null;
@@ -540,14 +557,17 @@ async function laden(){
    : '<tr><td colspan="6" class="empty">Noch kein Gerät angelernt.<br>'
     +'<span style="font-size:.9em">Über „Gerät anlernen" beginnen.</span></td></tr>';
 
-  // Posteingang: nur zeigen, wenn wirklich jemand anklopft.
-  const pe=s.posteingang||[], kp=$('#karte_post');
+  // Anlernwünsche: nur zeigen, wenn wirklich jemand ruft. Wer verstummt,
+  // fällt in der Zentrale von allein heraus — hier wird nichts gemerkt.
+  const pe=s.anlernwuensche||[], kp=$('#karte_post');
   if(kp){
     kp.style.display = pe.length ? '' : 'none';
     if(pe.length) $('#post').tBodies[0].innerHTML = pe.map(e=>
       '<tr><td><code>'+esc(e.hmid||e.address||'—')+'</code></td>'
-     +'<td>'+esc(e.label||('Typ '+(e.devtype||'?')))+'</td>'
-     +'<td class="mut">'+esc(e.hinweis||'')+'</td>'
+     +'<td>'+esc(e.label||('Typ '+(e.devtype||'?')))
+     +'<div class="mut" style="font-size:.85em">'+esc(e.hinweis||'')+'</div></td>'
+     +'<td class="mut" style="white-space:nowrap">'+rufAlter(e.vor_sek)
+     +(e.anzahl>1?' <span style="font-size:.85em">('+e.anzahl+'×)</span>':'')+'</td>'
      +'<td class="right"><button class="quiet" onclick="oeffneAnlernen()">'
      +'anlernen</button></td></tr>').join('');
   }
@@ -717,10 +737,10 @@ class WebHandler(BaseHTTPRequestHandler):
                          "unreach": bool(getattr(d, "unreach", False)),
                          "vor_sek": int(jetzt - zuletzt) if zuletzt else None})
         ereignisse = getattr(lc, "ereignis_liste", None)
-        posteingang = getattr(self.radio, "inbox_liste", None) if self.radio else None
+        wuensche = getattr(self.radio, "anlernwuensche_liste", None) if self.radio else None
         out = {"version": self.version, "devices": devs,
                "ereignisse": ereignisse() if ereignisse else [],
-               "posteingang": posteingang() if posteingang else [],
+               "anlernwuensche": wuensche() if wuensche else [],
                "pairing": self.radio.pair_state() if self.radio
                           else {"open": False, "seconds_left": 0,
                                 "next_addr": "—", "last": "kein Funk angebunden"}}
@@ -779,6 +799,15 @@ class WebHandler(BaseHTTPRequestHandler):
             if self.radio:
                 self.radio.stop_pairing()
             return self._json({"ok": True})
+
+        if self.path == "/api/ereignisse/loeschen":
+            # „Zuletzt geschehen" ist eine Erinnerungshilfe, kein Protokoll:
+            # sie darf geleert werden. Das Protokoll der Zentrale bleibt
+            # davon unberuehrt — dort steht der Verlauf weiter.
+            leeren = getattr(self.qccu, "ereignisse_leeren", None)
+            if leeren is None:
+                return self._json({"error": "nicht verfuegbar"}, 409)
+            return self._json({"ok": True, "geloescht": leeren()})
 
         if self.path == "/api/firmware/flash":
             return self._json(self._flash_start())
