@@ -1,12 +1,12 @@
 name: QCCU
 # ⚠️ `version` ist NICHT nur eine Anzeige: der Supervisor zieht das Abbild als
-# `<image>:<version>` — hier also `tostmann/qccu:2026.8.21`. Steht hier etwas,
+# `<image>:<version>` — hier also `tostmann/qccu:2026.8.22`. Steht hier etwas,
 # das es auf Docker Hub nicht als Marke gibt, bricht schon die Installation ab
 # („Failed to fetch manifest … 404"), und `latest` wird NICHT ersatzweise
 # genommen. Sie ist dieselbe Fassung wie `VERSION` in qccu.py; wer hochzählt,
 # zieht beide mit und veröffentlicht die Marke — genau
 # daran erkennt der Supervisor auch, dass eine Aktualisierung vorliegt.
-version: "2026.8.21"
+version: "2026.8.22"
 slug: qccu
 description: >-
   Zentrale für Homematic-IP-Geräte am busware-Funkstick — ohne CCU.
@@ -30,26 +30,6 @@ uart: true
 # ANDEREN USB-Kennung zurückmeldet. Ohne den rohen USB-Zugang schlägt genau
 # dieser Schritt fehl — und er ist der erste, den ein neuer Anwender braucht.
 usb: true
-
-# ── Die Integration „Homematic(IP) Local" mitliefern ──────────────────────
-# Ohne sie sieht Home Assistant die Zentrale nicht. Das Abbild bringt sie mit
-# (unveraendert, MIT) und legt sie beim Start nach `custom_components/`, wenn
-# dort nichts Neueres steht. Damit entfaellt der Umweg ueber HACS.
-#
-# ⚠️ Der Pfad MUSS ausdruecklich stehen. Der Supervisor bindet
-# `homeassistant_config` unter `/homeassistant` ein (`PATH_HOMEASSISTANT_CONFIG`
-# im Supervisor-Quelltext) — `/config` ist das EIGENE Verzeichnis der
-# Erweiterung. Die Entwickler-Doku nennt an einer Stelle „/<typ-name>"; wer
-# sich darauf verlaesst, legt die Integration ins falsche Verzeichnis.
-map:
-  - type: homeassistant_config
-    read_only: false
-    path: /homeassistant
-
-# Fuer den Neustart-Knopf: `homeassistant` erlaubt die `/core/*`-Aufrufe der
-# Supervisor-Schnittstelle, mehr wird nicht gebraucht.
-hassio_api: true
-hassio_role: homeassistant
 
 startup: services
 boot: auto
@@ -97,7 +77,6 @@ options:
   advertise: ""
   cul_port: 2000
   json_port: 8082
-  bundle_integration: true
 schema:
   # Leer lassen: QCCU sucht den Stick selbst. Nur nötig, wenn mehrere
   # busware-Sticks stecken.
@@ -110,7 +89,3 @@ schema:
   advertise: "str?"
   cul_port: "port?"
   json_port: "port?"
-  # Die Integration „Homematic(IP) Local" mitliefern. Aus lassen, wer sie
-  # lieber selbst über HACS pflegt — eine dort installierte NEUERE Fassung
-  # wird ohnehin nie überschrieben.
-  bundle_integration: "bool?"

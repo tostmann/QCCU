@@ -32,8 +32,7 @@ except Exception:
 # Nur bekannte Schluessel, damit eine erweiterte Oberflaeche hier nichts
 # Unerwartetes in die Umgebung schiebt.
 for name in ("SERIAL", "OWN_ADDR", "RPC_PORT", "REGA_PORT",
-             "WEB_PORT", "JSON_PORT", "CUL_PORT", "ADVERTISE",
-             "BUNDLE_INTEGRATION"):
+             "WEB_PORT", "JSON_PORT", "CUL_PORT", "ADVERTISE"):
     wert = o.get(name.lower())
     if wert is None or wert == "":
         continue
@@ -202,44 +201,6 @@ need_tables() {
         && [ -f "$TABLES/extra_params.json" ]
 }
 
-# ---------------------------------------------------------------------------
-# Die Integration „Homematic(IP) Local" bereitstellen.
-#
-# Sie liegt unveraendert im Abbild und wird nach `custom_components/` gelegt,
-# wenn dort nichts oder etwas Aelteres steht. Damit ist die Installation ein
-# Schritt statt zweien (Erweiterung + HACS).
-#
-# ⚠️ Der Pfad ist `/homeassistant`, NICHT `/config`: der Supervisor bindet das
-# Konfigurationsverzeichnis von Home Assistant unter diesem Namen ein
-# (`PATH_HOMEASSISTANT_CONFIG`), waehrend `/config` das eigene Verzeichnis der
-# Erweiterung ist. Die Entwickler-Doku nennt an einer Stelle `/<typ-name>` —
-# der Quelltext des Supervisors sagt es anders, und der zaehlt. In der
-# config.yaml ist der Pfad deshalb ausdruecklich gesetzt.
-#
-# Ausserhalb einer Erweiterung (blosses `docker run`) gibt es dieses
-# Verzeichnis nicht — dann passiert schlicht nichts.
-# ---------------------------------------------------------------------------
-integration_bereitstellen() {
-    _ha=${HA_CONFIG:-/homeassistant}
-    [ -d "$_ha" ] || { unset _ha; return 0; }
-    _bericht=$(BUNDLE_INTEGRATION="${BUNDLE_INTEGRATION:-true}" HA_CONFIG="$_ha" \
-               python3 "$QCCU/qccu_integration.py" \
-               "$QCCU/integration/homematicip_local" "$_ha" 2>&1) || true
-    _zustand=${_bericht%%	*}
-    _text=${_bericht#*	}
-    case "$_zustand" in
-        kopiert|erneuert)
-            log "$_text"
-            log "→ Home Assistant neu starten (Einstellungen → System → "
-            log "  Neu starten), damit die Integration geladen wird."
-            ;;
-        aktuell|fremd_neuer|fremd_unklar|aus) log "$_text" ;;
-        keine_quelle|kein_ha) : ;;
-        *) [ -n "$_bericht" ] && log "Integration: $_bericht" ;;
-    esac
-    unset _ha _bericht _zustand _text
-}
-
 serve() {
     # ⚠️ Der Tabellenbau laeuft in einer UNTER-SHELL, damit sein `die` (also
     # ein `exit 1`) nur ihn selbst beendet und nicht den ganzen Start. Denn
@@ -272,8 +233,6 @@ serve() {
     # aus der Oberflaeche aus — und genau dort soll er die Firmware einspielen.
     [ -z "$SERIAL" ] || [ -e "$SERIAL" ] || log "kein Stick an $SERIAL — es wird selbst gesucht."
     [ -n "$ADVERTISE" ] || log "ADVERTISE fehlt — HMCCU findet den XML-RPC-Dienst nur mit der IP dieses Rechners."
-
-    integration_bereitstellen
 
     set -- python3 -u "$QCCU/qccu.py" \
         --tables "$TABLES" \

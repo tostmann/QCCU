@@ -1,0 +1,55 @@
+name: Fehler melden
+description: Etwas funktioniert nicht wie beschrieben.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ⚠️ **Betrifft es Home Assistant?** Dann gehört es trotzdem hierher, solange
+        QCCU die Zentrale ist. Die Integration „Homematic(IP) Local" unterstützt
+        QCCU nicht — dort gemeldete QCCU-Setups werden ohne Bewertung geschlossen.
+        Wer prüfen möchte, ob der Fehler an QCCU liegt, hängt die Integration
+        testweise an eine echte CCU oder an OpenCCU.
+  - type: input
+    id: fassung
+    attributes:
+      label: QCCU-Fassung
+      description: Steht oben rechts in der Oberfläche, z. B. 2026.8.22.
+    validations:
+      required: true
+  - type: input
+    id: firmware
+    attributes:
+      label: Stick-Firmware
+      description: Oberfläche → Stick-Firmware, z. B. q-culfw 2.0.29.
+  - type: dropdown
+    id: betrieb
+    attributes:
+      label: Betriebsart
+      options:
+        - Home-Assistant-Erweiterung (Add-on)
+        - Docker-Container
+        - anders (bitte unten beschreiben)
+    validations:
+      required: true
+  - type: textarea
+    id: was
+    attributes:
+      label: Was passiert, und was war erwartet?
+    validations:
+      required: true
+  - type: textarea
+    id: protokoll
+    attributes:
+      label: Protokoll
+      description: >-
+        Add-on → Protokoll bzw. `docker logs qccu`. Bitte den Abschnitt ab dem
+        Start mitschicken, nicht nur die letzte Zeile.
+      render: text
+  - type: textarea
+    id: zustand
+    attributes:
+      label: Zustand der Zentrale
+      description: >-
+        Inhalt von `http://<host>:8080/api/state` (oder aus der Oberfläche:
+        Fassung, Funk-Zähler, „Zuletzt geschehen").
+      render: json

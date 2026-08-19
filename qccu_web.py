@@ -207,17 +207,6 @@ footer a{color:var(--mut)} footer a:hover{color:var(--acc)}
 
 <p id="meldung" style="display:none"></p>
 
-<div class="card" id="karte_integration" style="display:none">
-  <h2>Integration in Home Assistant</h2>
-  <div class="body">
-    <p id="int_text"></p>
-    <p class="hint" id="int_hint"></p>
-    <p id="int_knopf" style="display:none">
-      <button class="primary" onclick="haNeustart()">Home Assistant neu starten</button>
-      <span class="hint" id="int_msg"></span></p>
-  </div>
-</div>
-
 <div class="card" id="karte_post" style="display:none">
   <h2>Posteingang</h2>
   <div class="body">
@@ -366,15 +355,6 @@ function pair(){
   const istHex=/^[0-9a-fA-F]{32}$/.test(plain);
   post('api/pair',{sticker:istHex?null:v, local_key:istHex?plain:null,
                     seconds:+$('#secs').value});
-}
-
-async function haNeustart(){
-  const m=$('#int_msg');
-  if(!confirm('Home Assistant jetzt neu starten?\n\nDie Oberfläche ist dabei '
-      +'kurz nicht erreichbar; QCCU läuft weiter.')) return;
-  if(m){ m.textContent='läuft …'; m.className='hint'; }
-  const j=await post('api/ha/neustart');
-  if(m) m.textContent = (j&&j.ok) ? 'Neustart angestoßen.' : '';
 }
 
 // Der zweite der beiden Wege aus der Warnkarte — als Knopf. Zweimal fragen,
@@ -544,33 +524,6 @@ async function laden(){
    +esc(d.address)+'\'})">entfernen</button></td></tr>').join('')
    : '<tr><td colspan="6" class="empty">Noch kein Gerät angelernt.<br>'
     +'<span style="font-size:.9em">Über „Gerät anlernen" beginnen.</span></td></tr>';
-
-  // Die mitgelieferte Integration — nur in der Erweiterung ueberhaupt ein
-  // Thema, und nur dann eine Karte, wenn es etwas zu sagen gibt.
-  const ig=s.integration||{}, ki=$('#karte_integration');
-  if(ki){
-    ki.style.display = ig.verfuegbar ? '' : 'none';
-    if(ig.verfuegbar){
-      const t=$('#int_text'), h=$('#int_hint'), k=$('#int_knopf');
-      if(!ig.installiert){
-        t.innerHTML='<span class="warn">Sie ist nicht eingerichtet.</span>';
-        h.textContent='Mitgeliefert wäre '+esc(ig.mitgeliefert)
-          +'. Ist das Mitliefern abgeschaltet, bleibt der Weg über HACS.';
-        k.style.display='none';
-      } else if(ig.installiert===ig.mitgeliefert){
-        t.innerHTML='Fassung <b>'+esc(ig.installiert)+'</b> liegt bereit.';
-        h.textContent='Sie stammt aus diesem Abbild. Erscheint sie in Home '
-          +'Assistant nicht unter „Geräte & Dienste", fehlt noch ein Neustart.';
-        k.style.display='';
-      } else {
-        t.innerHTML='Eingerichtet ist <b>'+esc(ig.installiert)+'</b>, '
-          +'mitgeliefert wäre '+esc(ig.mitgeliefert)+'.';
-        h.textContent='Die vorhandene ist neuer und bleibt unangetastet — so '
-          +'gehört es sich, wenn HACS sie pflegt.';
-        k.style.display='none';
-      }
-    }
-  }
 
   // Posteingang: nur zeigen, wenn wirklich jemand anklopft.
   const pe=s.posteingang||[], kp=$('#karte_post');
@@ -759,7 +712,6 @@ class WebHandler(BaseHTTPRequestHandler):
         if self.radio:
             out["radio"] = self.radio.radio_state()
         out["firmware"] = self._firmware_state()
-        out["integration"] = self._integration_state()
         out["anbindung"] = dict(self.anbindung)
         t = getattr(lc, "t", None)
         if t is not None and hasattr(t, "zustand"):
@@ -772,33 +724,6 @@ class WebHandler(BaseHTTPRequestHandler):
         except Exception:                            # noqa: BLE001
             out["erweiterung"] = False
         return out
-
-    def _integration_state(self):
-        """Was mit der mitgelieferten Integration ist.
-
-        Sie wird beim Start abgelegt (siehe entrypoint.sh); hier wird nur
-        NACHGESEHEN, was dabei herauskam — die Oberflaeche entscheidet nichts
-        und aendert nichts. Ausserhalb einer Erweiterung gibt es das
-        Verzeichnis von Home Assistant gar nicht; dann bleibt die Karte weg.
-        """
-        try:
-            import qccu_integration as QI
-        except Exception:                            # noqa: BLE001
-            return {"verfuegbar": False}
-        ha = os.environ.get("HA_CONFIG", "/homeassistant")
-        quelle = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              "integration", QI.DOMAIN)
-        mit = QI.fassung_von(quelle)
-        if not mit or not os.path.isdir(ha):
-            return {"verfuegbar": False}
-        ziel = os.path.join(ha, "custom_components", QI.DOMAIN)
-        da = QI.fassung_von(ziel)
-        return {"verfuegbar": True, "mitgeliefert": mit, "installiert": da,
-                # „Neustart faellig" heisst: auf der Platte liegt etwas
-                # anderes, als Home Assistant geladen hat. Das laesst sich von
-                # hier nicht sehen — deshalb meldet es der Start, und die
-                # Oberflaeche zeigt nur, was liegt.
-                "neuer_stand": bool(da and da == mit)}
 
     def _firmware_state(self):
         """Zustand der Stick-Firmware."""
@@ -851,29 +776,6 @@ class WebHandler(BaseHTTPRequestHandler):
         # Der Ausweg aus „Stick ohne Schluessel, aber Geraete eingetragen":
         # alles verwerfen und neu beginnen. Mit Sicherung — der Aufruf
         # verlangt `bestaetigt`, damit ihn kein Fehlgriff ausloest.
-        if self.path == "/api/ha/neustart":
-            # ⚠️ Home Assistant laedt Integrationen NUR beim Start. Nach dem
-            # Ablegen ist ein Neustart faellig — und ihn hier anzubieten ist
-            # freundlicher, als den Anwender ins Menue zu schicken. Ausgeloest
-            # wird er ueber die Supervisor-Schnittstelle (`hassio_role:
-            # homeassistant`), nicht von uns selbst.
-            token = os.environ.get("SUPERVISOR_TOKEN")
-            if not token:
-                return self._json({"error": "Das geht nur in der Erweiterung "
-                                            "von Home Assistant."}, 409)
-            try:
-                import urllib.request
-                req = urllib.request.Request(
-                    "http://supervisor/core/restart", data=b"",
-                    headers={"Authorization": "Bearer " + token}, method="POST")
-                with urllib.request.urlopen(req, timeout=30) as r:
-                    r.read()
-            except Exception as ex:                  # noqa: BLE001
-                return self._json({"error": f"Neustart nicht ausgeloest: {ex}"}, 502)
-            self.qccu.merke_ereignis("info", "Neustart von Home Assistant "
-                                             "ausgeloest (Integration laden)")
-            return self._json({"ok": True})
-
         if self.path == "/api/netz/neu":
             # Die Bestaetigung wird ZUERST geprueft: ein unbestaetigter Aufruf
             # soll immer abgewiesen werden, auch wenn gerade gar kein Funkpfad

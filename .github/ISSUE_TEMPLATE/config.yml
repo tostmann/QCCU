@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Probleme mit der Integration „Homematic(IP) Local" bei QCCU-Betrieb
+    url: https://github.com/tostmann/QCCU/issues/new
+    about: >-
+      Bitte HIER melden, nicht bei SukramJ. QCCU ist für homematicip_local /
+      aiohomematic keine unterstützte Zentrale (unterstützt sind CCU2/3,
+      OpenCCU, debmatic, Homegear). Unter QCCU liegt weder ReGaHss noch
+      HMIPServer, sondern eine eigene Nachbildung — Diagnosedaten aus einem
+      QCCU-Setup helfen dort nicht weiter, und solche Meldungen werden ohne
+      inhaltliche Bewertung geschlossen.

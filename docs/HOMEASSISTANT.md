@@ -6,10 +6,10 @@ grundsätzlich ist und kann, steht in der [README](../README.md); FHEM daneben
 in [FHEM.md](FHEM.md).
 
 Home Assistant führt die Geräte über die Integration **Homematic(IP) Local**
-(von SukramJ, auf `aiohomematic`). QCCU gibt sich ihr gegenüber als Zentrale
-aus — ein eigenes Modul braucht es nicht. **Die Erweiterung bringt die
-Integration seit 2026.8.21 mit**, HACS ist dafür nicht mehr nötig (siehe
-[Abschnitt 3](#3-integration-einrichten)). Geprüft mit Homematic(IP) Local 2.7.0 /
+(von SukramJ, auf `aiohomematic`, über HACS). QCCU gibt sich ihr gegenüber als
+Zentrale aus — ein eigenes Modul braucht es nicht. ⚠️ QCCU ist dort allerdings
+**keine unterstützte Zentrale**; Fehlermeldungen gehören ins QCCU-Repository,
+siehe [Abschnitt 3](#3-integration-einrichten). Geprüft mit Homematic(IP) Local 2.7.0 /
 aiohomematic 2026.5.0 unter Home Assistant 2026.3.
 
 ---
@@ -69,32 +69,25 @@ trotzdem, damit die Oberfläche erreichbar ist.
 
 ## 3. Integration einrichten
 
-**Die Erweiterung bringt sie mit.** Beim Start legt QCCU die Integration nach
-`custom_components/homematicip_local`, wenn dort nichts oder etwas Älteres
-liegt — mitgeliefert wird die Fassung, gegen die wir geprüft haben,
-unverändert und mit ihrer Lizenz. Danach ist **ein Neustart von Home
-Assistant** fällig, denn Integrationen werden nur beim Start geladen; die
-QCCU-Oberfläche bietet dafür einen Knopf an („Integration in Home Assistant").
-HACS braucht es dafür nicht mehr.
+**Die Integration kommt über HACS.** In Home Assistant: HACS öffnen →
+Integrationen → **Homematic(IP) Local** suchen und installieren, danach Home
+Assistant neu starten. (HACS selbst wird einmalig über seine eigene Anleitung
+eingerichtet.)
 
-⚠️ **Wer HACS benutzt, verliert nichts.** Eine dort installierte **neuere**
-Fassung wird nie überschrieben — QCCU meldet dann „die neuere bleibt" und
-fasst nichts an. Wer das Mitliefern ganz abschalten will: Add-on-Optionen →
-*bundle_integration* aus.
+⚠️ **QCCU ist keine von der Integration unterstützte Zentrale.** Unterstützt
+sind dort CCU2/3, OpenCCU, debmatic und Homegear. Der Autor der Integration hat
+uns ausdrücklich gebeten, das deutlich zu sagen — und das ist auch fair: unter
+QCCU liegt weder ReGaHss noch HMIPServer, sondern eine eigene Nachbildung.
+**Probleme mit QCCU gehören deshalb hierher** (Issues im QCCU-Repository),
+nicht in die Repositories von `homematicip_local` oder `aiohomematic`; Meldungen
+zu QCCU-Setups werden dort ohne inhaltliche Bewertung geschlossen. Wer prüfen
+will, ob ein Fehler an QCCU liegt, hängt die Integration testweise an eine
+echte CCU oder an OpenCCU.
 
-**Im Container-Betrieb passiert von selbst nichts** — QCCU fasst nur an, was
-ihm gezeigt wird. Wer Home Assistant ebenfalls als Container fährt und das
-Mitliefern trotzdem will, reicht dessen Konfigurationsverzeichnis herein:
-
-```sh
--v /pfad/zu/homeassistant/config:/homeassistant
-```
-
-Dann legt QCCU die Integration beim Start genauso ab; den Neustart von Home
-Assistant macht man dort selbst (der Knopf in der Oberfläche geht nur in der
-Erweiterung, er braucht den Supervisor). Ohne diesen Mount bleibt alles wie
-bisher: **wer QCCU nur für FHEM betreibt, merkt vom Mitliefern nichts** — kein
-Verzeichnis, keine Meldung, keine Karte.
+(Eine Zeitlang hat die Erweiterung die Integration mitgeliefert. Das ist seit
+2026.8.22 wieder draußen — auf Bitte des Autors, und mit guten Gründen: zwei
+Quellen für dasselbe Verzeichnis führen zu Zuständen, die niemand
+nachvollziehen kann.)
 
 Danach: **Einstellungen → Geräte & Dienste → Integration hinzufügen →
 Homematic(IP) Local.** Dann:
