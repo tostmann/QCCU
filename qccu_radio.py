@@ -129,6 +129,18 @@ class _Job:
         return self.kind in ("cmd", "answer")
 
 
+def _nur_zeichen(text):
+    """Alles wegwerfen, was kein Buchstabe und keine Ziffer ist.
+
+    ⚠️ Der Aufkleber wird abgetippt oder aus einer Nachricht kopiert — mit
+    Bindestrichen, Leerzeichen, manchmal beidem. Frueher fielen nur die
+    Bindestriche weg: wer ihn mit Leerzeichen eingab, bekam „hat 30 statt 26
+    Zeichen" und suchte den Fehler bei sich (Anwendermeldung 19.08.2026). Was
+    zaehlt, sind die 26 Zeichen — wie sie gruppiert sind, geht uns nichts an.
+    """
+    return "".join(c for c in (text or "") if c.isalnum())
+
+
 def zufaellige_adresse(gesperrt=()):
     """Eine Funkadresse wuerfeln, die weder Rundruf noch Sammeladresse ist
     und keiner der uebergebenen gleicht (Vergleich auf die oberen 16 Bit)."""
@@ -1373,8 +1385,8 @@ class Radio:
         """Anlernfenster oeffnen."""
         key = None
         src = ""
-        lk = (local_key or "").strip().replace(" ", "").replace("-", "")
-        st = (sticker or "").strip().replace("-", "").upper()
+        lk = _nur_zeichen(local_key)
+        st = _nur_zeichen(sticker).upper()
 
         if lk:
             if len(lk) != 32:
@@ -1395,11 +1407,21 @@ class Radio:
                 if len(st) != 26:
                     return (f"Aufkleber hat {len(st)} statt 26 Zeichen "
                             f"(Form ABCEF-GHJKL-MNPQR-STUWX-YZ2345) — "
-                            f"oder 32 Hexziffern")
+                            f"oder 32 Hexziffern. Trennzeichen sind egal.")
                 try:
                     key = sticker_to_local_key(st)
                 except ValueError as ex:
-                    return f"Aufkleber enthaelt ein unzulaessiges Zeichen ({ex})"
+                    # ⚠️ Das Alphabet des Aufklebers kennt kein D, I, O und V —
+                    # gerade weil sie sich mit 0, 1 und U verwechseln lassen.
+                    # Wer eines davon eintippt, hat fast immer abgelesen statt
+                    # sich vertan; das gehoert in die Meldung, sonst sucht er
+                    # den Fehler beim Geraet.
+                    verwechselt = sorted({c for c in st if c in "DIOV"})
+                    rat = (f" — die Zeichen {', '.join(verwechselt)} gibt es "
+                           f"auf dem Aufkleber nicht; gemeint sind vermutlich "
+                           f"{', '.join({'D': '0', 'I': '1', 'O': '0', 'V': 'U'}[c] for c in verwechselt)}"
+                           if verwechselt else "")
+                    return f"Aufkleber enthaelt ein unzulaessiges Zeichen ({ex}){rat}"
                 src = "Aufkleber"
         else:
             return "Aufkleber oder LocalKey noetig"

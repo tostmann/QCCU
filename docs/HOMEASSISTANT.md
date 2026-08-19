@@ -163,7 +163,10 @@ Eine Zentrale von eQ-3 beschafft sich den Geräteschlüssel selbst; QCCU kann
 das nicht und muss ihn vom Aufkleber bekommen — einmal je Gerät. Zwei Wege:
 
 **In der QCCU-Oberfläche** (im Menü von Home Assistant) → **Gerät anlernen**
-→ Key eintragen (26 Zeichen; alternativ die 32 Hexziffern).
+→ Key eintragen (26 Zeichen; alternativ die 32 Hexziffern). Bindestriche und
+Leerzeichen sind egal — abtippen wie aufgedruckt genügt. Die Zeichen **D, I, O
+und V** kommen auf dem Aufkleber nicht vor; was danach aussieht, ist 0, 1, 0
+bzw. U.
 
 **Oder am Anlern-Aufruf selbst.** Der JSON-RPC-Aufruf, mit dem eine Zentrale
 das Anlernfenster öffnet, hat dafür ein Feld `key` — QCCU wertet es aus. Die

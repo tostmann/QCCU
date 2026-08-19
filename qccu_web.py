@@ -230,9 +230,12 @@ footer a{color:var(--mut)} footer a:hover{color:var(--acc)}
   <div class="dbody">
     <div class="field">
       <label for="key">Key auf dem Aufkleber (nicht SGTIN)</label>
-      <input id="key" placeholder="XXXXX-XXXXX-XXXXX-XXXXX-XXXXXX" autocomplete="off">
-      <p class="hint">Der Aufkleber steht auf dem Gerät (26 Zeichen). Wer den
-         Schlüssel als 32 Hexziffern hat, kann ihn ebenso eingeben.</p>
+      <input id="key" placeholder="ABCEF-GHJKL-MNPQR-STUWX-YZ2345" autocomplete="off">
+      <p class="hint">Der Aufkleber klebt auf dem Gerät: <b>26 Zeichen</b>,
+         meist in fünf Gruppen. <b>Bindestriche und Leerzeichen sind egal</b> —
+         abtippen wie aufgedruckt genügt. Wer den Schlüssel als 32 Hexziffern
+         hat, kann ihn ebenso eingeben. Die Zeichen <b>D, I, O und V</b> gibt
+         es dort nicht; was danach aussieht, ist 0, 1, 0 bzw. U.</p>
     </div>
     <div class="field">
       <label for="secs">Anlernfenster</label>
@@ -350,7 +353,9 @@ $('#dlgFw')?.addEventListener('close',()=>{fwOffen=false;});
 // Die Funkadresse vergibt die Zentrale — sie ist keine Eingabe. Ein Feld dafür
 // lädt nur dazu ein, eine bereits belegte zu erraten.
 function pair(){
-  const v=$('#key').value.trim(), plain=v.replace(/[\s-]/g,'');
+  // Nur zum Erkennen bereinigen; gesendet wird, was der Anwender getippt hat —
+  // der Dienst wirft Trennzeichen selbst weg und kann sauberer melden.
+  const v=$('#key').value.trim(), plain=v.replace(/[^0-9a-zA-Z]/g,'');
   if(!plain){ $('#pairinfo').innerHTML='<span class="bad">Bitte Aufkleber oder Schlüssel eingeben.</span>'; return; }
   const istHex=/^[0-9a-fA-F]{32}$/.test(plain);
   post('api/pair',{sticker:istHex?null:v, local_key:istHex?plain:null,
