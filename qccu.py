@@ -17,7 +17,7 @@ from xmlrpc.server import SimpleXMLRPCServer, SimpleXMLRPCRequestHandler
 # zugleich die Marke des Abbilds auf Docker Hub UND der Wert von `version`
 # in addon/config.yaml — der Supervisor zieht `<image>:<version>`. Wer hier
 # hochzaehlt, muss beides mitziehen, sonst schlaegt die Installation fehl.
-VERSION = "2026.8.26"
+VERSION = "2026.8.27"
 PRODUKT = "QCCU"
 NAME_UND_FASSUNG = f"{PRODUKT} {VERSION}"
 
@@ -1521,13 +1521,15 @@ def main():
             # Verstummte Anlernrufe wegraeumen. Das geschieht sonst nur, wenn
             # jemand die Liste liest — eine Anlage, die niemand ansieht, haette
             # den Eintrag ewig stehen. Kostet keine Sendung.
-            aufraeumen = getattr(r, "fremde_aufraeumen", None)
-            if aufraeumen:
-                try:
-                    aufraeumen()
-                except Exception as ex:              # noqa: BLE001
-                    if lc.verbose:
-                        print(f"  ! Anlernwuensche aufraeumen: {ex}")
+            for name, was in (("fremde_aufraeumen", "Anlernwuensche"),
+                              ("verwaiste_aufraeumen", "verwaiste Geraete")):
+                aufraeumen = getattr(r, name, None)
+                if aufraeumen:
+                    try:
+                        aufraeumen()
+                    except Exception as ex:          # noqa: BLE001
+                        if lc.verbose:
+                            print(f"  ! {was} aufraeumen: {ex}")
             jetzt = time.time()
             faellig = []
             with lc.lock:

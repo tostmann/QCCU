@@ -223,6 +223,20 @@ footer a{color:var(--mut)} footer a:hover{color:var(--acc)}
   </div>
 </div>
 
+<div class="card" id="karte_verwaist" style="display:none">
+  <h2>Funkt noch, gehört aber nicht dazu</h2>
+  <div class="body">
+    <p class="hint">Diese Geräte senden mit <b>unserem Netzschlüssel</b>, stehen
+      aber nicht in der Geräteliste. Sie sind damit <b>nicht im Werkszustand</b>
+      und lassen sich so auch nicht anlernen — ein angelerntes Gerät sendet
+      keinen Anlernruf. Ein <b>Werksreset am Gerät</b> macht es wieder
+      anlernbar; danach verschwindet es hier von selbst.</p>
+    <div class="body flush"><table id="verwaist"><thead><tr>
+      <th>Funkadresse</th><th>Zuletzt gehört</th><th>Sendungen</th>
+    </tr></thead><tbody></tbody></table></div>
+  </div>
+</div>
+
 <div class="card">
   <h2>Geräte</h2>
   <div class="body flush"><table id="devs"><thead><tr>
@@ -572,6 +586,16 @@ async function laden(){
      +'anlernen</button></td></tr>').join('');
   }
 
+  // Geräte aus unserem Netz, die nicht (mehr) dazugehören.
+  const vw=s.verwaist||[], kv=$('#karte_verwaist');
+  if(kv){
+    kv.style.display = vw.length ? '' : 'none';
+    if(vw.length) $('#verwaist').tBodies[0].innerHTML = vw.map(e=>
+      '<tr><td><code>'+esc(e.hmid)+'</code></td>'
+     +'<td class="mut" style="white-space:nowrap">'+rufAlter(e.vor_sek)+'</td>'
+     +'<td class="mut">'+e.anzahl+'</td></tr>').join('');
+  }
+
   // Was zuletzt geschah — die kurze Fassung dessen, was sonst im Protokoll
   // zwischen tausenden Abrufen der Haussteuerung untergeht.
   const ev=s.ereignisse||[], ke=$('#karte_ereignisse');
@@ -738,9 +762,11 @@ class WebHandler(BaseHTTPRequestHandler):
                          "vor_sek": int(jetzt - zuletzt) if zuletzt else None})
         ereignisse = getattr(lc, "ereignis_liste", None)
         wuensche = getattr(self.radio, "anlernwuensche_liste", None) if self.radio else None
+        verwaist = getattr(self.radio, "verwaiste_liste", None) if self.radio else None
         out = {"version": self.version, "devices": devs,
                "ereignisse": ereignisse() if ereignisse else [],
                "anlernwuensche": wuensche() if wuensche else [],
+               "verwaist": verwaist() if verwaist else [],
                "pairing": self.radio.pair_state() if self.radio
                           else {"open": False, "seconds_left": 0,
                                 "next_addr": "—", "last": "kein Funk angebunden"}}

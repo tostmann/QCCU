@@ -1,12 +1,12 @@
 name: QCCU
 # ⚠️ `version` ist NICHT nur eine Anzeige: der Supervisor zieht das Abbild als
-# `<image>:<version>` — hier also `tostmann/qccu:2026.8.26`. Steht hier etwas,
+# `<image>:<version>` — hier also `tostmann/qccu:2026.8.27`. Steht hier etwas,
 # das es auf Docker Hub nicht als Marke gibt, bricht schon die Installation ab
 # („Failed to fetch manifest … 404"), und `latest` wird NICHT ersatzweise
 # genommen. Sie ist dieselbe Fassung wie `VERSION` in qccu.py; wer hochzählt,
 # zieht beide mit und veröffentlicht die Marke — genau
 # daran erkennt der Supervisor auch, dass eine Aktualisierung vorliegt.
-version: "2026.8.26"
+version: "2026.8.27"
 slug: qccu
 description: >-
   Zentrale für Homematic-IP-Geräte am busware-Funkstick — ohne CCU.

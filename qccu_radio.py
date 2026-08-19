@@ -215,6 +215,9 @@ class Radio:
         # Geraete, die angelernt werden WOLLEN — der Posteingang.
         # Funkadresse -> {"sgtin", "devtype", "zuerst", "zuletzt", "anzahl"}
         self._fremde = {}
+        # Geraete, die mit unserem Netzschluessel funken, aber nicht (mehr)
+        # im Bestand stehen — siehe `_pruefe_verwaist`.
+        self._verwaist = {}
         self._pair_q = queue.Queue()
         self._cmdq = queue.Queue()
         self.cul = None
@@ -761,6 +764,15 @@ class Radio:
         # steht in JEDER Zeile — auch in Quittungen und Rundrufmeldungen, und
         # gerade die kommen regelmaessig, wenn sonst nichts passiert.
         self._rssi_merken(src.lower(), payhex)
+
+        # ⚠️ Ein VERSCHLUESSELTER Frame, den der Stick entschluesseln konnte,
+        # kommt aus unserem Netz: der Netzschluessel gilt je Anlage, und eine
+        # PM-Zeile entsteht nur bei gelungener Entschluesselung (q-culfw
+        # `emit()` nach `rx_ok++`; sonst zaehlt `rx_mic`). Steht sein Absender
+        # nicht im Bestand, ist das eine Auskunft und kein Rauschen — deshalb
+        # wird sie hier abgegriffen, bevor die Verarbeitung sie verwirft.
+        if int(sec) >= 1:
+            self._pruefe_verwaist(src.lower())
 
         if int(ct) == 4 and ACK.search(line):
             ev = self._acked.get(src.lower())
@@ -1634,6 +1646,100 @@ class Radio:
             self._log("<<", f"Anlernwunsch von {hmid} (Typ {devtype}) — Posteingang")
             if self.verbose:
                 print(f"  Anlernwunsch: {hmid}, Typ {devtype}")
+
+    # -- Verwaiste Geraete: funken mit unserem Schluessel, gehoeren nicht mehr
+    #
+    # ⚠️ Der Fall, der diesen Code ausgeloest hat (19.08.2026): eine PS-2 wurde
+    # ausgeschlossen, quittierte den Ausschluss auf Anwendungsebene
+    # (NM_EXCLUDE_READY) — und funkte danach weiter unter ihrer alten
+    # Funkadresse mit unserem Netzschluessel. Sie war also NICHT im
+    # Werkszustand und liess sich folglich auch nicht neu anlernen: ein
+    # angelerntes Geraet sendet keinen Anlernruf. In der Oberflaeche war davon
+    # nichts zu sehen — die Frames wurden still verworfen, und der Anwender
+    # drueckte vergeblich die Taste. Die Auskunft war da, wir haben sie
+    # weggeworfen.
+    VERWAIST_GRUNDFRIST = 1800.0     # der Herzschlag kommt alle ~10 min
+    VERWAIST_FEHLRUFE = 3
+    VERWAIST_HOECHSTFRIST = 21600.0
+    VERWAIST_MELDEPAUSE = 3600.0     # nicht oefter als stuendlich melden
+    VERWAIST_MAX = 20
+
+    def _pruefe_verwaist(self, hmid):
+        """Ein entschluesselbarer Frame von jemandem, den wir nicht fuehren."""
+        jetzt = time.time()
+        with self.lock:
+            if hmid in self.by_hmid or hmid == (self.own_addr or ""):
+                return
+            # Waehrend eines Anlernvorgangs ist genau das der Normalfall: das
+            # Geraet funkt schon verschluesselt, steht aber noch nicht im
+            # Bestand. Kein Grund zur Meldung.
+            if jetzt < self.pair_until or hmid == (self._pair_expect or ""):
+                return
+            e = self._verwaist.get(hmid)
+            if e is None:
+                if len(self._verwaist) >= self.VERWAIST_MAX:
+                    aeltester = min(self._verwaist,
+                                    key=lambda k: self._verwaist[k]["zuletzt"])
+                    del self._verwaist[aeltester]
+                e = {"zuerst": jetzt, "zuletzt": jetzt, "anzahl": 1,
+                     "gemeldet": 0.0}
+                self._verwaist[hmid] = e
+            else:
+                e["zuletzt"] = jetzt
+                e["anzahl"] += 1
+            faellig = jetzt - e["gemeldet"] > self.VERWAIST_MELDEPAUSE
+            if faellig:
+                e["gemeldet"] = jetzt
+        if not faellig:
+            return
+        self._log("<<", f"{hmid} funkt mit unserem Netzschluessel, "
+                        f"ist aber nicht angelernt")
+        merke = getattr(self.qccu, "merke_ereignis", None)
+        if merke:
+            # ⚠️ KEINE Ursachenbehauptung: das Geraet kann ausgeschlossen
+            # worden sein, es kann aber auch aus einem verworfenen Bestand
+            # stammen („Geraete verwerfen und neu beginnen"). Belegt ist nur
+            # der Zustand — und was daraus folgt.
+            merke("warn", f"{hmid} funkt mit unserem Netzschluessel, ist hier "
+                          f"aber nicht angelernt. Es ist damit NICHT im "
+                          f"Werkszustand und laesst sich so auch nicht "
+                          f"anlernen — ein Werksreset am Geraet hilft.")
+
+    def verwaiste_aufraeumen(self):
+        """Wer verstummt, faellt heraus — wie bei den Anlernwuenschen."""
+        jetzt = time.time()
+        weg = []
+        with self.lock:
+            for hmid, e in list(self._verwaist.items()):
+                anzahl, spanne = e["anzahl"], e["zuletzt"] - e["zuerst"]
+                if anzahl < 2 or spanne <= 0:
+                    frist = self.VERWAIST_GRUNDFRIST
+                else:
+                    frist = max(self.VERWAIST_GRUNDFRIST,
+                                min(self.VERWAIST_HOECHSTFRIST,
+                                    self.VERWAIST_FEHLRUFE * spanne / (anzahl - 1)))
+                if jetzt - e["zuletzt"] > frist:
+                    weg.append(hmid)
+                    del self._verwaist[hmid]
+        for hmid in weg:
+            self._log("<<", f"{hmid} funkt nicht mehr — nicht mehr verwaist gemeldet")
+            merke = getattr(self.qccu, "merke_ereignis", None)
+            if merke:
+                merke("ok", f"{hmid} funkt nicht mehr mit unserem "
+                            f"Netzschluessel — vermutlich zurueckgesetzt")
+        return len(weg)
+
+    def verwaiste_liste(self):
+        """Was die Oberflaeche zeigt: wer funkt, ohne dazuzugehoeren."""
+        self.verwaiste_aufraeumen()
+        jetzt = time.time()
+        with self.lock:
+            eintraege = sorted(self._verwaist.items(),
+                               key=lambda kv: kv[1]["zuletzt"], reverse=True)
+            eintraege = [(k, dict(v)) for k, v in eintraege]
+        return [{"hmid": h, "vor_sek": max(0.0, jetzt - e["zuletzt"]),
+                 "anzahl": e["anzahl"], "seit_sek": max(0.0, jetzt - e["zuerst"])}
+                for h, e in eintraege]
 
     def _fremde_frist(self, e):
         """Wie lange ein Anlernruf nachhallt — aus seiner eigenen Kadenz.
