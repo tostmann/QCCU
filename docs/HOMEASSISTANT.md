@@ -65,6 +65,14 @@ Dort führt *Stick-Firmware* durch das Einspielen. Ein fabrikneuer Stick meldet
 sich im Bootlader und ist seriell noch gar nicht zu sehen — QCCU startet
 trotzdem, damit die Oberfläche erreichbar ist.
 
+Auch ein Stick, der schon läuft, sollte auf die mitgelieferte Fassung gehoben
+werden: die Karte zeigt beide Stände und bietet das Einspielen an, sobald der
+Stick älter ist. **Angelernte Geräte überstehen das** — Netzwerkschlüssel,
+Sendezähler und Kennung liegen im EEPROM und bleiben erhalten (am Aufbau
+nachgeprüft: nach dem Einspielen war das angelernte Gerät unverändert
+erreichbar). Was in der mitgelieferten Fassung steckt, steht in der
+[README](../README.md).
+
 ---
 
 ## 3. Integration einrichten
@@ -305,9 +313,15 @@ mit Schlüssel öffnet das Fenster und meldet „Quelle: Aufkleber".
 
 ### e) Ein neu angelerntes Gerät erscheint nicht in Home Assistant
 
-Steht das Gerät in QCCU, kommt in Home Assistant aber weder eine Entität noch
-eine Reparatur, dann hat die Integration die Meldung verworfen, **weil sie die
-Adresse in ihrem Zwischenspeicher schon kennt**. Das passiert typischerweise,
+**Zuerst nachsehen, ob es noch wartet.** Steht in der QCCU-Geräteliste
+**„wartet auf Aufnahme"**, ist alles in Ordnung: QCCU hat das Gerät der
+Integration noch gar nicht gemeldet, es steht in deren Posteingang
+(Seitenleiste → *HM Device Configuration* → Reiter *Geräte anlernen* → Karte
+*Posteingang*). Dort Namen eintragen und **Annehmen** drücken — siehe c).
+
+Kommt in Home Assistant dagegen weder eine Entität noch eine Reparatur,
+obwohl das Gerät bereits **gemeldet** ist, dann hat die Integration die Meldung
+verworfen, **weil sie die Adresse in ihrem Zwischenspeicher schon kennt**. Das passiert typischerweise,
 wenn dasselbe Gerät vorher schon einmal angelernt und wieder entfernt wurde.
 QCCU meldet in diesem Fall korrekt (im Protokoll steht
 `newDevices -> <Schnittstelle>: <Adresse>`), es passiert nur nichts damit.

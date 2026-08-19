@@ -78,21 +78,56 @@ schon definierte FHEM-Geräte und antwortet auf ein neues Gerät mit
 (`get ccu ccuDevices` zeigt sie); geschaltet wird danach mit `set <name> on`
 bzw. `off`.
 
-### Anlernen
+### Anlernen — und wie das Gerät danach nach FHEM kommt
 
-HMCCU hat keinen Anlern-Befehl — an einer echten CCU lernt man an deren
+HMCCU hat keinen Anlern-Befehl: an einer echten CCU lernt man an deren
 Weboberfläche an, HMCCU erfährt es nur über `newDevices`. Diese Rolle übernimmt
-die QCCU-Weboberfläche (`http://<rechner>:8080`), in zwei Schritten:
+die QCCU-Weboberfläche (`http://<rechner>:8080`). Der ganze Weg, Schritt für
+Schritt (so am Aufbau durchlaufen, 20.08.2026):
 
-1. **Aufkleber hinterlegen** — *Gerät anlernen* → Key vom Aufkleber des Geräts
-   (26 Zeichen; alternativ die 32 Hexziffern). Eine Zentrale von eQ-3 beschafft
-   sich den Geräteschlüssel selbst; QCCU kann das nicht.
-2. **Anlernfenster öffnen** und die Anlerntaste am Gerät drücken.
+**1. Aufkleber hinterlegen und anlernen.** *Gerät anlernen* → Key vom Aufkleber
+des Geräts (26 Zeichen; Bindestriche und Leerzeichen sind egal, alternativ die
+32 Hexziffern), Fenster öffnen, Anlerntaste am Gerät drücken. Eine Zentrale von
+eQ-3 beschafft sich den Geräteschlüssel selbst; QCCU kann das nicht.
 
-Danach `get ccu update` in FHEM.
+**2. ⚠️ Das Gerät „melden".** Ein frisch angelerntes Gerät wird der Gegenstelle
+**nicht sofort** gemeldet — es wartet, bis es aufgenommen wurde (so hält es
+auch eine Zentrale von eQ-3, dort heißt das Merkmal `ReadyConfig`). In der
+Geräteliste steht dann **„wartet auf Aufnahme"**, daneben der Knopf
+**melden**. Erst dieser Klick schickt `newDevices` an HMCCU.
 
-Wer lieber skriptet: beides zusammen geht auch als ein Aufruf an die
-JSON-Auskunft, mit dem Schlüssel im Feld `key` — siehe
+Home Assistant hat dafür einen eigenen Posteingang; **FHEM hat keinen**, und
+darum ist der Knopf hier der Weg. Wer ihn nie drücken will, schaltet in den
+Einstellungen **`sofort_melden`** ein (bzw. startet mit `--sofort-melden`) —
+dann geht jedes frisch angelernte Gerät sofort hinaus, wie vor 2026.8.29.
+
+**Ohne diesen Schritt sucht man in FHEM vergeblich:** das Gerät ist angelernt,
+funkt und ist in der QCCU-Oberfläche schaltbar — die Zentrale hat es der
+Gegenstelle nur noch nicht angeboten.
+
+**3. In FHEM einlesen und anlegen.**
+
+```
+get ccu ccuConfig                                   # Geräte + Beschreibungen neu lesen
+get ccu ccuDevices                                  # zeigt Adresse, Modell, Kanäle
+get ccu create <adresse> p=<präfix> forceDev        # FHEM-Gerät daraus bauen
+```
+
+`get ccu ccuConfig` meldet danach etwa `Devices: 1, Channels: 7,
+Device descriptions: 8, Paramset descriptions: 27`. **Nicht `get ccu update`:**
+das aktualisiert nur schon definierte FHEM-Geräte und antwortet auf ein neues
+Gerät mit `Found no devices to update`.
+
+`get ccu create` erkennt die Kanäle selbst — bei einer HmIP-PS-2 entsteht
+`… HMCCUDEV <adresse> forceDev sd=2.STATE cd=3.STATE`: Kanal 3 schaltet,
+Kanal 2 meldet den echten Relaiszustand zurück. Wer lieber von Hand definiert,
+nimmt `define <name> HMCCUDEV <adresse>`.
+
+**4. Schalten.** `set <name> on` / `off`. Der Status folgt über den Rückruf;
+je nach Aktualisierungstakt von HMCCU steht er ein paar Sekunden später da.
+
+Wer lieber skriptet: Aufkleber und Anlernfenster gehen auch als ein Aufruf an
+die JSON-Auskunft, mit dem Schlüssel im Feld `key` — siehe
 [SCHNITTSTELLEN.md](SCHNITTSTELLEN.md#json-rpc-8082).
 
 ### Wenn etwas nicht geht
@@ -155,6 +190,18 @@ beantwortet werden `V`, `T01` und `?`. Alles andere wird verworfen — auch
 Registerbefehle (`W0F`, `W10`, `W11`), die die Frequenz verstellen und den
 Homematic-IP-Betrieb beenden würden. Den Empfang schaltet QCCU selbst; ein
 `Ar`/`Ax` vom Klienten wird nicht weitergereicht.
+
+**Ein Gerät auf diesen CUL umhängen** (etwa von einem alten IO): `attr <gerät>
+IODev qcul` greift **nicht**, solange das alte IO noch definiert ist — CUL_HM
+behält das laufende IO und gibt stumm dessen Namen zurück. Erst `delete <altes
+IO>` macht den Weg frei, danach greift `attr … IODev qcul`.
+
+**Empfangspegel:** ab Firmware **2.0.50** trägt die `A`-Zeile den Rohwert aus
+dem Empfängerbaustein, wie FHEM ihn erwartet. Ältere Fassungen hängten die
+bereits umgerechnete dBm-Zahl an, die FHEM ein zweites Mal umrechnete —
+gemessen am selben Gerät: `-94 dBm` statt `-38 dBm`, also rund 50 dB zu
+pessimistisch. Wer BidCoS über den CUL-Zugang betreibt, sollte die Firmware
+einspielen (Oberfläche → *Firmware*).
 
 **Wenn etwas nicht geht:** bleibt der CUL nach einem Neustart des Containers
 auf `disconnected` — `set qcul reopen`. Beide Funkfamilien teilen sich das
