@@ -31,8 +31,16 @@ FLAGS = re.compile(r"\bf=([0-9A-Fa-f]{2})\b")
 SEQ = re.compile(r"\bsn=([0-9A-Fa-f]{8})")
 # k6tx/k6rx (Kurzquittungen gesendet/empfangen) gibt es seit q-culfw 2.0.26;
 # aeltere Sticks lassen die beiden Felder weg — beides muss passen.
+# ⚠️ Die Zaehlerzeile WAECHST mit der Firmware. Jedes neue Feld steht in der
+# Mitte, und eine Regex, die alle Felder verlangt, passt danach auf gar nichts
+# mehr — dann steht in der Oberflaeche „—" statt Zahlen, ohne Fehlermeldung.
+# Genau das geschah beim Sprung auf q-culfw 2.0.50: neu ist `akdop=` (die
+# geschluckten Doppelquittungen des Aq-Weges) zwischen `k6rx=` und `fwd=`.
+# Neue Felder deshalb IMMER als eigene, optionale Gruppe aufnehmen — dann
+# lesen wir alte und neue Sticks.
 CNT = re.compile(r"^Pm\s+rx=(\d+)\s+ok=(\d+)\s+mic=(\d+)\s+dup=(\d+)"
                  r"\s+acks=(\d+)(?:\s+k6tx=(\d+)\s+k6rx=(\d+))?"
+                 r"(?:\s+akdop=(\d+))?"
                  r"\s+fwd=(\d+)\s+tx=(\d+)\s+txerr=(\d+)")
 RAW = re.compile(r"^P([0-9A-Fa-f]{4,})$")
 STICKSEQ = re.compile(r"^Pm (?:ein|aus) .*\bsn=([0-9A-Fa-f]{8})")
@@ -40,7 +48,8 @@ BUDGET = re.compile(r"^Pm budget=(\d) credit=(\d+)/(\d+) lovf=(\d+)")
 TX_OK = re.compile(r"^Pm tx ok")
 TX_NO = re.compile(r"^(?:Pm (?:ERR|NUR-LESEN)|\?\s*$)")
 
-CNT_KEYS = ("rx", "ok", "mic", "dup", "acks", "k6tx", "k6rx", "fwd", "tx", "txerr")
+CNT_KEYS = ("rx", "ok", "mic", "dup", "acks", "k6tx", "k6rx", "akdop",
+            "fwd", "tx", "txerr")
 
 FT_ANSWER = 2
 FT_STATUS = 5
