@@ -26,6 +26,22 @@ kann, steht in der [README](../README.md); Home Assistant daneben in
 
 ---
 
+
+## Zwei Fallen beim Anschluss (am Aufbau gemessen, 19.08.2026)
+
+**HMCCU muss dieselbe Adresse tragen wie `ADVERTISE`.** Meldet QCCU sich als
+`10.10.11.113` und wird HMCCU mit einer anderen Adresse desselben Rechners
+definiert (etwa `172.17.0.1` aus einem Container heraus), scheitert der Start
+des RPC-Servers mit `HMCCURPCPROC … HMCCU I/O device not found`: HMCCURPCPROC
+sucht sein I/O-Gerät über den Host, den die Zentrale meldet. Mit der
+`ADVERTISE`-Adresse läuft er sofort.
+
+**Nach `modify <cul> …` das `rfmode` neu setzen.** Das CUL-Modul setzt seine
+Client-Liste beim Neudefinieren auf die SlowRF-Vorgabe zurück — `CUL_HM` fehlt
+dann, und **jedes** HomeMatic-Telegramm landet als `Unknown code A… help me!`
+im Log, auch die Quittungen. FHEM meldet `MISSING ACK`, obwohl das Gerät
+antwortet. Heilung: `attr <cul> rfmode HomeMatic` erneut setzen.
+
 ## 1. Homematic IP über HMCCU
 
 ```

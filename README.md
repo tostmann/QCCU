@@ -107,10 +107,12 @@ Beim ersten Betrieb merkt sich QCCU die Seriennummer des Sticks (`stick_serial` 
 
 Angelernte Geräte überstehen ein Einspielen: Netzwerkschlüssel und Sendezähler liegen im EEPROM des Sticks und bleiben erhalten (ab Firmware 2.0.11 — ältere Fassungen holten den Schlüssel beim Start nicht zurück). Nachgeprüft: nach `erase` + `flash` meldet der Stick weiterhin seinen Schlüssel, seinen Zählerstand und seine Kennung.
 
-**Firmware 2.0.29 (mitgeliefert seit 2026.8.17) unbedingt einspielen** — die Oberfläche bietet es an, sobald der Stick älter ist. Zwei Dinge sind darin anders, beide gemessen (Luftmitschnitte gegen eine eq-3-Zentrale, 18.08.2026):
+**Firmware 2.0.50 (mitgeliefert seit 2026.8.32) unbedingt einspielen** — die Oberfläche bietet es an, sobald der Stick älter ist. Vier Dinge sind darin anders, alle gemessen:
 
 * **Frequenz.** Mit den Registern der eq-3-Zentrale senden und empfangen die CUL-Sticks rund 27 kHz tiefer als sie und alle eq-3-Geräte — außerhalb dessen, was der Empfängerbaustein ausregelt. Ein Nachbargerät kam vorher nur bei jedem vierten Versuch durch, jetzt bei jedem. Die Firmware gleicht das aus (`FSCTRL0`).
 * **Quittung.** Die Zentrale von eq-3 bestätigt jeden Frame sofort mit einer kurzen 6-Byte-Quittung; ohne sie wiederholt ein Gerät jede Sendung dreimal und sucht dann einen Router. Der Stick sendet sie jetzt genauso. Sichtbar: ein Schaltbefehl ist eine Sendung, kein Dreierpack, und die Steckdose antwortet in ~100 ms.
+* **Empfangspegel auf der BidCoS-Seite.** Die `A`-Zeile trägt jetzt den Rohwert aus dem Empfängerbaustein, wie culfw ihn liefert — vorher stand dort die bereits umgerechnete dBm-Zahl, die FHEM ein zweites Mal umrechnete: aus −30 dBm wurden −89. Wer BidCoS über den CUL-Zugang betreibt, sah seinen Stick dadurch um rund 50 dB tauber, als er ist.
+* **Der CUL-Weg von FHEM.** `V`, `?`, `X` und `T01` werden beantwortet; damit läuft der Anschluss eines FHEM-`CUL`-Geräts ohne Sonderbehandlung. Auf Wunsch quittiert der Stick BidCoS-Frames auch selbst (`Aa`/`Aq`, Vorgabe aus — FHEM quittiert sauber in seinem 100-ms-Fenster).
 
 Wird ein Gerät nach einem Werksreset neu angelernt, ersetzt die neue Funkadresse die alte — Befehle gehen nicht mehr an die tote Adresse.
 
