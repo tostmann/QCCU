@@ -406,7 +406,16 @@ class JsonRpc:
         """
         radio = getattr(self.q, "radio", None)
         liste = []
-        if radio is not None and hasattr(radio, "anlernwuensche_liste"):
+        # ⚠️ Anlernwuensche kommen hier nur hinein, wenn ein Schluessel
+        # hinterlegt ist. Sonst kann die Gegenstelle mit ihrem Knopf
+        # „Annehmen" nichts ausrichten — wir brauchen den Aufkleber, den sie
+        # nicht hat —, und der Anwender bekommt ein blankes „Aktion
+        # fehlgeschlagen" statt einer Erklaerung. Wo nichts anzunehmen ist,
+        # steht auch nichts zum Annehmen; die QCCU-Oberflaeche zeigt den Ruf
+        # weiterhin unter „Anlernwuensche", dort ist der Aufkleber auch
+        # einzutragen.
+        hat_schluessel = bool(getattr(radio, "pair_key", None))
+        if hat_schluessel and radio is not None and hasattr(radio, "anlernwuensche_liste"):
             try:
                 # Die eigene Oberflaeche bekommt mehr Felder als die
                 # Haussteuerung; hier geht nur hinaus, was die Gegenstelle
@@ -446,7 +455,15 @@ class JsonRpc:
             })
 
         offen = getattr(self.q, "frisch_offen", None)
+        wartend_menge = set(wartend() if wartend else [])
         for adresse in (offen() if offen else []):
+            # ⚠️ Nicht doppelt: ein wartendes Geraet steht schon oben — mit
+            # DERSELBEN Kennung. Zwei Zeilen fuer dasselbe Geraet sahen im
+            # Panel der Gegenstelle wie zwei Karteileichen aus, und die zweite
+            # liess sich nach der Aufnahme der ersten nicht mehr annehmen
+            # („Aktion fehlgeschlagen", Dirk 19.08.2026).
+            if adresse in wartend_menge:
+                continue
             geraet = self.q.devices.get(adresse)
             typ = geraet.label if geraet is not None else "Geraet"
             name = self.q.name_of(adresse, typ)

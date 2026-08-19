@@ -226,8 +226,9 @@ Ein frisch angelerntes Gerät gehört ab sofort zur Anlage, ist aber noch nicht
 Merkmal `ReadyConfig`). QCCU meldet es der Haussteuerung deshalb **noch nicht**,
 sondern lässt es im **Posteingang** warten:
 
-**Seitenleiste → HM Device Configuration → Posteingang.** Namen eintragen,
-**aufnehmen** drücken — fertig. Erst dann meldet QCCU das Gerät, die Integration
+**Seitenleiste → HM Device Configuration → Reiter „Geräte anlernen" →
+Karte „Posteingang".** (Nicht im Reiter „Allgemein" — dort steht er nicht.)
+Namen eintragen, **Annehmen** drücken — fertig. Erst dann meldet QCCU das Gerät, die Integration
 legt Schalter und Sensoren an und schreibt den Namen zurück. Ein Umweg über
 Reparaturen entsteht dabei nicht; falls die Integration doch kurz eine anlegt,
 quittiert sie sie selbst (im Code: „Auto-confirmed inbox device").

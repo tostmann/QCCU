@@ -17,7 +17,7 @@ from xmlrpc.server import SimpleXMLRPCServer, SimpleXMLRPCRequestHandler
 # zugleich die Marke des Abbilds auf Docker Hub UND der Wert von `version`
 # in addon/config.yaml — der Supervisor zieht `<image>:<version>`. Wer hier
 # hochzaehlt, muss beides mitziehen, sonst schlaegt die Installation fehl.
-VERSION = "2026.8.29"
+VERSION = "2026.8.30"
 PRODUKT = "QCCU"
 NAME_UND_FASSUNG = f"{PRODUKT} {VERSION}"
 
@@ -308,6 +308,9 @@ class QCCU:
         # zweiter Ort fuer dieselbe Sache. Wer zuerst aufnimmt, sieht die
         # Reparatur gar nicht; sie wird beim Melden automatisch quittiert.
         self.warteraum = set()
+        # Aufgenommene Geraete, deren Meldung noch auf ihren Namen wartet.
+        # Adresse -> Wecker. Siehe `aufnehmen`.
+        self._freigabe = {}
         # Aus: alles wird sofort gemeldet (wie bis 2026.8.28). Fuer
         # Gegenstellen ohne Posteingang — FHEM/HMCCU kennt keinen.
         self.zurueckhalten = True
@@ -433,6 +436,14 @@ class QCCU:
         # — genau das ist der letzte Schritt ihres Reparatur-Dialogs. Damit ist
         # der Hinweis im Posteingang erledigt.
         self.frisch_angelernt.pop(key.split(":")[0], None)
+        # Wartet die Meldung dieses Geraets noch auf seinen Namen, ist sie
+        # jetzt faellig — die Entitaeten der Gegenstelle entstehen dann gleich
+        # mit dem richtigen Namen.
+        basis = key.split(":")[0]
+        with self.lock:
+            faellig = basis in self._freigabe
+        if faellig:
+            self._freigeben(basis)
         if sauber != vorher:
             self.merke_ereignis("info",
                                 f"{key} heisst jetzt „{sauber}“" if sauber
@@ -487,13 +498,42 @@ class QCCU:
         if d is None:
             return False
         if wartete:
-            self.merke_ereignis("ok", f"{self.name_of(key, d.label)} "
-                                      f"aufgenommen — an die Haussteuerung "
-                                      f"gemeldet")
-            if self.subscribers:
-                self._notify_new(d)
             self.save_store()
+            # ⚠️ NICHT sofort melden. Die Gegenstelle nimmt auf und schickt den
+            # Namen unmittelbar danach (`accept_device_in_inbox.fn`, dann
+            # `Device.setName`). Melden wir dazwischen, legt sie ihre
+            # Entitaeten noch mit dem Vorgabenamen an — die Kennungen tragen
+            # dann fuer immer die Seriennummer statt „Greta" (19.08.2026 am
+            # Aufbau gesehen). Also: auf den Namen warten, hoechstens
+            # FREIGABE_FRIST Sekunden. Wer ohne Namen aufnimmt, verliert dabei
+            # nichts als diese paar Sekunden.
+            with self.lock:
+                alt = self._freigabe.pop(key, None)
+            if alt is not None:
+                alt.cancel()
+            wecker = threading.Timer(self.FREIGABE_FRIST, self._freigeben, (key,))
+            wecker.daemon = True
+            with self.lock:
+                self._freigabe[key] = wecker
+            wecker.start()
         return wartete
+
+    # Wie lange die Meldung auf den Namen wartet.
+    FREIGABE_FRIST = 8.0
+
+    def _freigeben(self, key):
+        """Jetzt melden — der Name ist da oder kommt nicht mehr."""
+        with self.lock:
+            wecker = self._freigabe.pop(key, None)
+            d = self.devices.get(key)
+        if wecker is not None:
+            wecker.cancel()
+        if d is None:
+            return
+        self.merke_ereignis("ok", f"{self.name_of(key, d.label)} aufgenommen "
+                                  f"— an die Haussteuerung gemeldet")
+        if self.subscribers:
+            self._notify_new(d)
 
     def wartet(self, address):
         """Steht dieses Geraet noch im Warteraum?"""
@@ -709,6 +749,9 @@ class QCCU:
         self.frisch_angelernt.pop(key, None)
         with self.lock:
             self.warteraum.discard(key)
+            wecker = self._freigabe.pop(key, None)
+        if wecker is not None:
+            wecker.cancel()
         self.save_store()
         addrs = [x["ADDRESS"] for x in d.descriptions()]
         self._enqueue(("delete", key, addrs))
