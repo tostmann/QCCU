@@ -218,6 +218,9 @@ class Radio:
         # Geraete, die mit unserem Netzschluessel funken, aber nicht (mehr)
         # im Bestand stehen — siehe `_pruefe_verwaist`.
         self._verwaist = {}
+        # Kennung -> zuletzt bekannte Funkadresse eines ausgeschlossenen
+        # Geraets, damit ein Wiederanlernen die alte Spur mitnimmt.
+        self._ehemals = {}
         self._pair_q = queue.Queue()
         self._cmdq = queue.Queue()
         self.cul = None
@@ -1377,7 +1380,15 @@ class Radio:
         self._submit(f"mT11{dst}{NM_EXCLUDE_CONCLUDE:02X}", "cmd")
         m = bestaetigt
         with self.lock:
-            self.by_hmid.pop(hmid.lower(), None)
+            # ⚠️ Wer hier hinausfaellt, kann gleich wieder anklopfen — dasselbe
+            # Geraet, neue Funkadresse. Die alte Zuordnung merken wir uns, um
+            # sie beim Wiederanlernen aus der Verwaisten-Liste zu raeumen:
+            # sonst steht das Geraet dort als „funkt noch, gehoert nicht dazu",
+            # obwohl es laengst wieder angelernt ist (19.08.2026 gesehen —
+            # c5410d blieb neben dem frisch angelernten c5410e stehen).
+            kennung = self.by_hmid.pop(hmid.lower(), None)
+            if kennung:
+                self._ehemals[kennung.upper()] = hmid.lower()
         if self.verbose:
             print(f"  Ausschluss {hmid}: "
                   + ("bestaetigt" if m else "ohne Antwort abgeschlossen"))
@@ -1578,6 +1589,8 @@ class Radio:
         self._submit("ms" + newa.hex().upper() + "C1070301"
                      + newa.hex().upper() + "010000", "cmd")
 
+        self.spuren_raeumen(src.hex(), ccu_addr)
+
         self.pair_last = f"{ccu_addr} angelernt als {newa.hex()} (Typ {devtype})"
         self._log("##", f"ANLERNEN fertig {ccu_addr} -> {newa.hex()}")
         if self.verbose:
@@ -1741,6 +1754,28 @@ class Radio:
                  "anzahl": e["anzahl"], "seit_sek": max(0.0, jetzt - e["zuerst"])}
                 for h, e in eintraege]
 
+    def spuren_raeumen(self, ruf_adresse, kennung):
+        """Nach dem Anlernen aufraeumen, was das Geraet hinterlassen hat.
+
+        ⚠️ Zwei Spuren bleiben sonst liegen und widersprechen dem, was gerade
+        geschehen ist (beides am 19.08.2026 am Aufbau gesehen):
+
+        1. **Der Anlernwunsch.** Das Geraet rief unter einer Ruf-Adresse; nach
+           dem Anlernen heisst es anders. Blieb der Eintrag stehen, stand
+           dasselbe Geraet gleichzeitig als angelernt UND als „will angelernt
+           werden" da — mit einem Hinweis, der ins Leere zeigt. Dirks Wort
+           dafuer: „Paradox?"
+        2. **Die alte Funkadresse.** Wurde dieselbe Kennung vorher
+           ausgeschlossen, funkte sie unter der alten Adresse vielleicht noch
+           und stand deshalb unter „funkt noch, gehoert nicht dazu". Nach dem
+           Werksreset ist diese Adresse Geschichte.
+        """
+        with self.lock:
+            self._fremde.pop((ruf_adresse or "").lower(), None)
+            alte = self._ehemals.pop((kennung or "").upper(), None)
+            if alte:
+                self._verwaist.pop(alte, None)
+
     def _fremde_frist(self, e):
         """Wie lange ein Anlernruf nachhallt — aus seiner eigenen Kadenz.
 
@@ -1829,10 +1864,20 @@ class Radio:
         self.fremde_aufraeumen()
         jetzt = time.time()
         hat_schluessel = bool(self.pair_key)
-        hinweis = ("bereit zum Anlernen" if hat_schluessel
-                   else "Schluessel vom Aufkleber fehlt — in der "
-                        "QCCU-Oberflaeche eintragen oder am Anlern-Aufruf "
-                        "im Feld `key` mitgeben")
+        # ⚠️ Der Text sagt, was ZU TUN ist — er behauptet nicht, dass etwas
+        # fehlt. „Schluessel vom Aufkleber fehlt" las sich wie ein Vorwurf und
+        # stand obendrein noch da, wenn gerade erfolgreich angelernt worden war
+        # (der Schluessel wird nach dem Anlernen verworfen): ein Geraet stand
+        # als angelernt UND als „Schluessel fehlt" in derselben Liste
+        # (Dirk, 19.08.2026: „Paradox?"). Das Anlernen selbst laeuft in der
+        # QCCU-Oberflaeche — nicht aus Bequemlichkeit, sondern weil ein
+        # HmIP-Geraet ohne seinen Aufkleber-Schluessel nicht anlernbar ist und
+        # die Haussteuerung kein Feld dafuer hat.
+        hinweis = ("will angelernt werden — Schluessel liegt vor, "
+                   "Anlernfenster in QCCU oeffnen" if hat_schluessel
+                   else "will angelernt werden — dafuer den 26-stelligen "
+                        "Schluessel vom Aufkleber in der QCCU-Oberflaeche "
+                        "eintragen und dort anlernen")
         out = []
         with self.lock:
             eintraege = sorted(self._fremde.items(),
