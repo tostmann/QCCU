@@ -216,6 +216,26 @@ def _kanal_name(adresse, label):
     return f"{label} {adresse}"
 
 
+def _ise_id(text):
+    """Die Kennung fuer den POSTEINGANG — als Zeichenkette.
+
+    ⚠️ Zwei Schnittstellen, zwei Typen, und das ist keine Schlamperei der
+    Gegenstelle, sondern die Vorlage: `Device.listAllDetail` traegt die
+    Kennung als ZAHL (`DeviceDetail.id: int` in aiohomematic), das
+    Posteingang-Skript einer Zentrale von eq-3 schreibt sie in
+    Anfuehrungszeichen (`Write('{"id":"' # oDev.ID() # '",')`) und die
+    Gegenstelle nimmt sie entsprechend als ZEICHENKETTE an
+    (`InboxDeviceData.device_id: str`).
+
+    Wir lieferten sie hier als Zahl. Das Panel reicht sie beim Benennen
+    unveraendert weiter, und dessen WebSocket-Befehl verlangt `str` —
+    Ergebnis war ein blankes „Aktion fehlgeschlagen" im Panel und im
+    HA-Protokoll: „expected str for dictionary value @ data['device_id'].
+    Got 1185349867 (invalid_format)" (Dirk, 19.08.2026, 22:47).
+    """
+    return str(_kennung(text))
+
+
 def _kennung(text):
     """Eine stabile Zahl je Adresse.
 
@@ -430,7 +450,7 @@ class JsonRpc:
                 # niemand faengt. Kennungen sind bei einer Zentrale von eq-3
                 # immer Zahlen; das gilt hier genauso.
                 for e in liste:
-                    e["id"] = _kennung(e.get("address", ""))
+                    e["id"] = _ise_id(e.get("address", ""))
             except Exception:                        # noqa: BLE001
                 liste = []
 
@@ -445,7 +465,7 @@ class JsonRpc:
             typ = geraet.label if geraet is not None else "Geraet"
             name = self.q.name_of(adresse, typ)
             liste.append({
-                "id": _kennung(adresse),
+                "id": _ise_id(adresse),
                 "address": adresse,
                 "name": (f"{name} — angelernt, hier aufnehmen: Namen "
                          f"eintragen und auf ‚aufnehmen' druecken. Erst dann "
@@ -468,7 +488,7 @@ class JsonRpc:
             typ = geraet.label if geraet is not None else "Geraet"
             name = self.q.name_of(adresse, typ)
             liste.append({
-                "id": _kennung(adresse),
+                "id": _ise_id(adresse),
                 "address": adresse,
                 "name": (f"{name} — angelernt, hier noch nicht aufgenommen: in "
                          f"DIESER Liste auf ‚aufnehmen‘ druecken und dabei benennen "
