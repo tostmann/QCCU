@@ -206,6 +206,16 @@ class BidcosDevice:
         return self.eintrag.get("label") or self.devtype
 
     @property
+    def typname(self):
+        """Der Typ, wie er im Namen erscheint — `HM-LC-Sw1-Pl-2`.
+
+        ⚠️ NICHT `label`. Der Langtext der rftypes
+        („radio-controlled socket adapter switch actuator 1-channel") ist als
+        Anzeigename unbrauchbar.
+        """
+        return self.devtype or self.label
+
+    @property
     def layout(self):
         return self.eintrag.get("layout", "")
 

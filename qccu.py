@@ -181,6 +181,16 @@ class Device:
         return self.tables.label_of(self.devtype)
 
     @property
+    def typname(self):
+        """Der Typ, wie er im Namen erscheint.
+
+        Bei HmIP ist die Beschriftung zugleich der Typ (`HmIP-PS-2 9YM`) —
+        der Zusatz gehoert dazu und wird NICHT abgeschnitten. Bei BidCoS sind
+        es zwei verschiedene Dinge, deshalb gibt es die Eigenschaft ueberhaupt.
+        """
+        return self.label
+
+    @property
     def subtype(self):
         """Kurzform des Typs."""
         base = self.label.split()[0]

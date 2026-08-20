@@ -206,14 +206,31 @@ class Sessions:
             del self._offen[sid]
 
 
-def _kanal_name(adresse, label):
+KURZ_ID = 4
+
+
+def _kanal_name(adresse, typ):
     """Der Name, unter dem ein Kanal in der Auskunft steht.
 
-    Eine echte Zentrale fuehrt hier den vom Benutzer vergebenen Namen. Solange
-    die QCCU keine Namensverwaltung hat, ist der sprechende Aufbau
-    „<Typ> <Adresse>" die ehrlichste Auskunft — sie ist eindeutig und
-    wiedererkennbar."""
-    return f"{label} {adresse}"
+    Aufbau „<Typ> <Kurzkennung>", z.B. `HM-LC-Sw1-Pl-2 2233`. Eine echte
+    Zentrale fuehrt hier den vom Benutzer vergebenen Namen; solange keiner
+    vergeben ist, ist das die ehrlichste Auskunft — kurz und wiedererkennbar.
+
+    ⚠️ Der Typ, NICHT die Beschriftung. Bei BidCoS sind das zwei Dinge, und
+    der rftypes-Langtext taugt nicht als Anzeigename.
+
+    ⚠️ Gekuerzt wird nur die GERAETEadresse. Ein Kanal kommt als
+    `112233:1` herein — wer die ganze Zeichenkette kuerzt, macht daraus
+    `3:1`. Deshalb erst am Doppelpunkt trennen.
+
+    ⚠️ Vier Hexstellen sind nicht garantiert eindeutig. Stehen zwei Geraete
+    desselben Typs mit gleicher Endung im Haus, tragen sie denselben Namen —
+    HA vergibt der zweiten Entitaet dann eine Nummer. Der Benutzer kann
+    umbenennen; die Adresse bleibt der eindeutige Schluessel.
+    """
+    basis, trenner, kanal = adresse.partition(":")
+    kurz = basis[-KURZ_ID:]
+    return f"{typ} {kurz}{trenner}{kanal}"
 
 
 def _ise_id(text):
@@ -326,13 +343,13 @@ class JsonRpc:
                 addr = f"{d.address}:{idx}"
                 kanaele.append({
                     "address": addr,
-                    "name": self.q.name_of(addr, _kanal_name(addr, d.label)),
+                    "name": self.q.name_of(addr, _kanal_name(addr, d.typname)),
                     "id": _kennung(addr),
                 })
             out.append({
                 "address": d.address,
                 "name": self.q.name_of(d.address,
-                                       _kanal_name(d.address, d.label)),
+                                       _kanal_name(d.address, d.typname)),
                 "id": _kennung(d.address),
                 "interface": self.interface,
                 "channels": kanaele,
@@ -346,12 +363,12 @@ class JsonRpc:
                 bg = list(self.bidcos.devices.values())
             for d in bg:
                 kanaele = [{"address": f"{d.address}:{idx}",
-                            "name": _kanal_name(f"{d.address}:{idx}", d.label),
+                            "name": _kanal_name(f"{d.address}:{idx}", d.typname),
                             "id": _kennung(f"{d.address}:{idx}")}
                            for idx, _ in d.channel_list()]
                 out.append({
                     "address": d.address,
-                    "name": _kanal_name(d.address, d.label),
+                    "name": _kanal_name(d.address, d.typname),
                     "id": _kennung(d.address),
                     "interface": self.bidcos.interface_name,
                     "channels": kanaele,
@@ -503,7 +520,7 @@ class JsonRpc:
         wartend = getattr(self.q, "warteraum_liste", None)
         for adresse in (wartend() if wartend else []):
             geraet = self.q.devices.get(adresse)
-            typ = geraet.label if geraet is not None else "Geraet"
+            typ = geraet.typname if geraet is not None else "Geraet"
             name = self.q.name_of(adresse, typ)
             liste.append({
                 "id": _ise_id(adresse),
@@ -526,7 +543,7 @@ class JsonRpc:
             if adresse in wartend_menge:
                 continue
             geraet = self.q.devices.get(adresse)
-            typ = geraet.label if geraet is not None else "Geraet"
+            typ = geraet.typname if geraet is not None else "Geraet"
             name = self.q.name_of(adresse, typ)
             liste.append({
                 "id": _ise_id(adresse),
