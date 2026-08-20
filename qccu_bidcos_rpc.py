@@ -240,6 +240,12 @@ class BidcosRpc:
         wird, ist keiner.
         """
         adresse = vorgang["geraet"]
+        # ⚠️ Nicht erneut anfangen, solange einer laeuft: ein Geraet sendet
+        # seinen Anlernruf mehrfach, und jede Wiederholung wuerde sonst eine
+        # zweite Sequenz ausloesen.
+        with self.lock:
+            if adresse in self._anlern_offen:
+                return
         zaehler = []
         for befehl in vorgang["befehle"]:
             # Die Zaehlernummer steht an Stelle 2 des Rahmens (nach `As` und
@@ -272,7 +278,28 @@ class BidcosRpc:
                 vorgang = lauf["vorgang"]
         if fertig:
             print(f"  BidCoS {adresse}: alle drei Rahmen quittiert")
-            self._anlernen_eintragen(vorgang)
+            # ⚠️ Der Schreibvorgang allein ist noch kein Anlernvorgang. Eine
+            # funktionierende Zentrale schickt danach einen bestaetigenden
+            # Schaltbefehl und wertet die ANTWORT DARAUF als Beweis — so ist
+            # es on-air belegt. Erst danach gehoert das Geraet in den Bestand.
+            self._anlernen_bestaetigen(vorgang)
+
+    def _anlernen_bestaetigen(self, vorgang):
+        """Den bestaetigenden Schaltbefehl senden und das Geraet aufnehmen.
+
+        Der Aktor antwortet darauf mit seinem Zustand (`0x02`/Subtyp `0x01`);
+        diese Antwort laeuft ohnehin durch `a_zeile` und setzt den Wert. Wir
+        tragen das Geraet hier ein, weil es die drei Rahmen quittiert HAT —
+        der SET ist die Probe aufs Exempel, nicht die Bedingung.
+        """
+        adresse = vorgang["geraet"]
+        self._anlernen_eintragen(vorgang)
+        if adresse not in self.devices:
+            return
+        probe = self.zentrale.schalten(adresse, 1, False)
+        if probe["gesendet"]:
+            self._senden(probe["befehl"])
+            print(f"    BidCoS {adresse}: bestaetigender Schaltbefehl gesendet")
 
     def _anlern_aufraeumen(self):
         """Anlernvorgaenge, die keine Quittung bekamen, laut scheitern lassen."""

@@ -265,7 +265,12 @@ def konfig_schreiben(zentrale, geraet, register, kanal=0, liste=0, msgcnt=1,
     HM-LC-Sw1-Pl-2 hat alle drei Rahmen angenommen und quittiert.
     """
     p = bytes.fromhex(peer)
-    paare = b"".join(bytes([r & 0xFF, w & 0xFF]) for r, w in sorted(register.items()))
+    # ⚠️ Die Reihenfolge bleibt, wie der Aufrufer sie angibt — NICHT sortiert.
+    # Eine funktionierende Zentrale schreibt beim Anlernen die Zentralenadresse
+    # ZUERST und die Zugabe danach; ob das Geraet darauf besteht, ist nicht
+    # geklaert. Solange es nicht geklaert ist, wird das Belegte nachgebaut und
+    # nicht umsortiert.
+    paare = b"".join(bytes([r & 0xFF, w & 0xFF]) for r, w in register.items())
     return [
         Frame(msgcnt, FLAG_BIDI | FLAG_RPTEN, MT_CONFIG, zentrale, geraet,
               bytes([kanal, CFG_START]) + p + bytes([peerkanal, liste])),
@@ -276,6 +281,17 @@ def konfig_schreiben(zentrale, geraet, register, kanal=0, liste=0, msgcnt=1,
     ]
 
 
+# Zwei Register, die eine funktionierende Zentrale beim Anlernen MITSCHREIBT.
+# ⚠️ Ohne sie hat ein frisch zurueckgesetztes Geraet den Schreibvorgang hier
+# nicht quittiert — mit ihnen quittiert es jeden der drei Rahmen. Belegt am
+# 20.08.2026 durch den Mitschnitt eines Anlernvorgangs der busware-Rule-Engine
+# an einem HM-LC-Sw1-Pl-2; deren Schreibrahmen lautet
+# `00 08 0A <hi> 0B <mid> 0C <lo> 01 01 02 01`, unserer trug nur die ersten
+# drei Paare. Was die beiden bewirken, ist damit NICHT geklaert — nur, dass
+# sie dazugehoeren.
+REG_ANLERN_ZUGABE = {0x01: 0x01, 0x02: 0x01}
+
+
 def anlern_folge(zentrale, geraet, msgcnt=1):
     """Anlernen = die eigene Adresse in Liste 0 auf 0x0A/0x0B/0x0C schreiben.
 
@@ -283,13 +299,18 @@ def anlern_folge(zentrale, geraet, msgcnt=1):
     Anlerngeheimnis wie HmIP — wer schreiben darf, ist angelernt. Genau
     deshalb ist die Adresswahl der Zentrale eine Sicherheitsfrage und keine
     Formalie.
+
+    ⚠️ Die drei Rahmen allein sind NICHT der Anlernvorgang. Danach gehoert ein
+    bestaetigender Schaltbefehl (`schaltbefehl`), und der Erfolgsbeweis ist die
+    Antwort des Geraets darauf — nicht die Quittung auf die Konfigurations-
+    rahmen. So macht es die busware-Rule-Engine, und so ist es on-air belegt.
     """
     a = bytes.fromhex(zentrale.upper())
-    return konfig_schreiben(
-        zentrale, geraet,
-        {REG_PAIR_CENTRAL: a[0], REG_PAIR_CENTRAL + 1: a[1],
-         REG_PAIR_CENTRAL + 2: a[2]},
-        kanal=0, liste=0, msgcnt=msgcnt)
+    register = {REG_PAIR_CENTRAL: a[0], REG_PAIR_CENTRAL + 1: a[1],
+                REG_PAIR_CENTRAL + 2: a[2]}
+    register.update(REG_ANLERN_ZUGABE)
+    return konfig_schreiben(zentrale, geraet, register,
+                            kanal=0, liste=0, msgcnt=msgcnt)
 
 
 def statusabfrage(zentrale, geraet, kanal=1, msgcnt=1):
