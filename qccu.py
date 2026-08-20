@@ -1358,6 +1358,13 @@ def main():
     a.add_argument("--bidcos-state", default=None, metavar="DATEI",
                    help="Zustand der BidCoS-Schnittstelle "
                         "(Vorgabe: neben --state)")
+    # ⚠️ Ohne diesen Schalter liest die BidCoS-Schnittstelle nur mit. Mit ihm
+    # quittiert sie Rahmen an die eigene Adresse und schliesst Anlernvorgaenge
+    # ab — sie greift also in den Funk ein. Das gehoert ausdruecklich gewollt,
+    # nicht als Nebenwirkung des Einschaltens.
+    a.add_argument("--bidcos-senden", action="store_true",
+                   help="die BidCoS-Schnittstelle darf senden (quittieren und "
+                        "anlernen). Ohne dies liest sie nur mit.")
     a.add_argument("--bidcos-fremd", default="", metavar="ADRESSEN",
                    help="Adressen fremder Zentralen im selben Funknetz, "
                         "durch Komma getrennt — sie werden als eigene Adresse "
@@ -1750,7 +1757,8 @@ def main():
                 if g.state else None)
             bidcos = qccu_bidcos_rpc.BidcosRpc(
                 bt, radio=radio, state_file=zustand, verbose=lc.verbose,
-                version=NAME_UND_FASSUNG, fremde_zentralen=fremd)
+                version=NAME_UND_FASSUNG, fremde_zentralen=fremd,
+                senden_erlaubt=bool(g.bidcos_senden))
             brpc = SimpleXMLRPCServer((g.bind, g.bidcos_port),
                                       requestHandler=RpcHandler,
                                       allow_none=True, logRequests=False)
@@ -1766,9 +1774,13 @@ def main():
             if bt.fehlend:
                 print(f"    ! BidCoS-Tabellen fehlen: {', '.join(bt.fehlend)} "
                       f"— `tables/build_bidcos.py` erzeugt sie.")
-            if not bidcos.zentrale.senden_erlaubt:
-                print(f"    Sendet NICHT — die Schnittstelle liest mit. "
-                      f"(Anlernruf-Weg noch nicht an Hardware belegt.)")
+            if bidcos.zentrale.senden_erlaubt:
+                print(f"    Sendet — quittiert Rahmen an {bidcos.zentrale.eigene_id} "
+                      f"und lernt an."
+                      + (f" Fremde Zentralen: {', '.join(fremd)}" if fremd else ""))
+            else:
+                print(f"    Sendet NICHT — die Schnittstelle liest nur mit "
+                      f"(--bidcos-senden schaltet es frei).")
         except OSError as ex:
             print(f"  ! BidCos-RF auf {g.bind}:{g.bidcos_port} nicht moeglich: {ex}")
             print(f"    Alles Uebrige laeuft weiter.")

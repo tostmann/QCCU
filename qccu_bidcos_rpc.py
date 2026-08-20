@@ -38,10 +38,14 @@ Aus der Quelle von `aiohomematic` 2026.5.0 gelesen, nicht geraten:
 
 WAS ES (NOCH) NICHT TUT
 -----------------------
-Gesendet wird nur, wenn die Zentrale es erlaubt (`Zentrale.senden_erlaubt`).
-In der Vorgabe steht der Riegel zu: der Weg vom Anlernruf zur Antwort ist
-noch nicht an Hardware belegt. Alles Uebrige — Bestand, Beschreibungen,
-Paramsets, Rueckrufe — arbeitet.
+Gesendet wird nur, wenn die Zentrale es erlaubt (`senden_erlaubt`, Vorgabe
+AUS). Mit zugem Riegel liest die Schnittstelle den Funk mit und meldet, was
+sie sieht, mischt sich aber nicht ein — die richtige Einstellung, solange im
+selben Funknetz eine andere Zentrale die Geraete fuehrt.
+
+Offen ist der Riegel, quittiert sie Rahmen an die eigene Adresse und schliesst
+Anlernvorgaenge ab: die drei CONFIG-Rahmen hinaus, danach das Geraet ueber die
+Tabellen erkennen und in den Bestand nehmen.
 """
 from __future__ import annotations
 
@@ -80,7 +84,8 @@ class BidcosRpc:
     NOTIFY_TIMEOUT = 8.0
 
     def __init__(self, tables, radio=None, state_file=None, verbose=True,
-                 version="QCCU", eigene_id=None, fremde_zentralen=()):
+                 version="QCCU", eigene_id=None, fremde_zentralen=(),
+                 senden_erlaubt=False):
         self.t = tables
         self.radio = radio
         self.state_file = state_file
@@ -109,7 +114,7 @@ class BidcosRpc:
             print(f"  ! BidCoS: die gemerkte Adresse {eigen} gehoert einer "
                   f"fremden Zentrale — es wird eine neue gewuerfelt.")
             eigen = zufaellige_adresse(gesperrt=fremde_zentralen)
-        self.zentrale = Zentrale(eigen, senden_erlaubt=False,
+        self.zentrale = Zentrale(eigen, senden_erlaubt=bool(senden_erlaubt),
                                  fremde_zentralen=fremde_zentralen)
         self._sichern()
 
@@ -182,15 +187,68 @@ class BidcosRpc:
         """
         vorgaenge = self.zentrale.verarbeite(zeile)
         for v in vorgaenge:
-            if v["art"] != "status":
-                continue
-            g = self.devices.get(v["geraet"])
-            if g is None:
-                continue
-            kanal, an = v["kanal"], v["an"]
-            g.values[(kanal, "STATE")] = an
-            self._notify(f"{v['geraet']}:{kanal}", "STATE", an)
+            if v["art"] == "status":
+                g = self.devices.get(v["geraet"])
+                if g is None:
+                    continue
+                kanal, an = v["kanal"], v["an"]
+                g.values[(kanal, "STATE")] = an
+                self._notify(f"{v['geraet']}:{kanal}", "STATE", an)
+            elif v["art"] == "quittung_faellig" and v["gesendet"]:
+                self._senden(v["befehl"])
+            elif v["art"] == "anlernen_faellig" and v["gesendet"]:
+                self._anlernen_abschliessen(v)
         return vorgaenge
+
+    def _senden(self, befehl):
+        """Eine fertige `As`-Zeile in die Warteschlange des Funkpfads."""
+        if self.radio is None:
+            if self.verbose:
+                print(f"  BidCoS: kein Funkpfad, nicht gesendet: {befehl}")
+            return False
+        try:
+            self.radio._submit(befehl, "ask")
+            return True
+        except Exception as ex:                       # noqa: BLE001
+            print(f"  ! BidCoS senden scheiterte: {ex}")
+            return False
+
+    def _anlernen_abschliessen(self, vorgang):
+        """Die drei Rahmen hinausschicken und das Geraet aufnehmen.
+
+        ⚠️ Die Reihenfolge ist wichtig: erst senden, dann eintragen. Wer das
+        Geraet vor dem Schreiben in den Bestand nimmt, meldet der Gegenstelle
+        ein Geraet, das gar nicht auf uns hoert — und der Anwender sucht den
+        Fehler dann an der falschen Stelle.
+        """
+        adresse = vorgang["geraet"]
+        for befehl in vorgang["befehle"]:
+            if not self._senden(befehl):
+                print(f"  ! BidCoS Anlernen {adresse} abgebrochen — kein Funkpfad")
+                return
+        eintrag = self.t.erkennen(modell=vorgang.get("modell"),
+                                  firmware=vorgang.get("firmware"),
+                                  klasse=vorgang.get("klasse"),
+                                  bits=vorgang.get("bits")) if self.t else None
+        if eintrag is None:
+            # Geschrieben ist geschrieben: das Geraet hoert jetzt auf uns, wir
+            # koennen es nur nicht fuehren. Das gehoert gesagt, nicht verschwiegen.
+            print(f"  ! BidCoS {adresse}: angelernt, aber Typ unbekannt "
+                  f"(Modell 0x{(vorgang.get('modell') or 0):04X}, "
+                  f"Klasse 0x{(vorgang.get('klasse') or 0):02X}) — "
+                  f"es erscheint nicht im Bestand.")
+            return
+        geraet = BidcosDevice(adresse, eintrag, self.t,
+                              firmware=vorgang.get("firmware"))
+        with self.lock:
+            self.devices[adresse] = geraet
+        self._sichern()
+        print(f"  BidCoS angelernt: {adresse} = {geraet.devtype}")
+        self._enqueue(("new", adresse, geraet.descriptions()))
+        offen = geraet.dynamisch()
+        if offen:
+            print(f"    Hinweis: die Kanalzahl von {adresse} nennt erst das "
+                  f"Geraet ({', '.join(n for n, _ in offen)}) — bis dahin ein Kanal.")
 
     # -- Rueckrufe ---------------------------------------------------------
 

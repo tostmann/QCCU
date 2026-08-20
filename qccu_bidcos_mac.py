@@ -409,6 +409,10 @@ class Zentrale:
                 vorgaenge.append({
                     "art": "anlernen_faellig", "geraet": f.src,
                     "modell": info.get("modell"), "firmware": info.get("firmware"),
+                    # Klasse und Bits gehoeren mit: ohne sie kann der Aufrufer
+                    # ein Geraet, dessen Modellkennung er nicht fuehrt, nicht
+                    # ueber die Gattung erkennen — und genau dafuer gibt es sie.
+                    "klasse": info.get("klasse"), "bits": info.get("bits"),
                     "befehle": [r.as_befehl() for r in rahmen],
                     "gesendet": self.senden_erlaubt})
 
