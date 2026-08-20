@@ -198,6 +198,20 @@ footer a{color:var(--mut)} footer a:hover{color:var(--acc)}
   </div>
 </div>
 
+<div class="card" id="karte_bidcos" style="display:none">
+  <h2>BidCoS</h2>
+  <div class="body">
+    <table><tbody>
+      <tr><td>Schnittstelle</td><td><code id="bc_if">BidCos-RF</code>
+        <span class="hint" id="bc_send"></span></td></tr>
+      <tr><td>Adresse der Zentrale</td><td><code id="bc_addr">—</code></td></tr>
+      <tr><td>Geräte</td><td><span id="bc_dev">—</span></td></tr>
+      <tr><td>Anlernfenster</td><td><span id="bc_pair">—</span></td></tr>
+    </tbody></table>
+    <p class="hint" id="bc_hint"></p>
+  </div>
+</div>
+
 <div class="card">
   <h2>Funk</h2><div class="body" id="radio"></div>
 </div>
@@ -536,10 +550,36 @@ async function laden(){
   const ab=s.anbindung||{};
   const setz=(id,v)=>{const e=$('#'+id); if(e) e.textContent=v;};
   setz('ha_host', ab.host||location.hostname||'—');
-  setz('ha_if', ab.interface||'HmIP-RF');
+  // ⚠️ Laeuft die BidCoS-Schnittstelle, muessen BEIDE angehakt werden —
+  // sonst sieht die Haussteuerung die klassischen Geraete nicht.
+  const bc = s.bidcos;
+  setz('ha_if', bc ? ((ab.interface||'HmIP-RF')+' und '+bc.interface) : (ab.interface||'HmIP-RF'));
   setz('ha_if2', ab.interface||'HmIP-RF');
   setz('ha_json', ab.json_port ? String(ab.json_port) : 'aus');
   setz('ha_rpc', ab.rpc_port ? String(ab.rpc_port) : '—');
+  const kb=$('#karte_bidcos');
+  if(bc){
+    kb.style.display='';
+    setz('bc_if', bc.interface);
+    setz('bc_addr', bc.eigene_id||'—');
+    setz('bc_dev', bc.geraete===0 ? 'noch keines angelernt' : String(bc.geraete));
+    setz('bc_pair', bc.anlernen_offen>0 ? ('offen, noch '+bc.anlernen_offen+' s') : 'zu');
+    const se=$('#bc_send');
+    if(se) se.textContent = bc.senden_erlaubt ? '' : '— liest nur mit, sendet nicht';
+    const bh=$('#bc_hint');
+    if(bh){
+      let t='';
+      if(bc.tabellen && bc.tabellen.ok===false)
+        t='Die BidCoS-Gerätetabellen fehlen ('+(bc.tabellen.fehlend||[]).join(', ')
+          +') — ohne sie können keine Geräte geführt werden.';
+      else if(!bc.senden_erlaubt)
+        t='Die Schnittstelle liest den Funk mit und meldet, was sie sieht, '
+          +'sendet aber nichts. So stört sie eine andere Zentrale im selben '
+          +'Funknetz nicht.';
+      bh.textContent=t;
+    }
+  } else { kb.style.display='none'; }
+
   const w=$('#ha_warn');
   if(w){
     if(!ab.json_port){
@@ -665,6 +705,7 @@ FLASH_STATE = {"laeuft": False, "protokoll": []}
 
 
 class WebHandler(BaseHTTPRequestHandler):
+    bidcos = None
     anbindung = {}
     server_version = "QCCU-Web"
     qccu = None
@@ -783,6 +824,20 @@ class WebHandler(BaseHTTPRequestHandler):
             out["radio"] = self.radio.radio_state()
         out["firmware"] = self._firmware_state()
         out["anbindung"] = dict(self.anbindung)
+        # ⚠️ Nur wenn die Schnittstelle wirklich laeuft. Eine Karte fuer einen
+        # Dienst, den es nicht gibt, ist schlimmer als keine — sie laesst den
+        # Anwender nach einem Schalter suchen, den niemand umlegen kann.
+        # Behutsam abfragen: `_state` wird auch von Pruefstaenden und moeglichen
+        # Einbettungen benutzt, die den Handler nicht vollstaendig nachbauen.
+        bidcos = getattr(self, "bidcos", None)
+        if bidcos is not None:
+            b = bidcos.zustand()
+            with bidcos.lock:
+                b["geraeteliste"] = [
+                    {"address": a, "label": g.label, "type": g.devtype,
+                     "channels": len(g.channel_list())}
+                    for a, g in bidcos.devices.items()]
+            out["bidcos"] = b
         t = getattr(lc, "t", None)
         if t is not None and hasattr(t, "zustand"):
             out["tabellen"] = t.zustand()
@@ -965,7 +1020,8 @@ class WebHandler(BaseHTTPRequestHandler):
         return {"ok": True}
 
 
-def serve(qccu, radio, version, bind="0.0.0.0", port=8080, anbindung=None):
+def serve(qccu, radio, version, bind="0.0.0.0", port=8080, anbindung=None,
+          bidcos=None):
     """`anbindung` traegt die Angaben, die Home Assistant beim Einrichten
     verlangt (Host, JSON-Port, XML-RPC-Port, Schnittstellenname). Sie stehen
     nur hier zur Verfuegung — die Oberflaeche kennt die uebrigen Dienste
@@ -974,6 +1030,9 @@ def serve(qccu, radio, version, bind="0.0.0.0", port=8080, anbindung=None):
     WebHandler.radio = radio
     WebHandler.version = version
     WebHandler.anbindung = anbindung or {}
+    # Die zweite Schnittstelle. Ohne sie bleibt die Karte verborgen und der
+    # Hinweis fuer Home Assistant nennt wie bisher nur HmIP-RF.
+    WebHandler.bidcos = bidcos
     srv = ThreadingHTTPServer((bind, port), WebHandler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv

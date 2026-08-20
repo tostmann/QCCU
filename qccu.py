@@ -1818,7 +1818,8 @@ def main():
                   anbindung={"host": g.advertise or None,
                              "interface": lc.interface_name,
                              "rpc_port": g.rpc_port,
-                             "json_port": g.json_port})
+                             "json_port": g.json_port},
+                  bidcos=bidcos)
         host = g.advertise or ("127.0.0.1" if g.bind == "0.0.0.0" else g.bind)
         print(f"  Weboberflaeche auf http://{host}:{g.web_port}/  "
               f"(hier wird angelernt — HMCCU kann das nicht)")
