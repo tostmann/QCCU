@@ -376,6 +376,8 @@ class Zentrale:
         self.angelernt = {}        # Adresse -> was der Anlernruf sagte
         self._msgcnt = 0
         self._anlernen_bis = 0.0
+        # Wenn gesetzt: NUR dieses Geraet wird angelernt.
+        self.anlern_ziel = None
 
     def naechster_zaehler(self, schritte=1):
         self._msgcnt = (self._msgcnt + schritte) & 0xFF
@@ -383,14 +385,31 @@ class Zentrale:
 
     # -- Anlernfenster -----------------------------------------------------
 
-    def anlernen_oeffnen(self, sekunden=60):
-        """Das Fenster oeffnen. Wer jetzt seinen Knopf drueckt, wird genommen."""
+    def anlernen_oeffnen(self, sekunden=60, ziel=None):
+        """Das Fenster oeffnen — wahlweise NUR fuer ein bestimmtes Geraet.
+
+        ⚠️ Ohne Ziel wird genommen, wer immer gerade seinen Knopf drueckt.
+        Das ist das Verhalten einer Zentrale von eQ-3, aber ein Anlernruf ist
+        ein RUNDRUF, und in Funkreichweite steht selten nur die eigene
+        Wohnung: wer bei offenem Fenster irgendwo in der Nachbarschaft seinen
+        Anlernknopf drueckt, bekommt unsere Konfigurationsrahmen — und wenn er
+        sie annimmt, gehoert sein Geraet uns statt ihm. Mit Ziel passiert das
+        nicht.
+        """
         import time as _t
         self._anlernen_bis = _t.time() + max(0, int(sekunden))
+        self.anlern_ziel = (ziel or "").upper() or None
         return int(sekunden)
+
+    def anlernen_erlaubt(self, adresse):
+        """Darf DIESES Geraet jetzt angelernt werden?"""
+        if not self.anlernen_offen():
+            return False
+        return self.anlern_ziel is None or self.anlern_ziel == adresse.upper()
 
     def anlernen_schliessen(self):
         self._anlernen_bis = 0.0
+        self.anlern_ziel = None
 
     def anlernen_offen(self):
         """Restzeit in Sekunden, 0 = zu."""
@@ -423,7 +442,10 @@ class Zentrale:
             # Rundruf — jedes Geraet in Reichweite sendet ihn, wenn jemand
             # seinen Knopf drueckt, auch das des Nachbarn. Wer ungefragt
             # antwortet, reisst fremde Geraete an sich.
-            if self.anlernen_offen():
+            if self.anlernen_offen() and not self.anlernen_erlaubt(f.src):
+                vorgaenge.append({"art": "anlernruf_fremd", "geraet": f.src,
+                                  "ziel": self.anlern_ziel})
+            elif self.anlernen_erlaubt(f.src):
                 rahmen = anlern_folge(self.eigene_id, f.src,
                                       self.naechster_zaehler(3) - 2)
                 self.angelernt[f.src] = info

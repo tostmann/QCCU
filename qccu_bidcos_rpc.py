@@ -268,6 +268,20 @@ class BidcosRpc:
                 self._senden(v["befehl"])
             elif v["art"] == "anlernen_faellig" and v["gesendet"]:
                 self._anlernen_abschliessen(v)
+            elif v["art"] == "anlernruf":
+                # ⚠️ IMMER melden, auch bei geschlossenem Fenster. Sonst ist
+                # genau der Fall unsichtbar, den man beim Anlernen wissen
+                # muss: hat das Geraet ueberhaupt gerufen?
+                z = self.zentrale.anlern_ziel
+                lage = ("Fenster ZU" if not self.zentrale.anlernen_offen()
+                        else (f"Fenster gilt nur {z}" if z and z != v["adresse"]
+                              else "wird angelernt"))
+                print(f"  BidCoS Anlernruf von {v['adresse']} "
+                      f"(Modell 0x{(v.get('modell') or 0):04X}, "
+                      f"Klasse 0x{(v.get('klasse') or 0):02X}) — {lage}")
+            elif v["art"] == "anlernruf_fremd":
+                print(f"  BidCoS: {v['geraet']} will angelernt werden — "
+                      f"NICHT beantwortet, das Fenster gilt nur {v['ziel']}.")
         return vorgaenge
 
     def _senden(self, befehl):
@@ -283,64 +297,105 @@ class BidcosRpc:
             print(f"  ! BidCoS senden scheiterte: {ex}")
             return False
 
-    # Wie lange auf die Quittungen des Geraets gewartet wird, bevor ein
-    # Anlernvorgang als gescheitert gilt.
-    ANLERN_GEDULD = 20.0
-
     def _anlernen_abschliessen(self, vorgang):
-        """Die drei Rahmen hinausschicken — und auf die Quittungen WARTEN.
+        """Die Anlernsequenz beginnen — EINEN Rahmen nach dem anderen.
 
-        ⚠️ Erst senden, dann eintragen, und eintragen NUR, wenn das Geraet
-        jeden der drei Rahmen quittiert hat. Eine frühere Fassung nahm das
-        Geraet gleich nach dem Senden auf: schlug der Schreibvorgang fehl,
-        stand es im Bestand, hoerte aber auf niemanden — und der Fehler war
-        von aussen nicht mehr zu sehen. Ein Anlernvorgang, der nicht quittiert
-        wird, ist keiner.
+        ⚠️ Die drei Rahmen duerfen NICHT am Stueck hinausgehen. Funk ist
+        halbduplex: das Geraet quittiert den ersten Rahmen, und wer den
+        zweiten sofort hinterherschickt, sendet WAEHREND das Geraet sendet —
+        es kann uns dann gar nicht hoeren.
+
+        Gemessen an einem gelungenen Anlernvorgang (20.08.2026): das Geraet
+        quittiert nach rund 120 ms, und die funktionierende Zentrale liess
+        zwischen den Rahmen **rund 480 ms** verstreichen — sie wartete auf
+        jede Quittung, bevor sie weitermachte. Genau das wird hier
+        nachgebaut: senden, auf die Quittung warten, dann der naechste.
         """
         adresse = vorgang["geraet"]
-        # ⚠️ Nicht erneut anfangen, solange einer laeuft: ein Geraet sendet
-        # seinen Anlernruf mehrfach, und jede Wiederholung wuerde sonst eine
-        # zweite Sequenz ausloesen.
         with self.lock:
             if adresse in self._anlern_offen:
                 return
-        zaehler = []
-        for befehl in vorgang["befehle"]:
-            # Die Zaehlernummer steht an Stelle 2 des Rahmens (nach `As` und
-            # dem Laengenbyte) — sie kommt in der Quittung zurueck.
-            try:
-                zaehler.append(int(befehl[4:6], 16))
-            except ValueError:
-                zaehler.append(None)
-            if not self._senden(befehl):
-                print(f"  ! BidCoS Anlernen {adresse} abgebrochen — kein Funkpfad")
-                return
-            print(f"    BidCoS -> {adresse}: {befehl}")
-        with self.lock:
             self._anlern_offen[adresse] = {
-                "offen": {z for z in zaehler if z is not None},
-                "vorgang": vorgang, "seit": time.time()}
-        print(f"  BidCoS Anlernen {adresse}: 3 Rahmen gesendet, warte auf Quittung")
+                "rahmen": list(vorgang["befehle"]), "schritt": 0,
+                "versuche": 0, "vorgang": vorgang, "seit": time.time()}
+        self._wache_starten()
+        print(f"  BidCoS Anlernen {adresse}: beginne "
+              f"(Modell 0x{(vorgang.get('modell') or 0):04X}, "
+              f"Firmware 0x{(vorgang.get('firmware') or 0):02X}, "
+              f"Klasse 0x{(vorgang.get('klasse') or 0):02X})")
+        self._anlern_schritt(adresse)
 
-    def _anlern_quittung(self, frame):
-        """Eine Quittung des Geraets auf einen unserer Anlern-Rahmen."""
-        adresse = frame.src
+    # Wie oft ein einzelner Anlern-Rahmen wiederholt wird, bevor aufgegeben
+    # wird. Dieselbe Ueberlegung wie beim Schaltbefehl.
+    ANLERN_VERSUCHE = 3
+
+    def _anlern_schritt(self, adresse):
+        """Den naechsten noch offenen Rahmen senden."""
         with self.lock:
             lauf = self._anlern_offen.get(adresse)
             if lauf is None:
                 return
-            lauf["offen"].discard(frame.msgcnt)
-            fertig = not lauf["offen"]
-            if fertig:
-                self._anlern_offen.pop(adresse, None)
+            i = lauf["schritt"]
+            if i >= len(lauf["rahmen"]):
                 vorgang = lauf["vorgang"]
+                self._anlern_offen.pop(adresse, None)
+                fertig = True
+            else:
+                befehl = lauf["rahmen"][i]
+                lauf["versuche"] += 1
+                lauf["faellig"] = time.time() + self.SEND_GEDULD
+                try:
+                    lauf["msgcnt"] = int(befehl[4:6], 16)
+                except ValueError:
+                    lauf["msgcnt"] = None
+                fertig = False
         if fertig:
             print(f"  BidCoS {adresse}: alle drei Rahmen quittiert")
-            # ⚠️ Der Schreibvorgang allein ist noch kein Anlernvorgang. Eine
-            # funktionierende Zentrale schickt danach einen bestaetigenden
-            # Schaltbefehl und wertet die ANTWORT DARAUF als Beweis — so ist
-            # es on-air belegt. Erst danach gehoert das Geraet in den Bestand.
             self._anlernen_bestaetigen(vorgang)
+            return
+        print(f"    BidCoS -> {adresse}: {befehl}")
+        self._senden(befehl)
+
+    def _anlern_quittung(self, frame):
+        """Eine Quittung des Geraets — der naechste Rahmen darf hinaus."""
+        adresse = frame.src
+        with self.lock:
+            lauf = self._anlern_offen.get(adresse)
+            if lauf is None or lauf.get("msgcnt") not in (None, frame.msgcnt):
+                return
+            lauf["schritt"] += 1
+            lauf["versuche"] = 0
+        self._anlern_schritt(adresse)
+
+    def _anlern_aufraeumen(self):
+        """Unquittierte Anlern-Rahmen wiederholen, sonst laut aufgeben."""
+        jetzt = time.time()
+        nochmal, tot = [], {}
+        with self.lock:
+            for a, lauf in list(self._anlern_offen.items()):
+                if jetzt < lauf.get("faellig", 0):
+                    continue
+                if lauf["versuche"] >= self.ANLERN_VERSUCHE:
+                    tot[a] = self._anlern_offen.pop(a)
+                else:
+                    nochmal.append(a)
+        for a in nochmal:
+            print(f"  BidCoS Anlernen {a}: Rahmen unbestaetigt, noch ein Versuch")
+            self._anlern_schritt(a)
+        for a, lauf in tot.items():
+            v = (lauf or {}).get("vorgang") or {}
+            modell = v.get("modell")
+            typ = None
+            if self.t is not None and modell is not None:
+                e = self.t.erkennen(modell=modell, firmware=v.get("firmware"),
+                                    klasse=v.get("klasse"), bits=v.get("bits"))
+                typ = e.get("type") if e else None
+            print(f"  ! BidCoS Anlernen {a} GESCHEITERT bei Rahmen "
+                  f"{lauf.get('schritt', 0) + 1} von 3 — das Geraet hat nicht "
+                  f"quittiert. Es steht NICHT im Bestand. "
+                  f"(Modell 0x{(modell or 0):04X}"
+                  + (f" = {typ}" if typ else " — in den Tabellen NICHT gefuehrt")
+                  + f", Klasse 0x{(v.get('klasse') or 0):02X})")
 
     def _anlernen_bestaetigen(self, vorgang):
         """Den bestaetigenden Schaltbefehl senden und das Geraet aufnehmen.
@@ -359,19 +414,6 @@ class BidcosRpc:
             self._senden(probe["befehl"])
             print(f"    BidCoS {adresse}: bestaetigender Schaltbefehl gesendet")
 
-    def _anlern_aufraeumen(self):
-        """Anlernvorgaenge, die keine Quittung bekamen, laut scheitern lassen."""
-        jetzt = time.time()
-        with self.lock:
-            tot = [a for a, l in self._anlern_offen.items()
-                   if jetzt - l["seit"] > self.ANLERN_GEDULD]
-            for a in tot:
-                self._anlern_offen.pop(a, None)
-        for a in tot:
-            print(f"  ! BidCoS Anlernen {a} GESCHEITERT — das Geraet hat nicht "
-                  f"quittiert. Es steht NICHT im Bestand. Moegliche Gruende: das "
-                  f"Anlernfenster am Geraet war schon zu, oder es ist ausser "
-                  f"Reichweite.")
 
     def _anlernen_eintragen(self, vorgang):
         """Das quittierte Geraet ueber die Tabellen erkennen und aufnehmen."""
@@ -604,13 +646,19 @@ class BidcosRpc:
         self._sende_wache.start()
 
     def _wache(self):
-        """Wiederholt Schaltbefehle, die keine Quittung bekamen."""
+        """Wiederholt, was keine Quittung bekam — Schaltbefehle wie Anlernrahmen.
+
+        ⚠️ Sie muss ein eigener Faden sein. Frueher haing die Wiederholung am
+        Eintreffen der naechsten Funkzeile; bleibt das Geraet aber stumm — und
+        genau dann braucht man sie —, kommt keine Zeile, und nichts loest aus.
+        """
         while True:
             time.sleep(self.SEND_GEDULD / 4)
+            self._anlern_aufraeumen()
             jetzt = time.time()
             faellig = []
             with self.lock:
-                if not self._offene_sends:
+                if not self._offene_sends and not self._anlern_offen:
                     return
                 for schluessel, e in list(self._offene_sends.items()):
                     if jetzt < e["faellig"]:
@@ -663,10 +711,19 @@ class BidcosRpc:
         if isinstance(mode, str) and not str(mode).isdigit():
             ziel, mode = mode, 1
         if on:
-            self.zentrale.anlernen_oeffnen(int(seconds))
+            self.zentrale.anlernen_oeffnen(int(seconds), ziel=ziel)
             self.install_until = time.time() + int(seconds)
-            print(f"  BidCoS Anlernfenster offen fuer {seconds}s"
-                  + (f" (nur {ziel})" if ziel else ""))
+            if ziel:
+                print(f"  BidCoS Anlernfenster offen fuer {seconds}s "
+                      f"— NUR fuer {str(ziel).upper()}")
+            else:
+                # ⚠️ Das gehoert gesagt, nicht kleingedruckt: ein Anlernruf ist
+                # ein Rundruf. Wer jetzt IRGENDWO in Funkreichweite seinen
+                # Anlernknopf drueckt, bekommt unsere Konfigurationsrahmen —
+                # auch der Nachbar.
+                print(f"  BidCoS Anlernfenster offen fuer {seconds}s — fuer JEDES "
+                      f"Geraet, das jetzt anlernen will (auch fremde!). "
+                      f"Mit Geraeteadresse aufrufen, um es einzugrenzen.")
         else:
             self.zentrale.anlernen_schliessen()
             self.install_until = 0.0
