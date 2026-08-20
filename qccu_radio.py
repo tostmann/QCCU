@@ -189,6 +189,8 @@ class Radio:
         self.tot_grund = None
         self._lesefehler = 0
         self.by_hmid = {}
+        # Fremde Absender, ueber die schon einmal berichtet wurde.
+        self._fremd_gemeldet = set()
         self.appseq = {}
         self.devseq = {}
         self.lock = threading.Lock()
@@ -838,6 +840,27 @@ class Radio:
             return
 
         if int(ct) == CT_ICMP:
+            # ⚠️ Ein UNVERSCHLUESSELTER Frame von einem fremden Absender ist
+            # hier fast immer gar kein HmIP-Verkehr. Der Stick zeigt einen
+            # Frame, der nur DEM FORMAT NACH HmIP ist, absichtlich BEIDEN
+            # Familien (sonst saehe niemand einen BidCoS-Anlernruf, der an
+            # 000000 geht und unverschluesselt ist) — er kommt also einmal als
+            # `A`- und einmal als `P`-Zeile herein. Wer das nicht trennt,
+            # deutet BidCoS-Verkehr als HmIP-Netzhaushalt; im Protokoll stand
+            # dann „ICMP von <BidCoS-Adresse>", und der Anwender sucht einen
+            # Fehler, den es nicht gibt.
+            #
+            # Verschluesselt und fremd ist etwas anderes — das ist ein
+            # verwaistes Geraet und wird weiter oben abgegriffen.
+            if int(sec) == 0:
+                with self.lock:
+                    bekannt = src.lower() in self.by_hmid
+                if not bekannt:
+                    if src.lower() not in self._fremd_gemeldet:
+                        self._fremd_gemeldet.add(src.lower())
+                        self._log("##", f"fremder unverschluesselter Verkehr von "
+                                        f"{src.lower()} — nicht als HmIP gedeutet")
+                    return
             ms = SEQ.search(line)
             # `a=1`: der Stick hat den Rundruf schon selbst quittiert
             # (q-culfw icmp_ack, Vorgabe an) — dann keine zweite Quittung
