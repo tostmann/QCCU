@@ -102,6 +102,8 @@ class BidcosRpc:
         self._notify_thread = None
         self.install_until = 0.0
         self._anlern_offen = {}
+        self._offene_sends = {}
+        self._sende_wache = None
         self._werte_zuletzt = 0.0
         self._werte_offen = False
         self._laden()
@@ -187,6 +189,19 @@ class BidcosRpc:
         os.close(f)
         os.replace(tmp, self.state_file)
 
+    # ⚠️ Ein Schaltbefehl geht EINMAL hinaus und kann verlorengehen — auf
+    # BidCoS ist das der Normalfall, nicht die Ausnahme. Ohne Wiederholung
+    # wirkt er meistens, und wenn nicht, merkt es niemand.
+    #
+    # Die Geduld ist gemessen, nicht geraten: im Mitschnitt vom 20.08.2026
+    # antwortete ein Aktor auf den Schaltbefehl nach **125 ms** und auf eine
+    # Statusabfrage nach **149 ms**. 400 ms sind also rund das Dreifache der
+    # beobachteten Umlaufzeit — knapp genug, um eine Wiederholung noch
+    # sinnvoll zu machen, weit genug, um nicht in eine laufende Antwort
+    # hineinzufunken.
+    SEND_GEDULD = 0.4
+    SEND_VERSUCHE = 3
+
     # ⚠️ Gedrosselt: ein Geraet, das oft meldet, wuerde sonst bei jeder
     # Meldung die Zustandsdatei neu schreiben — auf einem Behaelter-Datentraeger
     # ist das unnoetige Schreiblast. Beim Herunterfahren wird `sofort`
@@ -232,9 +247,13 @@ class BidcosRpc:
         except Exception:                             # noqa: BLE001
             f = None
         if (f is not None and f.mtype == 0x02
-                and f.dst.upper() == self.zentrale.eigene_id
-                and f.src in self._anlern_offen):
-            self._anlern_quittung(f)
+                and f.dst.upper() == self.zentrale.eigene_id):
+            if f.src in self._anlern_offen:
+                self._anlern_quittung(f)
+            # Subtyp 0x01 = Quittung MIT Zustand; nur die beweist, dass der
+            # Schaltbefehl angekommen UND ausgefuehrt ist.
+            if f.subtyp == 0x01:
+                self._send_quittiert(f)
         vorgaenge = self.zentrale.verarbeite(zeile)
         for v in vorgaenge:
             if v["art"] == "status":
@@ -554,12 +573,79 @@ class BidcosRpc:
             return ""
         an = value in (True, 1, "1", "true", "True")
         vorgang = self.zentrale.schalten(base, int(kanal), an)
-        if vorgang["gesendet"] and self.radio is not None:
-            self.radio._submit(vorgang["befehl"], "ask")
-        elif self.verbose:
-            print(f"  BidCoS setValue {addr}={an} — NICHT gesendet "
-                  f"(Riegel zu): {vorgang['befehl']}")
+        if not vorgang["gesendet"]:
+            if self.verbose:
+                print(f"  BidCoS setValue {addr}={an} — NICHT gesendet "
+                      f"(Riegel zu): {vorgang['befehl']}")
+            return ""
+        if not self._senden(vorgang["befehl"]):
+            return ""
+        # ⚠️ Der Beweis ist die Quittung MIT Zustand (`0x02`/Subtyp `0x01`),
+        # nicht die blosse Empfangsquittung — so fuehrt es auch die
+        # Geraete-Grundwahrheit. Bleibt sie aus, wird wiederholt.
+        try:
+            zaehler = int(vorgang["befehl"][4:6], 16)
+        except ValueError:
+            return ""
+        with self.lock:
+            self._offene_sends[(base, int(kanal))] = {
+                "befehl": vorgang["befehl"], "msgcnt": zaehler, "an": an,
+                "versuche": 1, "faellig": time.time() + self.SEND_GEDULD}
+        self._wache_starten()
         return ""
+
+    # -- Wiederholung unbestaetigter Schaltbefehle -------------------------
+
+    def _wache_starten(self):
+        if self._sende_wache is not None and self._sende_wache.is_alive():
+            return
+        self._sende_wache = threading.Thread(target=self._wache, name="bidcos-tx",
+                                             daemon=True)
+        self._sende_wache.start()
+
+    def _wache(self):
+        """Wiederholt Schaltbefehle, die keine Quittung bekamen."""
+        while True:
+            time.sleep(self.SEND_GEDULD / 4)
+            jetzt = time.time()
+            faellig = []
+            with self.lock:
+                if not self._offene_sends:
+                    return
+                for schluessel, e in list(self._offene_sends.items()):
+                    if jetzt < e["faellig"]:
+                        continue
+                    if e["versuche"] >= self.SEND_VERSUCHE:
+                        self._offene_sends.pop(schluessel, None)
+                        faellig.append((schluessel, e, False))
+                    else:
+                        e["versuche"] += 1
+                        e["faellig"] = jetzt + self.SEND_GEDULD
+                        faellig.append((schluessel, e, True))
+            for (geraet, kanal), e, nochmal in faellig:
+                if nochmal:
+                    if self.verbose:
+                        print(f"  BidCoS {geraet}:{kanal} unbestaetigt — "
+                              f"Versuch {e['versuche']}/{self.SEND_VERSUCHE}")
+                    self._senden(e["befehl"])
+                else:
+                    # ⚠️ Laut sagen. Ein Schaltbefehl, der nach drei Versuchen
+                    # keine Quittung hat, ist NICHT angekommen — wer das
+                    # verschweigt, laesst die Gegenstelle einen Zustand
+                    # anzeigen, den das Geraet nicht hat.
+                    print(f"  ! BidCoS {geraet}:{kanal} = {e['an']} blieb nach "
+                          f"{self.SEND_VERSUCHE} Versuchen unbestaetigt.")
+
+    def _send_quittiert(self, frame):
+        """Eine Quittung MIT Zustand raeumt den offenen Schaltbefehl ab."""
+        if len(frame.payload) < 3:
+            return
+        kanal = frame.payload[1] & 0x3F
+        with self.lock:
+            e = self._offene_sends.pop((frame.src, kanal), None)
+        if e is not None and self.verbose:
+            print(f"  BidCoS {frame.src}:{kanal} bestaetigt "
+                  f"(Versuch {e['versuche']})")
 
     def putParamset(self, address, paramset, values, *rest):
         print(f"  BidCoS putParamset {address} {paramset} nicht umgesetzt")
