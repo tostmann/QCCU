@@ -125,11 +125,18 @@ setup() {
     # Die zweite Datei traegt Einheit und Bedienrolle der Parameter (`UNIT`,
     # `CONTROL`). Sie steht NICHT im Archiv — ohne sie blieben Temperaturen
     # ohne „°C" und Sensoren ohne Rolle.
+    #
+    # Der dritte Pfad traegt die KLASSISCHEN Geraetebeschreibungen (BidCoS).
+    # Sie stehen NICHT im Archiv — das fuehrt nur Homematic IP —, sondern als
+    # rund 230 XML-Dateien daneben. Genau diese liest auch der `rfd` einer
+    # Zentrale von eQ-3 (`Device Description Dir = /firmware/rftypes`).
     ( cd "$WORK" && dpkg-deb --fsys-tarfile debmatic*.deb \
         | tar -x ./opt/HMServer/HMIPServer.jar \
-               ./opt/HmIP/legacy-parameter-definition.config ) 2>/dev/null
+               ./opt/HmIP/legacy-parameter-definition.config \
+               ./firmware/rftypes ) 2>/dev/null
     JAR="$WORK/opt/HMServer/HMIPServer.jar"
     LPD="$WORK/opt/HmIP/legacy-parameter-definition.config"
+    RFTYPES="$WORK/firmware/rftypes"
     rm -f "$WORK"/debmatic*.deb      # das Paket selbst wird nicht mehr gebraucht
     [ -f "$JAR" ] || die "HMIPServer.jar nicht im Bündel gefunden."
     log "Bündel entpackt, lese Beschreibungen aus …"
@@ -188,6 +195,23 @@ PY
         --extra-out     "$TABLES/extra_params.json" \
         -o "$TABLES/paramsets.json" || die "Zusammenführen fehlgeschlagen."
 
+    # --- die klassische Seite (BidCoS) --------------------------------------
+    # ⚠️ Kein `die` bei Fehlschlag: die BidCoS-Schnittstelle ist in der Vorgabe
+    # AUS. Wer sie nicht einschaltet, soll wegen ihrer Tabellen keine Zentrale
+    # verlieren — er bekommt eine Meldung, mehr nicht. Beim Einschalten sagt
+    # QCCU dann selbst, dass sie fehlen.
+    if [ -d "$RFTYPES" ]; then
+        if python3 "$QCCU/build_bidcos.py" --rftypes "$RFTYPES" -o "$TABLES" \
+             2>&1 | sed 's/^/       /'; then
+            log "BidCoS-Tabellen gebaut."
+        else
+            log "BidCoS-Tabellen NICHT gebaut — die Schnittstelle BidCos-RF
+       bliebe ohne Geraetetypen. Alles Uebrige ist davon unberuehrt."
+        fi
+    else
+        log "Keine rftypes im Bündel — ohne sie gibt es keine BidCoS-Tabellen."
+    fi
+
     log "Tabellen liegen in $TABLES:"
     ls -la "$TABLES" | sed 's/^/       /'
 
@@ -206,9 +230,19 @@ PY
 # `extra_params.json`) —, wird neu gebaut. Alte Tabellen liest QCCU zwar
 # weiter, liefert damit aber viel zu grosse Paramsets: an einer
 # Schaltsteckdose 1087 Konfigurationsparameter statt 345, samt Farbverlaeufen.
+#
+# ⚠️ Die BidCoS-Tabellen zaehlen NUR mit, wenn die Schnittstelle eingeschaltet
+# ist. Sonst muesste jede bestehende Anlage das 236-MB-Bündel erneut laden —
+# fuer eine Schnittstelle, die sie gar nicht benutzt.
 need_tables() {
     [ -f "$TABLES/paramsets.json" ] && [ -f "$TABLES/catalog.json" ] \
-        && [ -f "$TABLES/extra_params.json" ]
+        && [ -f "$TABLES/extra_params.json" ] || return 1
+    if [ "${BIDCOS_PORT:-0}" != "0" ]; then
+        [ -f "$TABLES/bidcos_types.json" ] \
+            && [ -f "$TABLES/bidcos_layouts.json" ] \
+            && [ -f "$TABLES/bidcos_paramsets.json" ] || return 1
+    fi
+    return 0
 }
 
 serve() {
