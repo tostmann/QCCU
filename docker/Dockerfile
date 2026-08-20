@@ -51,8 +51,13 @@ WORKDIR /opt/qccu
 
 # Die Zentralen-Nachbildung
 COPY qccu.py qccu_radio.py qccu_web.py qccu_jsonrpc.py sticker_decode.py qccu_firmware.py qccu_cul.py ./
+# Die BidCoS-Seite. ⚠️ Sie gehoert MIT ins Abbild, auch wenn die Schnittstelle
+# in der Vorgabe aus ist: sonst kennt `qccu.py` den Schalter `--bidcos-port`
+# zwar, findet aber beim Einschalten die Module nicht — die Zentrale laeuft
+# dann zwar weiter, meldet aber nur einen Fehler, den niemand deuten kann.
+COPY qccu_bidcos.py qccu_bidcos_mac.py qccu_bidcos_rpc.py ./
 # Die Werkzeuge, die die Tabellen erzeugen
-COPY tables/build_paramsets.py tables/build_catalog.py ./
+COPY tables/build_paramsets.py tables/build_catalog.py tables/build_bidcos.py ./
 COPY --from=uebersetzer /uebersetzt ./jarparam/
 COPY assets/busmatic_logo.png assets/busmatic_logo_dark.png assets/busware_icon.png ./
 # Ergaenzungen: die wenigen Parameter, die in keiner Definition stehen.
