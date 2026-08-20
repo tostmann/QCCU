@@ -75,6 +75,15 @@ WEB_PORT=${WEB_PORT:-8080}
 JSON_PORT=${JSON_PORT:-8082}
 # TCP-Zugang im culfw-Stil fuer BidCoS/AskSin; 0 = aus.
 CUL_PORT=${CUL_PORT:-0}
+# Die zweite Schnittstelle (BidCos-RF). Vorgabe AUS — wer sie einschaltet,
+# bekommt einen zweiten XML-RPC-Dienst, wie ihn eine Zentrale von eQ-3 dort
+# anbietet. ⚠️ BIDCOS_SENDEN=1 laesst sie in den Funk eingreifen (quittieren
+# und anlernen); ohne das liest sie nur mit. BIDCOS_FREMD nennt die Adressen
+# fremder Zentralen im selben Funknetz, damit sie nicht als eigene gewuerfelt
+# und ihr Verkehr nicht quittiert wird.
+BIDCOS_PORT=${BIDCOS_PORT:-0}
+BIDCOS_SENDEN=${BIDCOS_SENDEN:-0}
+BIDCOS_FREMD=${BIDCOS_FREMD:-}
 ADVERTISE=${ADVERTISE:-}
 
 log() { echo "[qccu] $*"; }
@@ -243,7 +252,10 @@ serve() {
         ${SERIAL:+--serial "$SERIAL"} ${OWN_ADDR:+--own-addr "$OWN_ADDR"} \
         --rpc-port "$RPC_PORT" --rega-port "$REGA_PORT" --web-port "$WEB_PORT" \
         --json-port "$JSON_PORT" \
-        --cul-port "$CUL_PORT"
+        --cul-port "$CUL_PORT" \
+        --bidcos-port "$BIDCOS_PORT"
+    [ "$BIDCOS_SENDEN" = "1" ] && set -- "$@" --bidcos-senden
+    [ -n "$BIDCOS_FREMD" ] && set -- "$@" --bidcos-fremd "$BIDCOS_FREMD"
     [ -n "$ADVERTISE" ] && set -- "$@" --advertise "$ADVERTISE"
     # Ohne Posteingang (FHEM/HMCCU): frisch Angelerntes sofort melden.
     [ "$SOFORT_MELDEN" = "1" ] && set -- "$@" --sofort-melden

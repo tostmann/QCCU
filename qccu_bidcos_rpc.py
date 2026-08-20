@@ -101,6 +101,7 @@ class BidcosRpc:
         self._notify_q = queue.Queue()
         self._notify_thread = None
         self.install_until = 0.0
+        self._anlern_offen = {}
         self._laden()
         eigen = (eigene_id or self._gemerkte_id
                  or zufaellige_adresse(gesperrt=fremde_zentralen))
@@ -185,6 +186,17 @@ class BidcosRpc:
         wird nur MITGELESEN. Solange `senden_erlaubt` zu ist, mischt sich
         diese Schnittstelle nicht in ein Netz ein, das FHEM fuehrt.
         """
+        self._anlern_aufraeumen()
+        # Quittungen auf unsere Anlern-Rahmen abfangen, bevor sie als
+        # gewoehnlicher Verkehr durchlaufen.
+        try:
+            f = Frame.von_a_zeile(zeile)
+        except Exception:                             # noqa: BLE001
+            f = None
+        if (f is not None and f.mtype == 0x02
+                and f.dst.upper() == self.zentrale.eigene_id
+                and f.src in self._anlern_offen):
+            self._anlern_quittung(f)
         vorgaenge = self.zentrale.verarbeite(zeile)
         for v in vorgaenge:
             if v["art"] == "status":
@@ -213,19 +225,72 @@ class BidcosRpc:
             print(f"  ! BidCoS senden scheiterte: {ex}")
             return False
 
-    def _anlernen_abschliessen(self, vorgang):
-        """Die drei Rahmen hinausschicken und das Geraet aufnehmen.
+    # Wie lange auf die Quittungen des Geraets gewartet wird, bevor ein
+    # Anlernvorgang als gescheitert gilt.
+    ANLERN_GEDULD = 20.0
 
-        ⚠️ Die Reihenfolge ist wichtig: erst senden, dann eintragen. Wer das
-        Geraet vor dem Schreiben in den Bestand nimmt, meldet der Gegenstelle
-        ein Geraet, das gar nicht auf uns hoert — und der Anwender sucht den
-        Fehler dann an der falschen Stelle.
+    def _anlernen_abschliessen(self, vorgang):
+        """Die drei Rahmen hinausschicken — und auf die Quittungen WARTEN.
+
+        ⚠️ Erst senden, dann eintragen, und eintragen NUR, wenn das Geraet
+        jeden der drei Rahmen quittiert hat. Eine frühere Fassung nahm das
+        Geraet gleich nach dem Senden auf: schlug der Schreibvorgang fehl,
+        stand es im Bestand, hoerte aber auf niemanden — und der Fehler war
+        von aussen nicht mehr zu sehen. Ein Anlernvorgang, der nicht quittiert
+        wird, ist keiner.
         """
         adresse = vorgang["geraet"]
+        zaehler = []
         for befehl in vorgang["befehle"]:
+            # Die Zaehlernummer steht an Stelle 2 des Rahmens (nach `As` und
+            # dem Laengenbyte) — sie kommt in der Quittung zurueck.
+            try:
+                zaehler.append(int(befehl[4:6], 16))
+            except ValueError:
+                zaehler.append(None)
             if not self._senden(befehl):
                 print(f"  ! BidCoS Anlernen {adresse} abgebrochen — kein Funkpfad")
                 return
+            print(f"    BidCoS -> {adresse}: {befehl}")
+        with self.lock:
+            self._anlern_offen[adresse] = {
+                "offen": {z for z in zaehler if z is not None},
+                "vorgang": vorgang, "seit": time.time()}
+        print(f"  BidCoS Anlernen {adresse}: 3 Rahmen gesendet, warte auf Quittung")
+
+    def _anlern_quittung(self, frame):
+        """Eine Quittung des Geraets auf einen unserer Anlern-Rahmen."""
+        adresse = frame.src
+        with self.lock:
+            lauf = self._anlern_offen.get(adresse)
+            if lauf is None:
+                return
+            lauf["offen"].discard(frame.msgcnt)
+            fertig = not lauf["offen"]
+            if fertig:
+                self._anlern_offen.pop(adresse, None)
+                vorgang = lauf["vorgang"]
+        if fertig:
+            print(f"  BidCoS {adresse}: alle drei Rahmen quittiert")
+            self._anlernen_eintragen(vorgang)
+
+    def _anlern_aufraeumen(self):
+        """Anlernvorgaenge, die keine Quittung bekamen, laut scheitern lassen."""
+        jetzt = time.time()
+        with self.lock:
+            tot = [a for a, l in self._anlern_offen.items()
+                   if jetzt - l["seit"] > self.ANLERN_GEDULD]
+            for a in tot:
+                self._anlern_offen.pop(a, None)
+        for a in tot:
+            print(f"  ! BidCoS Anlernen {a} GESCHEITERT — das Geraet hat nicht "
+                  f"quittiert. Es steht NICHT im Bestand. Moegliche Gruende: das "
+                  f"Anlernfenster am Geraet war schon zu, oder es ist ausser "
+                  f"Reichweite.")
+
+    def _anlernen_eintragen(self, vorgang):
+        """Das quittierte Geraet ueber die Tabellen erkennen und aufnehmen."""
+        adresse = vorgang["geraet"]
         eintrag = self.t.erkennen(modell=vorgang.get("modell"),
                                   firmware=vorgang.get("firmware"),
                                   klasse=vorgang.get("klasse"),
