@@ -233,6 +233,11 @@ class Radio:
         self._pair_q = queue.Queue()
         self._cmdq = queue.Queue()
         self.cul = None
+        # Zweiter Mitleser fuer die BidCoS-Schnittstelle (`qccu_bidcos_rpc`).
+        # ⚠️ Er bekommt dieselbe Zeile wie der CUL-Zugang, NICHT statt seiner:
+        # solange FHEM ueber Port 2000 die Zentrale spielt, liest die eigene
+        # BidCoS-Seite nur mit.
+        self.bidcos = None
 
         self._txq = queue.Queue()
         self._ansq = queue.Queue()
@@ -696,12 +701,18 @@ class Radio:
         return dst[:2] in ("f0", "e0") and src in eigene
 
     def _handle(self, line):
-        if line[:1] == "A" and self.cul is not None:
+        if line[:1] == "A" and (self.cul is not None or self.bidcos is not None):
             if not self._ist_eigener_frame(line):
-                try:
-                    self.cul.a_zeile(line)
-                except Exception:
-                    pass
+                if self.cul is not None:
+                    try:
+                        self.cul.a_zeile(line)
+                    except Exception:
+                        pass
+                if self.bidcos is not None:
+                    try:
+                        self.bidcos.a_zeile(line)
+                    except Exception:
+                        pass
             return
 
         with self._pending_lock:

@@ -1348,6 +1348,20 @@ def main():
                    help="TCP-Zugang im culfw-Stil fuer BidCoS/AskSin "
                         "(0 = aus). In FHEM: define cul CUL <rechner>:<port> 1234")
     a.add_argument("--rpc-port", type=int, default=2010)
+    # ⚠️ Vorgabe 0 = AUS. Die BidCoS-Schnittstelle liest bis auf Weiteres nur
+    # mit; wer sie einschaltet, bekommt einen zweiten XML-RPC-Dienst auf 2001,
+    # wie ihn eine Zentrale von eQ-3 dort anbietet. Solange im selben Funknetz
+    # FHEM/CUL_HM die Zentrale spielt, gehoert sie AUS.
+    a.add_argument("--bidcos-port", type=int, default=0, metavar="PORT",
+                   help="XML-RPC-Port der Schnittstelle BidCos-RF "
+                        "(0 = aus, uebliche Wahl 2001)")
+    a.add_argument("--bidcos-state", default=None, metavar="DATEI",
+                   help="Zustand der BidCoS-Schnittstelle "
+                        "(Vorgabe: neben --state)")
+    a.add_argument("--bidcos-fremd", default="", metavar="ADRESSEN",
+                   help="Adressen fremder Zentralen im selben Funknetz, "
+                        "durch Komma getrennt — sie werden als eigene Adresse "
+                        "AUSGESCHLOSSEN und ihr Verkehr nicht quittiert")
     a.add_argument("--rega-port", type=int, default=8181)
     a.add_argument("--json-port", type=int, default=8082,
                    help="JSON-RPC-Auskunft fuer Home Assistant (aiohomematic / "
@@ -1714,6 +1728,53 @@ def main():
     threading.Thread(target=rpc.serve_forever, daemon=True).start()
     print(f"  XML-RPC auf {g.bind}:{g.rpc_port}")
 
+    # --- Schnittstelle BidCos-RF (zweiter Dienst, siehe qccu_bidcos_rpc) ---
+    # ⚠️ Sie ist eine ZUGABE und darf die Zentrale nicht mitreissen: faellt
+    # sie aus, laufen HmIP, ReGa und der CUL-Zugang weiter. Dieselbe Haltung
+    # wie beim JSON-RPC-Dienst.
+    bidcos = None
+    if g.bidcos_port:
+        try:
+            try:
+                import qccu_bidcos_rpc
+                from qccu_bidcos import BidcosTables
+            except ImportError:
+                sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+                import qccu_bidcos_rpc
+                from qccu_bidcos import BidcosTables
+            bt = BidcosTables(g.tables)
+            fremd = [x.strip().upper() for x in (g.bidcos_fremd or "").split(",")
+                     if x.strip()]
+            zustand = g.bidcos_state or (
+                os.path.join(os.path.dirname(g.state), "qccu_bidcos.json")
+                if g.state else None)
+            bidcos = qccu_bidcos_rpc.BidcosRpc(
+                bt, radio=radio, state_file=zustand, verbose=lc.verbose,
+                version=NAME_UND_FASSUNG, fremde_zentralen=fremd)
+            brpc = SimpleXMLRPCServer((g.bind, g.bidcos_port),
+                                      requestHandler=RpcHandler,
+                                      allow_none=True, logRequests=False)
+            brpc.register_instance(bidcos, allow_dotted_names=False)
+            brpc.register_introspection_functions()
+            brpc.register_multicall_functions()
+            threading.Thread(target=brpc.serve_forever, daemon=True).start()
+            if radio is not None:
+                radio.bidcos = bidcos
+            print(f"  XML-RPC auf {g.bind}:{g.bidcos_port}  "
+                  f"(Schnittstelle BidCos-RF, Adresse "
+                  f"{bidcos.zentrale.eigene_id}, {len(bidcos.devices)} Geraete)")
+            if bt.fehlend:
+                print(f"    ! BidCoS-Tabellen fehlen: {', '.join(bt.fehlend)} "
+                      f"— `tables/build_bidcos.py` erzeugt sie.")
+            if not bidcos.zentrale.senden_erlaubt:
+                print(f"    Sendet NICHT — die Schnittstelle liest mit. "
+                      f"(Anlernruf-Weg noch nicht an Hardware belegt.)")
+        except OSError as ex:
+            print(f"  ! BidCos-RF auf {g.bind}:{g.bidcos_port} nicht moeglich: {ex}")
+            print(f"    Alles Uebrige laeuft weiter.")
+        except Exception as ex:                      # noqa: BLE001
+            print(f"  ! BidCos-RF nicht gestartet: {ex}")
+
     RegaHandler.qccu = lc
     rega = HTTPServer((g.bind, g.rega_port), RegaHandler)
     threading.Thread(target=rega.serve_forever, daemon=True).start()
@@ -1734,7 +1795,8 @@ def main():
                 import qccu_jsonrpc
             qccu_jsonrpc.serve(lc, g.bind, g.json_port, verbose=lc.verbose,
                                rpc_port=g.rpc_port, hostname=g.advertise or None,
-                               laut=bool(getattr(g, "json_log", False)))
+                               laut=bool(getattr(g, "json_log", False)),
+                               bidcos=bidcos, bidcos_port=g.bidcos_port)
         except OSError as ex:
             print(f"  ! JSON-RPC auf {g.bind}:{g.json_port} nicht moeglich: {ex}")
             print(f"    Home Assistant findet die Zentrale so NICHT. Anderen "

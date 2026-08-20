@@ -251,13 +251,18 @@ def _kennung(text):
 class JsonRpc:
     """Die Auskunft selbst — ohne HTTP, damit sie sich pruefen laesst."""
 
-    def __init__(self, qccu, interface=None, rpc_port=2010, hostname=None):
+    def __init__(self, qccu, interface=None, rpc_port=2010, hostname=None,
+                 bidcos=None, bidcos_port=0):
         self.q = qccu
         # Die QCCU fuehrt ihren Schnittstellennamen schon selbst (ReGa,
         # Schnittstellen-Zeile). Zwei Quellen dafuer waeren eine zu viel.
         self.interface = (interface or getattr(qccu, "interface_name", None)
                           or INTERFACE_NAME)
         self.rpc_port = rpc_port
+        # Die zweite Schnittstelle. Ohne sie verhaelt sich alles wie bisher —
+        # `bidcos` ist None, und jede Abfrage landet beim HmIP-Bestand.
+        self.bidcos = bidcos
+        self.bidcos_port = bidcos_port or 0
         self.hostname = hostname or socket.gethostname()
         self.sessions = Sessions()
 
@@ -278,6 +283,10 @@ class JsonRpc:
         jemals seine Funkadresse genannt — letzteres steht erst, wenn er
         wirklich geantwortet hat.
         """
+        if self.bidcos is not None and interface == self.bidcos.interface_name:
+            # Die BidCoS-Seite steht, sobald der Funkpfad steht — sie fuehrt
+            # keinen eigenen Anschluss.
+            return bool(getattr(self.bidcos, "radio", None)) or bool(self.bidcos.devices)
         if interface not in (None, "", self.interface):
             return False
         radio = getattr(self.q, "radio", None)
@@ -289,6 +298,19 @@ class JsonRpc:
         if ser is not None and not getattr(ser, "is_open", True):
             return False
         return bool(getattr(radio, "own_addr", None))
+
+    def _ziel(self, p):
+        """Welche Schnittstelle ist gemeint? Vorgabe: die HmIP-Seite.
+
+        ⚠️ Die Gegenstelle schickt das Feld `interface` bei jedem
+        `Interface.*`-Aufruf mit. Wer es ignoriert, beantwortet BidCoS-Fragen
+        aus dem HmIP-Bestand — die Adressen gibt es dort nicht, und der Client
+        sieht ein leeres Geraet ohne Fehlermeldung.
+        """
+        name = (p or {}).get("interface")
+        if self.bidcos is not None and name == self.bidcos.interface_name:
+            return self.bidcos
+        return self.q
 
     def list_all_detail(self):
         """Namen und Kennungen aller Geraete und Kanaele.
@@ -315,6 +337,25 @@ class JsonRpc:
                 "interface": self.interface,
                 "channels": kanaele,
             })
+        # ⚠️ Das Feld `interface` je Geraet ist kein Schmuck: die Gegenstelle
+        # setzt daraus die Zugehoerigkeit (`fetch_device_details`). Fehlt es,
+        # gilt der Rueckfall der fragenden Schnittstelle — und ein Geraet, das
+        # keiner Schnittstelle zugeordnet ist, wird stillschweigend BidCoS.
+        if self.bidcos is not None:
+            with self.bidcos.lock:
+                bg = list(self.bidcos.devices.values())
+            for d in bg:
+                kanaele = [{"address": f"{d.address}:{idx}",
+                            "name": _kanal_name(f"{d.address}:{idx}", d.label),
+                            "id": _kennung(f"{d.address}:{idx}")}
+                           for idx, _ in d.channel_list()]
+                out.append({
+                    "address": d.address,
+                    "name": _kanal_name(d.address, d.label),
+                    "id": _kennung(d.address),
+                    "interface": self.bidcos.interface_name,
+                    "channels": kanaele,
+                })
         return out
 
     def _adresse_zu_kennung(self, ise_id):
@@ -584,6 +625,21 @@ class JsonRpc:
         m = re.search(r'sUse_Interface\s*=\s*"([^"]*)"', s)
         iface = m.group(1) if m and m.group(1) else self.interface
 
+        # ⚠️ Dieses Skript kommt JE SCHNITTSTELLE einmal, und der Name steht
+        # darin. Wer ihn liest, aber trotzdem ALLE Geraete zurueckgibt, meldet
+        # jeden Wert doppelt — einmal unter jedem Schnittstellennamen —, und
+        # die BidCoS-Werte tragen dann das HmIP-Praefix.
+        if self.bidcos is not None and iface == self.bidcos.interface_name:
+            werte = {}
+            with self.bidcos.lock:
+                bg = list(self.bidcos.devices.values())
+            for d in bg:
+                for (ch, param), v in d.values.items():
+                    if v is None:
+                        continue
+                    werte[f"{iface}.{d.address}:{ch}.{param}"] = _wert_aus(v)
+            return json.dumps(werte)
+
         werte = {}
         with self.q.lock:
             geraete = list(self.q.devices.values())
@@ -598,7 +654,7 @@ class JsonRpc:
 
     # -- die sieben schon vorhandenen, nur uebersetzt -------------------
 
-    def paramset_description(self, address, paramset):
+    def paramset_description(self, address, paramset, ziel=None):
         """⚠️ Drei Abweichungen gegenueber XML-RPC auf einmal.
 
         1. Es ist eine LISTE, kein Verzeichnis. Der Name steht als `NAME` im
@@ -613,7 +669,7 @@ class JsonRpc:
         Ebenfalls ungeprueft gelesen werden `TYPE`, `DEFAULT`, `FLAGS` und
         `OPERATIONS` — sie muessen in jedem Eintrag stehen.
         """
-        beschreibung = self.q.getParamsetDescription(address, paramset)
+        beschreibung = (ziel if ziel is not None else self.q).getParamsetDescription(address, paramset)
         out = []
         for name, eintrag in beschreibung.items():
             e = dict(eintrag)
@@ -649,7 +705,7 @@ class JsonRpc:
             out.append(e)
         return out
 
-    def device_descriptions(self, nur_adresse=None):
+    def device_descriptions(self, nur_adresse=None, ziel=None):
         """⚠️ Auf diesem Weg heissen die Felder ANDERS als ueber XML-RPC:
         klein und in Binnenversalien (`type`, `address`, `paramsets`,
         `subType`, `rxMode`, …) statt `TYPE`, `ADDRESS`, `PARAMSETS`.
@@ -659,8 +715,9 @@ class JsonRpc:
         XML-RPC-Schreibweise durchreicht, bekommt einen Schluesselfehler
         mitten in der Geraeteliste — und keine Geraete.
         """
-        roh = (self.q.listDevices() if nur_adresse is None
-               else [self.q.getDeviceDescription(nur_adresse)])
+        q = ziel if ziel is not None else self.q
+        roh = (q.listDevices() if nur_adresse is None
+               else [q.getDeviceDescription(nur_adresse)])
         out = []
         for d in roh:
             e = {
@@ -697,11 +754,21 @@ class JsonRpc:
         available for the backend" — und zwar bevor ein einziges Geraet geholt
         wird. Der Name muss also genau der sein, unter dem die QCCU auch sonst
         auftritt, und der Port der, auf dem ihre XML-RPC-Auskunft steht."""
-        return [{
+        raus = [{
             "name": self.interface,
             "port": self.rpc_port,
             "info": "QCCU",
         }]
+        # ⚠️ Die zweite Schnittstelle MUSS hier stehen, sonst bietet die
+        # Gegenstelle sie in ihrer Einrichtung gar nicht erst an — und ein
+        # Client, der sie angehakt hat, wird wieder verworfen.
+        if self.bidcos is not None and self.bidcos_port:
+            raus.append({
+                "name": self.bidcos.interface_name,
+                "port": self.bidcos_port,
+                "info": "QCCU",
+            })
+        return raus
 
     # -- Vermittlung ----------------------------------------------------
 
@@ -823,24 +890,26 @@ class JsonRpc:
             return self.run_script(p.get("script", "")), None
 
         if method == "Interface.listDevices":
-            return self.device_descriptions(), None
+            return self.device_descriptions(ziel=self._ziel(p)), None
         if method == "Interface.getDeviceDescription":
-            return self.device_descriptions(p["address"]), None
+            return self.device_descriptions(p["address"], ziel=self._ziel(p)), None
         if method == "Interface.getParamsetDescription":
             return self.paramset_description(p["address"], p.get("paramsetKey")
-                                             or p.get("paramsetType") or "VALUES"), None
+                                             or p.get("paramsetType") or "VALUES",
+                                             ziel=self._ziel(p)), None
         if method == "Interface.getParamset":
-            return self.q.getParamset(p["address"], p.get("paramsetKey")
-                                      or p.get("paramsetType") or "VALUES"), None
+            return self._ziel(p).getParamset(p["address"], p.get("paramsetKey")
+                                             or p.get("paramsetType") or "VALUES"), None
         if method == "Interface.getValue":
-            return self.q.getValue(p["address"], p["valueKey"]), None
+            return self._ziel(p).getValue(p["address"], p["valueKey"]), None
         if method == "Interface.setValue":
-            self.q.setValue(p["address"], p["valueKey"],
-                            _wert_ein(p.get("value"), p.get("type")))
+            self._ziel(p).setValue(p["address"], p["valueKey"],
+                                   _wert_ein(p.get("value"), p.get("type")))
             return "", None
         if method == "Interface.putParamset":
-            self.q.putParamset(p["address"], p.get("paramsetKey")
-                               or p.get("paramsetType") or "VALUES", p.get("set") or {})
+            self._ziel(p).putParamset(p["address"], p.get("paramsetKey")
+                                      or p.get("paramsetType") or "VALUES",
+                                      p.get("set") or {})
             return "", None
 
         return None, {"name": "MethodNotFound", "code": -32601, "message": method}
@@ -973,7 +1042,7 @@ class JsonRpcHandler(BaseHTTPRequestHandler):
 
 
 def serve(qccu, bind, port, verbose=False, interface=None, rpc_port=2010,
-          hostname=None, laut=False):
+          hostname=None, laut=False, bidcos=None, bidcos_port=0):
     """Startet die Auskunft in einem eigenen Faden.
 
     `rpc_port` ist der Port der XML-RPC-Auskunft — er geht in
@@ -982,7 +1051,8 @@ def serve(qccu, bind, port, verbose=False, interface=None, rpc_port=2010,
     from http.server import HTTPServer
 
     JsonRpcHandler.api = JsonRpc(qccu, interface=interface, rpc_port=rpc_port,
-                                 hostname=hostname)
+                                 hostname=hostname, bidcos=bidcos,
+                                 bidcos_port=bidcos_port)
     JsonRpcHandler.verbose = verbose
     # `laut` trennt zwei Dinge, die vorher eines waren: DASS gemeldet wird
     # (verbose) und OB auch der Dauerverkehr dazugehoert.
