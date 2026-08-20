@@ -1851,6 +1851,13 @@ def main():
             lc._werte_sichern(sofort=True)
         except Exception:                            # noqa: BLE001
             pass
+        # Dasselbe fuer die BidCoS-Seite: sie sichert ebenfalls gedrosselt,
+        # also fehlen ohne diesen Aufruf die letzten Sekunden.
+        if bidcos is not None:
+            try:
+                bidcos._werte_sichern(sofort=True)
+            except Exception:                        # noqa: BLE001
+                pass
         print(f"\n  beendet ({grund})")
 
     # Docker/HA halten den Behaelter mit SIGTERM an, nicht mit Strg-C.

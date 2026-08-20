@@ -102,6 +102,8 @@ class BidcosRpc:
         self._notify_thread = None
         self.install_until = 0.0
         self._anlern_offen = {}
+        self._werte_zuletzt = 0.0
+        self._werte_offen = False
         self._laden()
         eigen = (eigene_id or self._gemerkte_id
                  or zufaellige_adresse(gesperrt=fremde_zentralen))
@@ -139,9 +141,16 @@ class BidcosRpc:
                 print(f"  ! BidCoS {adr}: Typ '{e.get('type')}' nicht in den "
                       f"Tabellen — uebersprungen")
                 continue
-            self.devices[adr.upper()] = BidcosDevice(
-                adr, eintrag, self.t, firmware=e.get("firmware"),
-                kanalzahlen=e.get("kanalzahlen"))
+            g = BidcosDevice(adr, eintrag, self.t, firmware=e.get("firmware"),
+                             kanalzahlen=e.get("kanalzahlen"))
+            for feld, ziel in (("values", g.values), ("master", g.master)):
+                for schluessel, wert in (e.get(feld) or {}).items():
+                    kanal, _, par = schluessel.partition(":")
+                    try:
+                        ziel[(int(kanal), par)] = wert
+                    except ValueError:
+                        continue
+            self.devices[adr.upper()] = g
 
     def _sichern(self):
         if not self.state_file:
@@ -150,9 +159,22 @@ class BidcosRpc:
             d = {
                 "eigene_id": self.zentrale.eigene_id,
                 "subscribers": dict(self.subscribers),
+                # Die zuletzt gemeldeten Werte gehoeren mit auf die Platte.
+                # Sie sind nicht die Wahrheit — die steht im Geraet —, aber sie
+                # sind der letzte bekannte Stand. Ohne sie beantwortet
+                # `getValue` nach einem Neustart JEDE Frage mit „Unknown
+                # parameter", bis das Geraet von sich aus meldet; bei einem
+                # netzbetriebenen Aktor, der nur auf Aenderung sendet, kann das
+                # beliebig lange dauern. Die Gegenstelle zeigt dann eine
+                # Entitaet ohne Wert. Dieselbe Ueberlegung wie auf der
+                # HmIP-Seite (`save_store`).
                 "devices": {a: {"type": g.devtype,
                                 "firmware": g.firmware_byte,
-                                "kanalzahlen": g.kanalzahlen}
+                                "kanalzahlen": g.kanalzahlen,
+                                "values": {f"{c}:{par}": v
+                                           for (c, par), v in g.values.items()},
+                                "master": {f"{c}:{par}": v
+                                           for (c, par), v in g.master.items()}}
                             for a, g in self.devices.items()},
             }
         roh = json.dumps(d, indent=1).encode()
@@ -164,6 +186,22 @@ class BidcosRpc:
         os.fsync(f)
         os.close(f)
         os.replace(tmp, self.state_file)
+
+    # ⚠️ Gedrosselt: ein Geraet, das oft meldet, wuerde sonst bei jeder
+    # Meldung die Zustandsdatei neu schreiben — auf einem Behaelter-Datentraeger
+    # ist das unnoetige Schreiblast. Beim Herunterfahren wird `sofort`
+    # gesichert, damit die letzten Sekunden nicht fehlen.
+    WERTE_ABSTAND = 20.0
+
+    def _werte_sichern(self, sofort=False):
+        """Die Werte sichern — hoechstens alle paar Sekunden."""
+        jetzt = time.time()
+        if not sofort and jetzt - self._werte_zuletzt < self.WERTE_ABSTAND:
+            self._werte_offen = True
+            return
+        self._werte_zuletzt = jetzt
+        self._werte_offen = False
+        self._sichern()
 
     def zustand(self):
         """Was die Oberflaeche ueber diese Schnittstelle wissen muss."""
@@ -206,6 +244,7 @@ class BidcosRpc:
                 kanal, an = v["kanal"], v["an"]
                 g.values[(kanal, "STATE")] = an
                 self._notify(f"{v['geraet']}:{kanal}", "STATE", an)
+                self._werte_sichern()
             elif v["art"] == "quittung_faellig" and v["gesendet"]:
                 self._senden(v["befehl"])
             elif v["art"] == "anlernen_faellig" and v["gesendet"]:
