@@ -1104,6 +1104,8 @@ class QCCU:
         return ""
 
     on_set = None
+    on_set_many = None
+    kann_stellen = None
 
     def putParamset(self, address, paramset, values, *rest):
         addr = address.upper()
@@ -1119,9 +1121,7 @@ class QCCU:
         if ps == "VALUES":
             if not ch:
                 raise xmlrpc.client.Fault(-2, "Unknown channel")
-            for p, v in values.items():
-                self.setValue(addr, p, v)
-            return ""
+            return self._put_values(addr, base, int(ch), d, values)
 
         if ps.startswith("MASTER") or ps.startswith("LINK"):
             print(f"  ! putParamset {addr} {ps}: kein Schreibweg zum Geraet "
@@ -1129,6 +1129,60 @@ class QCCU:
             raise xmlrpc.client.Fault(
                 -5, f"Writing paramset {ps} to the device is not implemented")
         raise xmlrpc.client.Fault(-5, f"Unknown paramset {ps}")
+
+    def _put_values(self, addr, base, ch, d, values):
+        """Einen SATZ von Werten schreiben — in EINEM Funkrahmen.
+
+        ⚠️ Nicht Wert fuer Wert durch `setValue`. Beide Integrationen, die
+        QCCU bedienen, buendeln hier:
+
+          * `aiohomematic` (Home Assistant) schickt bei EINEM Wert `setValue`,
+            bei mehreren `putParamset` (`model/data_point.py`,
+            `CallParameterCollector._send_paramset`). Fuer „manuell mit
+            Solltemperatur" sind das CONTROL_MODE und SET_POINT_TEMPERATURE.
+          * `HMCCU` (FHEM) schreibt GRUNDSAETZLICH ueber `putParamset`
+            (`HMCCU_SetMultipleParameters`); `set manu` ist dort
+            `V:CONTROL_MODE:1 V:SET_POINT_TEMPERATURE:?temperature`.
+
+        Und die Zentrale baut daraus EINEN Rahmen: Werte mit gleichem
+        <Code, Datentyp, Occurrence> werden verodert. Einzeln geschickt sieht
+        das Geraet dazwischen einen Zwischenzustand — bei der Betriebsart
+        „manuell mit dem alten Sollwert".
+
+        ⚠️ Was keinen belegten Weg zum Geraet hat, wird NICHT stillschweigend
+        eingetragen und zurueckgemeldet. Sonst steht der Wert in Home
+        Assistant und FHEM, ohne dass ihn je ein Geraet gesehen hat — beim
+        Abwesenheitsmodus (SET_POINT_MODE + PARTY_TIME_START/END) waere das
+        der ganze Befehl.
+        """
+        satz = [(str(p), v) for p, v in values.items()]
+
+        unbekannt = [p for p, _ in satz
+                     if not isinstance(d.paramset(ch).get(p), dict)]
+        if unbekannt:
+            raise xmlrpc.client.Fault(
+                -5, f"Unknown parameter(s): {', '.join(sorted(unbekannt))}")
+
+        if self.kann_stellen and not self.kann_stellen(base, ch, satz):
+            namen = ", ".join(p for p, _ in satz)
+            print(f"  ! putParamset {addr}: fuer {namen} gibt es keinen "
+                  f"belegten Weg zum Geraet — nichts eingetragen")
+            raise xmlrpc.client.Fault(
+                -5, f"No proven way to set {namen} on this device")
+
+        if self.on_set_many:
+            self.on_set_many(base, ch, satz)
+        else:
+            for p, v in satz:
+                self.setValue(f"{base}:{ch}", p, v)
+            return ""
+
+        with self.lock:
+            for p, v in satz:
+                d.values[(ch, p)] = v
+        for p, v in satz:
+            self._notify(f"{base}:{ch}", p, v)
+        return ""
 
     def getParamsetId(self, address, paramset):
         """Kennung eines Paramsets."""

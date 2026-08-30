@@ -930,6 +930,8 @@ class Radio:
         self._load_state()
 
         qccu.on_set = self.on_set
+        qccu.on_set_many = self.on_set_many
+        qccu.kann_stellen = self.kann_stellen
         qccu.on_install = self.on_install
 
     def _log(self, direction, text):
@@ -2163,8 +2165,24 @@ class Radio:
 
     def on_set(self, ccu_address, channel, param, value):
         """Befehl ANNEHMEN und sofort zurueckkehren."""
-        self._cmdq.put((ccu_address, channel, param, value))
+        self._cmdq.put((ccu_address, channel, ((param, value),)))
         return None
+
+    def on_set_many(self, ccu_address, channel, werte):
+        """Einen SATZ annehmen — er geht in EINEM Rahmen hinaus."""
+        self._cmdq.put((ccu_address, channel, tuple(werte)))
+        return None
+
+    def kann_stellen(self, ccu_address, channel, werte):
+        """Laesst sich fuer diesen Satz ein belegter Rahmen bauen?
+
+        Fuer `putParamset`: was hier durchfaellt, darf nicht als „gesetzt"
+        zurueckgemeldet werden.
+        """
+        try:
+            return self._rumpf(ccu_address, channel, tuple(werte)) is not None
+        except Exception:                                    # noqa: BLE001
+            return False
 
     def _cmd_worker(self):
         while not self._stop:
@@ -2274,29 +2292,41 @@ class Radio:
         werte = getattr(d, "values", None) or {}
         return werte.get((int(channel), param))
 
-    def _rumpf(self, ccu_address, channel, param, value):
-        """Den Rumpf eines DIRECT_EXECUTION_COMMAND bauen.
+    def _rumpf(self, ccu_address, channel, paare):
+        """Den Rumpf EINES DIRECT_EXECUTION_COMMAND bauen.
 
-        Ein Parameter kann einen SATZ von Parametern nach sich ziehen
-        (`KOMPOSITE`), und mehrere Werte koennen sich EIN Byte teilen. Das Jar
-        legt sie in eine `TreeMap` unter `<Code, Datentyp, Occurrence>` und
-        VERODERT, was auf denselben Schluessel faellt
+        `paare` ist eine Folge von (Parameter, Wert) — eines fuer `setValue`,
+        mehrere fuer `putParamset`. Ein Parameter kann weitere nach sich
+        ziehen (`KOMPOSITE`), und mehrere Werte koennen sich EIN Byte teilen.
+        Das Jar legt sie in eine `TreeMap` unter <Code, Datentyp, Occurrence>
+        und VERODERT, was auf denselben Schluessel faellt
         (`TransactionTaskFactory`, „oldData"-Zweig); die Reihenfolge im Rahmen
         ist die des Schluessels, also nach Datentyp aufsteigend.
+
+        ⚠️ Darum darf ein Satz NICHT in mehrere Rahmen zerfallen. Genau das
+        tat `putParamset` bisher — es schleifte die Werte einzeln durch
+        `setValue`. Sichtbar am 30.08.2026: `{CONTROL_MODE: 1,
+        SET_POINT_TEMPERATURE: 22.0}` ging als `80 01 04 40` UND
+        `80 01 02 2C` hinaus, wo die Zentrale `80 01 02 6C 04 40` schickt —
+        dazwischen sah das Geraet „manuell mit dem alten Sollwert".
         """
-        satz = KOMPOSITE.get((param, value))
-        if satz is None and param in NUR_IM_SATZ:
-            if self.verbose:
-                print(f"  ! {param}={value!r} kennt keinen belegten Satz — "
-                      f"einzeln geschickt wuerde dieser Parameter am Geraet "
-                      f"Schaden anrichten, also geht nichts hinaus")
-            return None
-        if satz is None:
-            satz = ((param, value),)
-        elif self.verbose:
-            print(f"  {param}={value!r} wird als Satz geschrieben "
-                  f"({', '.join(p for p, _ in satz)}) — so haelt es die "
-                  f"Zentrale in stateRules.json")
+        satz = []
+        for param, value in paare:
+            teil = KOMPOSITE.get((param, value))
+            if teil is None and param in NUR_IM_SATZ:
+                if self.verbose:
+                    print(f"  ! {param}={value!r} kennt keinen belegten Satz "
+                          f"— einzeln geschickt wuerde dieser Parameter am "
+                          f"Geraet Schaden anrichten, es geht nichts hinaus")
+                return None
+            if teil is None:
+                satz.append((param, value))
+            else:
+                if self.verbose:
+                    print(f"  {param}={value!r} wird als Satz geschrieben "
+                          f"({', '.join(p for p, _ in teil)}) — so haelt es "
+                          f"die Zentrale in stateRules.json")
+                satz.extend(teil)
 
         bloecke = {}
         klartexte = []
@@ -2305,8 +2335,8 @@ class Radio:
                 v = self._heutiger_wert(ccu_address, channel, p)
                 if v is None:
                     if self.verbose:
-                        print(f"  ! {p} ist am Geraet nicht bekannt — der Satz "
-                              f"fuer {param} bleibt ungesendet")
+                        print(f"  ! {p} ist am Geraet nicht bekannt — der "
+                              f"Satz bleibt ungesendet")
                     return None
             feld = self._stellbefehl(ccu_address, channel, p, v)
             if feld is None:
@@ -2326,8 +2356,8 @@ class Radio:
         aktionen = {a for a, _ in bloecke}
         if len(aktionen) != 1:
             if self.verbose:
-                print(f"  ! {param}: der Satz mischt Aktionen {aktionen} — "
-                      f"das baut die Zentrale nicht so, nicht gesendet")
+                print(f"  ! der Satz mischt Aktionen {aktionen} — das baut "
+                      f"die Zentrale nicht so, nicht gesendet")
             return None
         aktion = aktionen.pop()
 
@@ -2339,8 +2369,10 @@ class Radio:
             rumpf += daten if datentyp is None else f"{datentyp:02X}{daten}"
         return rumpf, ", ".join(klartexte)
 
-    def _do_set(self, ccu_address, channel, param, value):
+    def _do_set(self, ccu_address, channel, paare):
         """Der eigentliche Sendevorgang — laeuft im Arbeitsfaden."""
+        paare = tuple(paare)
+        param = "+".join(p for p, _ in paare)
         hmid = None
         with self.lock:
             for h, a in self.by_hmid.items():
@@ -2352,7 +2384,7 @@ class Radio:
                 print(f"  ! keine Funkadresse zu {ccu_address}")
             return
 
-        gebaut = self._rumpf(ccu_address, channel, param, value)
+        gebaut = self._rumpf(ccu_address, channel, paare)
         if gebaut is None:
             return
         rumpf, klartext = gebaut
