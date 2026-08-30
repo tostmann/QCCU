@@ -75,27 +75,361 @@ FT_TIME_INFO = 35
 NM_EXCLUDE_REQUEST = 0xF0
 NM_EXCLUDE_READY = 0xF1
 NM_EXCLUDE_CONCLUDE = 0xF2
-SDT_BINARY = 8
+SDT_BINARY_MIT_PROFIL = 8
+SDT_PERIOD = 14
 
-# Statusdatentyp -> (Parameter, Umrechnung, Einheit fuer die Anzeige).
+# ---------------------------------------------------------------------------
+# Statuswerte deuten
 #
-# Jede Zeile ist BELEGT, nicht geraten — die Grenzen des Parameters in den
-# Gerätebeschreibungen geben die Umrechnung selbst her:
+# Eine Statusmeldung besteht aus Eintraegen <Statusdatentyp> <Kanal> <Rohwert>.
+# WELCHE Parameter aus einem Rohwert werden, entscheidet bei eq-3
+# `HMIPApplicationHandler.handleStatusFrame` (HMIPServer-Jar): ein `switch`
+# ueber `StatusDataType`, das je Typ eine Reihe von
+# `tryConvertParameter(Kanal, <Parameter>, <Teilbytes>)` absetzt. Das „try“
+# heisst dort: gemeldet wird nur, was der Kanal ueberhaupt fuehrt — genau die
+# Bedingung, die hier `_kanal_fuehrt` prueft.
 #
-#   0  TEMPERATURE       2 Byte  -> ACTUAL_TEMPERATURE: FLOAT, MIN -3276.8,
-#                                  MAX 3276.7 = int16 durch 10 (vorzeichenbehaftet)
-#   6  ERROR_CODE        1 Byte  -> ERROR_CODE: INTEGER 0..255, unverändert
-#   22 FLAG_REGISTER_24  3 Byte  -> WEEK_PROGRAM_CHANNEL_LOCKS: INTEGER
-#                                  0..16777215 = 2^24-1, also genau die 3 Byte
+# Die Tabellen unten sind diese Fallunterscheidung, Zeile fuer Zeile aus dem
+# Jar abgeschrieben — nicht aus dem Verhalten erraten. Sie trennen drei Dinge,
+# die eq-3 auch trennt:
 #
-# Gemeldet wird nur, wo der Kanaltyp den Parameter auch führt (_kanal_fuehrt);
-# alles Übrige bleibt RAW_SDT<n> — ungedeutet ist besser als falsch gedeutet.
-SDT_DEUTUNG = {
-    0:  ("ACTUAL_TEMPERATURE",
-         lambda v: int.from_bytes(v, "big", signed=True) / 10.0, " °C"),
-    6:  ("ERROR_CODE", lambda v: v[0], ""),
-    22: ("WEEK_PROGRAM_CHANNEL_LOCKS", lambda v: int.from_bytes(v, "big"), ""),
+#   1. WELCHE BYTES  — `SDT_REGELN`: je Statusdatentyp die Parameter und die
+#      Bits, die sie tragen.
+#   2. WIE GERECHNET — `UMRECHNUNG`: Faktor und Offset gehoeren dem PARAMETER,
+#      nicht dem Statusdatentyp (`tryConvertParameter` holt den Konverter aus
+#      der Beschreibung des Parameters). Derselbe Rohwert 0xC8 ist als LEVEL
+#      1.0 und als DUTY_CYCLE_LEVEL 100.0 — wer die Rechnung am
+#      Statusdatentyp festmacht, hat einen von beiden falsch.
+#   3. WELCHE FORM   — der logische Typ aus der Gerätebeschreibung (`TYPE`):
+#      BOOL, ENUM (Zeichenkette aus `VALUE_LIST`), INTEGER, FLOAT. Im Jar ist
+#      das `LogicalType`; es entscheidet ueber die Gestalt des Wertes, nicht
+#      der Statusdatentyp. Deshalb kann dieselbe Regel einen Kanal bedienen,
+#      der WINDOW_STATE als ENUM fuehrt, und einen, der es als BOOL fuehrt.
+#
+# Was hier NICHT steht, bleibt RAW_SDT<n> — ungedeutet ist besser als falsch
+# gedeutet.
+
+
+class Sonder:
+    """Ein reservierter Rohwert: keine Messung, sondern eine Auskunft.
+
+    eq-3 belegt die obersten Werte jedes Bereichs mit Zustaenden
+    (`StateParameterStatus`: UNKNOWN, OVERFLOW, UNDERFLOW, ERROR) und meldet
+    sie im Nebenparameter `<NAME>_STATUS`. Der Messwert selbst wird dabei
+    entweder geloescht (UNKNOWN, ERROR) oder auf einen Ersatzwert gesetzt
+    (OVERFLOW, UNDERFLOW).
+
+    `ersatz` ist der PHYSIKALISCHE Ersatzwert — er laeuft durch dieselbe
+    Umrechnung wie ein Messwert. Bei den Temperaturen und Pegeln kommen so
+    genau die Zahlen heraus, die das Jar direkt setzt (3276.8 / -3276.8,
+    1.005 / -0.05).
+    """
+
+    __slots__ = ("status", "ersatz")
+
+    def __init__(self, status, ersatz=None):
+        self.status = status
+        self.ersatz = ersatz
+
+
+def _ganz(v, bits=None):
+    """Rohbytes als Zahl. Vorzeichenlos, ausser der Konverter sagt anders.
+
+    `DoubleToInteger`/`IntegerToInteger` lesen vorzeichenlos
+    (`iValue |= physicalValue[i] & 0xFF`); nur `DoubleToSignedInteger`
+    ergaenzt das Vorzeichen ueber die angegebene Bitbreite.
+    """
+    z = int.from_bytes(v, "big")
+    if bits and z & (1 << (bits - 1)):
+        z -= 1 << bits
+    return z
+
+
+def _temperatur(v):
+    """2 Byte (handleActualTemperatureStatus).
+
+    0x8000/0x8001/0x8002 sind Zustaende, kein Messwert — sonst waere
+    „unbekannt“ eine Temperatur von -3276,8 °C.
+    """
+    if v[0] == 0x80 and v[1] in (0x00, 0x01, 0x02):
+        return (Sonder("UNKNOWN"),
+                Sonder("OVERFLOW", 32768),
+                Sonder("UNDERFLOW", -32768))[v[1]]
+    return _ganz(v, 16)
+
+
+def _feuchte(v):
+    """1 Byte (handleHumidityMoistureStatus)."""
+    if v[0] == 0xFF:
+        return Sonder("UNKNOWN")
+    if v[0] == 0xFE:
+        return Sonder("OVERFLOW", 101)
+    if v[0] == 0xFD:
+        return Sonder("UNDERFLOW", -1)
+    return v[0]
+
+
+def _pegel(v):
+    """1 Byte (handleLevelStatus). Die vier obersten Werte sind Zustaende.
+
+    ⚠️ Abweichung mit Grund: das Jar setzt als Ersatzwert 1.005 bzw. -0.05
+    AUCH fuer die prozentskalierten Namen (DUTY_CYCLE_LEVEL,
+    CARRIER_SENSE_LEVEL) — dieselbe Routine, dieselben Konstanten. Hier
+    laeuft der Ersatz durch die Umrechnung des jeweiligen Parameters und
+    ergibt dort 100.5 statt 1.005. Fuer die LEVEL-Namen ist das Ergebnis
+    identisch; fuer die Prozentnamen halten wir die Einheit ein, statt eine
+    Eigenart mitzuschleppen.
+    """
+    if v[0] == 0xFF:
+        return Sonder("UNKNOWN")
+    if v[0] == 0xFE:
+        return Sonder("OVERFLOW", 201)
+    if v[0] == 0xFD:
+        return Sonder("UNDERFLOW", -10)
+    if v[0] == 0xFC:
+        return Sonder("ERROR")
+    return v[0]
+
+
+def _bit(nummer):
+    """Ein einzelnes Bit als 0/1.
+
+    Das Jar reicht je nach Stelle 1, 2 oder 16 weiter und laesst den
+    Bitmasken-Konverter des Parameters darueber laufen; fuer BOOL („Rohwert
+    ungleich 0“) und fuer ENUM (Platz in der `VALUE_LIST`) ist 0/1 dasselbe
+    Ergebnis und die einzige Form, die zu beidem passt.
+    """
+    return lambda v: 1 if v[0] & (1 << nummer) else 0
+
+
+# --- Umrechnung physikalisch -> logisch ------------------------------------
+#
+# (Faktor, Offset) je Parameter, aus den StateParameter-Fabriken des Jars.
+# Die Rechnung ist immer `(roh - Offset) / Faktor` (`convertPhysicalToLogical`).
+# Wer hier fehlt, wird unveraendert uebernommen — im Jar ist das der Fall
+# „kein Konverter“ (null).
+#
+# Das VORZEICHEN steht nicht hier, sondern bei den Byteschnitten oben: nur
+# dort ist die Breite bekannt (`DoubleToSignedInteger(..., 16)` gilt fuer die
+# zwei Temperaturbytes, nicht fuer den Parameter an sich).
+UMRECHNUNG = {
+    # ClimateStateParameterFactory.createReadOnlyTemperature:
+    #   DoubleToSignedInteger(10.0, 0.0, 16)
+    "ACTUAL_TEMPERATURE": (10.0, 0.0),
+    "SOIL_TEMPERATURE": (10.0, 0.0),
+    # ClimateStateParameterFactory.createSetPointTemperatureParameter:
+    #   DoubleToInteger(2.0, 0.0) — Halbgradschritte
+    "SET_POINT_TEMPERATURE": (2.0, 0.0),
+    "PARTY_SET_POINT_TEMPERATURE": (2.0, 0.0),
+    # GeneralStateParameterFactory.createLevel: DoubleToInteger(200.0, 0.0)
+    "LEVEL": (200.0, 0.0),
+    "PWM_LEVEL": (200.0, 0.0),
+    "SATURATION": (200.0, 0.0),
+    # GeneralStateParameterFactory.createReadOnlyPercentage(name, 100.0):
+    #   DoubleToInteger(2.0, 0.0) — derselbe Rohbereich 0..200, andere Einheit
+    "DUTY_CYCLE_LEVEL": (2.0, 0.0),
+    "CARRIER_SENSE_LEVEL": (2.0, 0.0),
+    # ClimateStateParameterFactory.createActiveProfileParameter:
+    #   IntegerToInteger(1.0, -1.0) — Profil 1 steht als 0 auf der Luft
+    "ACTIVE_PROFILE": (1.0, -1.0),
 }
+
+
+class Regel:
+    """Eine Zeile aus dem `switch`: ein Parameter und die Bytes, die ihn tragen.
+
+    `kanaltypen`/`ausser` bilden die Kanaltyp-Abfragen des Jars ab
+    (`getChannelType() == ChannelType.…`). Die sind NICHT ueberfluessig neben
+    `_kanal_fuehrt`: derselbe Parametername sitzt je nach Kanaltyp auf einem
+    anderen Bit — FROST_PROTECTION liegt beim Fussbodenkanal auf Bit 1, beim
+    Heizregler auf Bit 7. Ohne die Abfrage waere der Wert nicht ungedeutet,
+    sondern falsch gedeutet.
+
+    `braucht` ist die eine Abfrage des Jars, die nicht am Kanaltyp haengt,
+    sondern am Bestand: `channel.getStateParameter("VALVE_STATE") != null`.
+    `vorkommen` zaehlt gleiche Statusdatentypen hintereinander im selben Kanal
+    (`statusDataTypeOccurence`) — beim zweiten LEVEL desselben Kanals meint
+    eq-3 die Saettigung, nicht die Helligkeit.
+
+    `wenn` sieht auf die GANZE Meldung (alle Statusdatentypen darin) und nicht
+    nur auf den einzelnen Eintrag; das braucht genau eine Stelle, siehe
+    `containsStatusType` bei der Solltemperatur.
+
+    `status` sagt, ob eq-3 zu diesem Parameter auch den Nebenparameter
+    `<NAME>_STATUS` fuehrt (NORMAL/UNKNOWN/OVERFLOW/UNDERFLOW). Das tut es
+    nicht ueberall — `handleLevelStatus` bekommt fuer DUTY_CYCLE_LEVEL
+    ausdruecklich einen leeren Statusnamen —, deshalb steht es je Zeile und
+    wird nicht aus dem Namen geraten.
+    """
+
+    __slots__ = ("param", "bytes_fn", "kanaltypen", "ausser", "braucht",
+                 "vorkommen", "wenn", "status")
+
+    def __init__(self, param, bytes_fn, kanaltypen=None, ausser=None,
+                 braucht=None, vorkommen=None, wenn=None, status=False):
+        self.param = param
+        self.bytes_fn = bytes_fn
+        self.kanaltypen = (kanaltypen,) if isinstance(kanaltypen, str) else kanaltypen
+        self.ausser = (ausser,) if isinstance(ausser, str) else ausser
+        self.braucht = braucht
+        self.vorkommen = vorkommen
+        self.wenn = wenn
+        self.status = status
+
+
+# Kanaltypen, auf die einzelne Regeln hoeren. Die Schreibweisen stammen aus
+# der Kanaltyp-Tabelle (`paramsets.json`), nicht aus dem Gedaechtnis —
+# GENERIC_INPUT_TRANSMITER hat im Bestand von eq-3 nur ein T.
+KT_HEIZREGLER = "HEATING_CLIMATECONTROL_TRANSCEIVER"
+KT_FLOOR_DIRECT = "CLIMATECONTROL_FLOOR_DIRECT_TRANSMITTER"
+KT_FLOOR = ("CLIMATECONTROL_FLOOR_PUMP_TRANSCEIVER",
+            "CLIMATECONTROL_FLOOR_TRANSCEIVER")
+KT_WARTUNG = "MAINTENANCE"
+KT_EINGANG = "GENERIC_INPUT_TRANSMITER"
+KT_BEWEGUNG = ("MOTIONDETECTOR_TRANSCEIVER", "MOTIONDETECTOR_VIRTUAL_TRANSCEIVER")
+KT_ANWESENHEIT = "PRESENCEDETECTOR_TRANSCEIVER"
+
+SDT_REGELN = {
+    # 0 TEMPERATURE (2 Byte) — handleActualTemperatureStatus
+    0: (
+        Regel("ACTUAL_TEMPERATURE", _temperatur, status=True),
+        Regel("SOIL_TEMPERATURE", _temperatur, status=True),
+    ),
+    # 1 TEMPERATURE_HUMIDITY (3 Byte) — Temperatur wie oben, danach ein Byte
+    #   Feuchte (handleHumidityMoistureStatus)
+    1: (
+        Regel("ACTUAL_TEMPERATURE", lambda v: _temperatur(v[0:2]), status=True),
+        Regel("SOIL_TEMPERATURE", lambda v: _temperatur(v[0:2]), status=True),
+        Regel("HUMIDITY", lambda v: _feuchte(v[2:3]), status=True),
+        Regel("SOIL_MOISTURE", lambda v: _feuchte(v[2:3]), status=True),
+    ),
+    # 2 LEVEL (1 Byte)
+    2: (
+        Regel("LEVEL", _pegel, vorkommen=0, status=True),
+        Regel("PWM_LEVEL", _pegel, vorkommen=0, status=True),
+        Regel("SATURATION", _pegel, vorkommen=1, status=True),
+        # STATE/MOTION bekommen den Rohpegel: der Bitmasken-Konverter des
+        # Parameters macht daraus „ungleich 0“. Beim Fussbodenkanal laesst das
+        # Jar beide aus — dort ist der Pegel kein Zustand.
+        Regel("STATE", lambda v: None if v[0] == 0xFF else v[0], ausser=KT_FLOOR_DIRECT),
+        Regel("MOTION", lambda v: None if v[0] == 0xFF else v[0], ausser=KT_FLOOR_DIRECT),
+        Regel("DUTY_CYCLE_LEVEL", _pegel, vorkommen=0),
+        Regel("CARRIER_SENSE_LEVEL", _pegel, vorkommen=1),
+    ),
+    # 4 HEATING_CONTROLLER_STATE (3 Byte)
+    #
+    # Byte 0: Bit 7..6 Betriebsart, Bit 5..0 Solltemperatur in Halbgrad
+    # Byte 1: Bit 7..5 aktives Profil, Bit 4 Schaltpunkt erreicht,
+    #         Bit 3 Schnellwahl statt Boost, Bit 2..0 obere Bits der Dauer
+    # Byte 2: untere Bits der Dauer
+    4: (
+        # Fuehrt DIESELBE Meldung auch einen PERIOD-Eintrag, meint der Wert
+        # die Party-Temperatur und NICHT die gewoehnliche Solltemperatur
+        # (`containsStatusType(statusFrame, PERIOD)`). Ausserdem gilt er
+        # zusaetzlich als Party-Wert, wenn die Betriebsart 2 (Party) ist.
+        Regel("SET_POINT_TEMPERATURE", lambda v: v[0] & 0x3F,
+              wenn=lambda typen, v: SDT_PERIOD not in typen),
+        Regel("PARTY_SET_POINT_TEMPERATURE", lambda v: v[0] & 0x3F,
+              wenn=lambda typen, v: SDT_PERIOD in typen or (v[0] >> 6) & 3 == 2),
+        Regel("SET_POINT_MODE", lambda v: (v[0] >> 6) & 3),
+        Regel("ACTIVE_PROFILE", lambda v: (v[1] >> 5) & 7),
+        Regel("SWITCH_POINT_OCCURED", lambda v: (v[1] >> 4) & 1),
+        # Bit 3 sagt, WOFUER die Dauer gilt: gesetzt = Schnellwahl, sonst
+        # Boost. Der jeweils andere Wert wird auf 0 gesetzt — aber nur, wenn
+        # die Dauer selbst 0 ist; eine laufende Boost-Zeit darf die
+        # Schnellwahl nicht ueberschreiben.
+        Regel("QUICK_VETO_TIME",
+              lambda v: (((v[1] & 7) << 8) | v[2]) if v[1] & 8
+              else (0 if (((v[1] & 7) << 8) | v[2]) == 0 else None)),
+        Regel("BOOST_TIME",
+              lambda v: 0 if v[1] & 8 else ((v[1] & 7) << 8) | v[2]),
+    ),
+    # 6 ERROR_CODE (1 Byte). Das Jar faechert dasselbe Byte zusaetzlich auf
+    # rund zwanzig Fehlermerkmale auf (ERROR_OVERHEAT, SABOTAGE, …); welches
+    # Bit welches ist, steht in den Bitmasken der einzelnen Parameter und
+    # nicht hier — die bleiben vorerst ungedeutet.
+    6: (
+        Regel("ERROR_CODE", lambda v: v[0]),
+    ),
+    # 8 BINARY_WITH_PROFILE (1 Byte): Bit 7 Vorgang laeuft, Bit 6 Zustand,
+    # Bit 3..0 Abschnitt des Wochenprogramms (handleProfileInformation).
+    8: (
+        Regel("LEVEL", lambda v: ((v[0] >> 6) & 1) * 200),
+        Regel("STATE", lambda v: ((v[0] >> 6) & 1) * 200),
+        Regel("PERMISSION_STATE", lambda v: ((v[0] >> 6) & 1) * 200),
+        Regel("AUTO_RELOCK_STATE", lambda v: ((v[0] >> 6) & 1) * 200),
+        Regel("PROCESS", _bit(7)),
+        # 0x0F heisst „unbekannt“ und ist keine Abschnittsnummer.
+        Regel("SECTION", lambda v: Sonder("UNKNOWN") if (v[0] & 0x0F) == 0x0F
+              else v[0] & 0x0F, status=True),
+    ),
+    # 13 BINARY (1 Byte) — je Kanaltyp eine andere Bitbelegung.
+    #
+    # Nicht uebernommen sind die Zweige fuer WATER_DETECTION_TRANSMITTER,
+    # RAIN_DETECTION_TRANSMITTER, ALARM_SWITCH_VIRTUAL_RECEIVER,
+    # PASSAGE_DETECTOR_DIRECTION_TRANSMITTER, BLIND_/SHUTTER_TRANSMITTER,
+    # POWER_MAINS_TRANSMITTER, MAINTENANCE_BAT_EL und
+    # UNIVERSAL_LIGHT_RECEIVER: kein solches Geraet zur Hand, an dem sich die
+    # Zeilen gegenpruefen liessen. Sie bleiben RAW_SDT13.
+    13: (
+        Regel("MOTION", _bit(1), kanaltypen=KT_BEWEGUNG),
+        Regel("MOTION_DETECTION_ACTIVE", _bit(0), kanaltypen=KT_BEWEGUNG),
+
+        Regel("STATE", _bit(0), kanaltypen=KT_EINGANG),
+        Regel("CHANGE_OVER", _bit(7), kanaltypen=KT_EINGANG),
+        Regel("TEMPERATURE_LIMITER", _bit(6), kanaltypen=KT_EINGANG),
+        Regel("EXTERNAL_CLOCK", _bit(5), kanaltypen=KT_EINGANG),
+        Regel("HUMIDITY_LIMITER", _bit(4), kanaltypen=KT_EINGANG),
+        Regel("TACTILE_SWITCH", _bit(3), kanaltypen=KT_EINGANG),
+
+        Regel("PRE_HUMIDITY_LIMITER", _bit(6), kanaltypen=KT_FLOOR),
+        Regel("HUMIDITY_LIMITER", _bit(5), kanaltypen=KT_FLOOR),
+        Regel("EXTERNAL_CLOCK", _bit(4), kanaltypen=KT_FLOOR),
+        Regel("DEW_POINT_ALARM", _bit(3), kanaltypen=KT_FLOOR),
+        Regel("EMERGENCY_OPERATION", _bit(2), kanaltypen=KT_FLOOR),
+        Regel("FROST_PROTECTION", _bit(1), kanaltypen=KT_FLOOR),
+        Regel("STATE", _bit(0), kanaltypen=KT_FLOOR),
+
+        Regel("TEMPERATURE_LIMITER", _bit(3), kanaltypen=KT_WARTUNG),
+        Regel("HUMIDITY_ALARM", _bit(2), kanaltypen=KT_WARTUNG),
+        Regel("HEATING_COOLING", _bit(1), kanaltypen=KT_WARTUNG),
+        Regel("DATE_TIME_UNKNOWN", _bit(0), kanaltypen=KT_WARTUNG),
+
+        # Heizregler MIT Stellantrieb: das Byte traegt nur die Betriebsart.
+        Regel("HEATING_COOLING", _bit(0), kanaltypen=KT_HEIZREGLER,
+              braucht=("VALVE_STATE", True)),
+        # Heizregler OHNE Stellantrieb (Wandthermostat): volle Belegung.
+        Regel("FROST_PROTECTION", _bit(7), kanaltypen=KT_HEIZREGLER,
+              braucht=("VALVE_STATE", False)),
+        Regel("PARTY_MODE", _bit(6), kanaltypen=KT_HEIZREGLER,
+              braucht=("VALVE_STATE", False)),
+        Regel("WINDOW_STATE", _bit(5), kanaltypen=KT_HEIZREGLER,
+              braucht=("VALVE_STATE", False)),
+        Regel("BOOST_MODE", _bit(4), kanaltypen=KT_HEIZREGLER,
+              braucht=("VALVE_STATE", False)),
+        Regel("SYSTEM_OPERATION_MODE_OFF", _bit(3), kanaltypen=KT_HEIZREGLER,
+              braucht=("VALVE_STATE", False)),
+        Regel("ROTARY_PUSH_WHEEL_USED", _bit(1), kanaltypen=KT_HEIZREGLER,
+              braucht=("VALVE_STATE", False)),
+        Regel("HEATING_COOLING", _bit(0), kanaltypen=KT_HEIZREGLER,
+              braucht=("VALVE_STATE", False)),
+
+        Regel("CONTROL_MODE_CENTRAL", _bit(4), kanaltypen=KT_FLOOR_DIRECT),
+        Regel("HUMIDITY_ALARM", _bit(3), kanaltypen=KT_FLOOR_DIRECT),
+        Regel("EMERGENCY_OPERATION", _bit(2), kanaltypen=KT_FLOOR_DIRECT),
+        Regel("FROST_PROTECTION", _bit(1), kanaltypen=KT_FLOOR_DIRECT),
+        Regel("STATE", _bit(0), kanaltypen=KT_FLOOR_DIRECT),
+
+        Regel("PRESENCE_DETECTION_STATE", _bit(1), kanaltypen=KT_ANWESENHEIT),
+        Regel("PRESENCE_DETECTION_ACTIVE", _bit(0), kanaltypen=KT_ANWESENHEIT),
+    ),
+    # 22 FLAG_REGISTER_24 (3 Byte) — INTEGER 0..2^24-1, unveraendert.
+    22: (
+        Regel("WEEK_PROGRAM_CHANNEL_LOCKS", lambda v: _ganz(v)),
+    ),
+}
+
+
 APP_RESP_REQ = 0x80
 RXF_FOR_US = 0x01
 
@@ -267,6 +601,12 @@ class Radio:
         self._rssi = {}
         # Funkadresse -> Ereignis: das Geraet hat den Ausschluss angenommen.
         self._exclude_ready = {}
+        # (Geraetetyp, Kanal) -> VALUES-Paramset. Beim Deuten einer
+        # Statusmeldung wird bis zu drei Dutzend Mal nach einer Beschreibung
+        # gefragt; `paramset_of` baut jedes Mal ein neues Woerterbuch aus
+        # Kanaltyp-Liste und Geraete-Ergaenzungen. Die Tabellen stehen ab dem
+        # Start fest, also wird das einmal gerechnet.
+        self._pset_cache = {}
 
         self.vlen = {}
         for name, e in (self.t.sdt or {}).items():
@@ -1045,6 +1385,13 @@ class Radio:
         if fmt == 2:
             shared_type = pt[i]; i += 1
 
+        # ⚠️ Erst ZERLEGEN, dann deuten. Zwei Regeln von eq-3 lassen sich am
+        # einzelnen Eintrag nicht entscheiden:
+        #   * `containsStatusType(statusFrame, PERIOD)` sieht auf die ganze
+        #     Meldung (Solltemperatur oder Party-Temperatur),
+        #   * `statusDataTypeOccurence` zaehlt, das wievielte Mal derselbe
+        #     Statusdatentyp im selben Kanal kommt (zweites LEVEL = Saettigung).
+        eintraege = []
         while i < len(pt):
             if fmt == 0:
                 if i + 1 >= len(pt):
@@ -1065,9 +1412,24 @@ class Radio:
                 break
             if i + vl > len(pt):
                 break
-            val = pt[i:i + vl]
+            eintraege.append((typ, ch, pt[i:i + vl]))
             i += vl
-            self._emit(addr, ch, typ, val, flags)
+
+        typen = {typ for typ, _ch, _val in eintraege}
+        # Zaehlung wie im Jar: der Wechsel des KANALS setzt sie zurueck, ein
+        # anderer Statusdatentyp ebenso.
+        letzter_ch = letzter_typ = None
+        vorkommen = 0
+        for typ, ch, val in eintraege:
+            if ch != letzter_ch:
+                letzter_typ = None
+                letzter_ch = ch
+            if typ == letzter_typ:
+                vorkommen += 1
+            else:
+                letzter_typ = typ
+                vorkommen = 0
+            self._emit(addr, ch, typ, val, typen, vorkommen)
 
     def _statusflaggen(self, addr, flags):
         """Die Zustandsbits eines STATUS-Frames auf den Wartungskanal legen.
@@ -1104,6 +1466,15 @@ class Radio:
                         print(f"  <- {addr}:0 CONFIG_PENDING={wert}")
             self.qccu.set_value_internal(addr, 0, param, wert)
 
+    def _paramset(self, devtype, channel):
+        """Das VALUES-Paramset eines Kanals — gemerkt, nicht neu gebaut."""
+        schluessel = (int(devtype), int(channel))
+        eintrag = self._pset_cache.get(schluessel)
+        if eintrag is None:
+            eintrag = self.t.paramset_of(devtype, channel, "VALUES") or {}
+            self._pset_cache[schluessel] = eintrag
+        return eintrag
+
     def _kanal_fuehrt(self, addr, channel, param):
         """Fuehrt dieser Kanal diesen Parameter ueberhaupt?
 
@@ -1119,33 +1490,124 @@ class Radio:
             return False
         if not dict(d.channel_list()).get(int(channel)):
             return False
-        return param in (self.t.paramset_of(d.devtype, channel, "VALUES") or {})
+        return param in self._paramset(d.devtype, channel)
 
-    def _emit(self, addr, channel, sdt, value, flags):
-        """Einen Eintrag melden. Gedeutet wird nur, was belegt ist."""
-        if sdt == SDT_BINARY:
-            # Ein Byte, drei Aussagen — Bitlage aus der Ground-Truth, und genau
-            # diese drei Parameter fuehrt SWITCH_TRANSMITTER auch:
-            #   bit7 PROCESS · bit6 STATE (das Relais) · bits3..0 SECTION
-            state = (value[0] & 0x40) != 0
-            self.qccu.set_value_internal(addr, channel, "STATE", state)
-            for param, wert in (("PROCESS", 1 if value[0] & 0x80 else 0),
-                                ("SECTION", value[0] & 0x0F)):
-                if self._kanal_fuehrt(addr, channel, param):
-                    self.qccu.set_value_internal(addr, channel, param, wert)
-            if self.verbose:
-                print(f"  <- {addr}:{channel} STATE={state}")
-            return
+    def _kanaltyp(self, addr, channel):
+        """Kanaltyp eines Kanals — oder None, wenn das Geraet ihn nicht hat."""
+        d = (getattr(self.qccu, "devices", None) or {}).get(addr.upper())
+        if not d or not hasattr(d, "channel_list"):
+            return None
+        return dict(d.channel_list()).get(int(channel))
 
-        deutung = SDT_DEUTUNG.get(sdt)
-        if deutung:
-            param, wandeln, einheit = deutung
-            if self._kanal_fuehrt(addr, channel, param):
-                wert = wandeln(bytes(value))
-                self.qccu.set_value_internal(addr, channel, param, wert)
+    def _beschreibung(self, addr, channel, param):
+        """Die Beschreibung eines Parameters am Kanal — oder None.
+
+        Dasselbe wie `_kanal_fuehrt`, nur dass der Eintrag selbst zurueckkommt:
+        `TYPE` und `VALUE_LIST` entscheiden ueber die FORM des Wertes.
+        """
+        d = (getattr(self.qccu, "devices", None) or {}).get(addr.upper())
+        if not d or not hasattr(d, "channel_list"):
+            return None
+        if not dict(d.channel_list()).get(int(channel)):
+            return None
+        desc = self._paramset(d.devtype, channel).get(param)
+        return desc if isinstance(desc, dict) else None
+
+    def _form(self, desc, zahl):
+        """Physikalische Zahl in die Form bringen, die der Kanal ankuendigt.
+
+        Im Jar entscheidet darueber `LogicalType` des Parameters, hier `TYPE`
+        aus derselben Gerätebeschreibung:
+
+          BOOL    -> `BoolToInteger`: „Rohwert ungleich 0“ (Standardmaske 0xFF)
+          ENUM    -> `StringEnumToInteger`: der Eintrag der Werteliste, also
+                     eine ZEICHENKETTE — nicht der Zahlenwert. Dazu passt, dass
+                     unsere Paramsets bei ENUM auch MIN/MAX/DEFAULT als
+                     Zeichenketten fuehren.
+          INTEGER -> ganze Zahl (`IntegerToInteger` rundet)
+          FLOAT   -> Gleitkomma
+
+        Passt der Wert nicht in die Werteliste, wird NICHTS gemeldet: eine
+        Zahl unter einem Namen, den der Klient als ENUM fuehrt, kippt drueben
+        den ganzen Datenpunkt.
+        """
+        typ = (desc or {}).get("TYPE")
+        if typ == "BOOL":
+            return bool(zahl)
+        if typ == "ENUM":
+            liste = (desc or {}).get("VALUE_LIST") or ()
+            z = int(round(zahl))
+            return liste[z] if 0 <= z < len(liste) else None
+        if typ == "INTEGER":
+            return int(round(zahl))
+        if typ == "FLOAT":
+            return float(zahl)
+        return zahl
+
+    def _emit(self, addr, channel, sdt, value, typen=(), vorkommen=0):
+        """Einen Statuseintrag melden. Gedeutet wird nur, was belegt ist."""
+        regeln = SDT_REGELN.get(sdt)
+        value = bytes(value)
+        gemeldet = False
+        for regel in regeln or ():
+            if regel.vorkommen is not None and regel.vorkommen != vorkommen:
+                continue
+            if regel.kanaltypen or regel.ausser:
+                kt = self._kanaltyp(addr, channel)
+                if regel.kanaltypen and kt not in regel.kanaltypen:
+                    continue
+                if regel.ausser and kt in regel.ausser:
+                    continue
+            if regel.braucht:
+                name, soll = regel.braucht
+                if self._kanal_fuehrt(addr, channel, name) is not soll:
+                    continue
+            if regel.wenn and not regel.wenn(typen, value):
+                continue
+            desc = self._beschreibung(addr, channel, regel.param)
+            if desc is None:
+                continue
+
+            roh = regel.bytes_fn(value)
+            if roh is None:
+                continue
+
+            status = None
+            if isinstance(roh, Sonder):
+                status, roh = roh.status, roh.ersatz
+                # Der Nebenparameter sagt, WARUM kein Messwert kommt. Er heisst
+                # ueberall `<NAME>_STATUS` — fuehrt der Kanal ihn nicht, faellt
+                # die Auskunft weg, der Messwert aber trotzdem nicht falsch aus.
+                if regel.status and self._kanal_fuehrt(
+                        addr, channel, regel.param + "_STATUS"):
+                    self.qccu.set_value_internal(
+                        addr, channel, regel.param + "_STATUS", status)
+            elif regel.status and self._kanal_fuehrt(
+                    addr, channel, regel.param + "_STATUS"):
+                self.qccu.set_value_internal(
+                    addr, channel, regel.param + "_STATUS", "NORMAL")
+
+            if roh is None:
+                # UNKNOWN/ERROR: den Wert loeschen, nicht stehen lassen.
+                self.qccu.set_value_internal(addr, channel, regel.param, None)
+                gemeldet = True
                 if self.verbose:
-                    print(f"  <- {addr}:{channel} {param}={wert}{einheit}")
-                return
+                    print(f"  <- {addr}:{channel} {regel.param}=— ({status})")
+                continue
+
+            faktor, versatz = UMRECHNUNG.get(regel.param, (1.0, 0.0))
+            wert = self._form(desc, (roh - versatz) / faktor)
+            if wert is None:
+                continue
+            self.qccu.set_value_internal(addr, channel, regel.param, wert)
+            gemeldet = True
+            if self.verbose:
+                einheit = desc.get("UNIT") or ""
+                zusatz = f" ({status})" if status else ""
+                print(f"  <- {addr}:{channel} {regel.param}={wert}"
+                      f"{(' ' + einheit) if einheit else ''}{zusatz}")
+        if gemeldet:
+            return
 
         # Nicht gedeutet — dann wenigstens beim Namen nennen, unter dem eq-3
         # den Wert fuehrt. Der Wert selbst bleibt roh: eine Skalierung, die
