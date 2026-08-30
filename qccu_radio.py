@@ -344,6 +344,21 @@ SDT_REGELN = {
         Regel("BOOST_TIME",
               lambda v: 0 if v[1] & 8 else ((v[1] & 7) << 8) | v[2]),
     ),
+    # 5 VALVE_STATE (1 Byte) — ein Byte, fuenf Angaben. Den schickt nur, wer
+    # einen Stellantrieb hat: die Heizkoerperthermostate. Kein Kanaltyp-Filter
+    # noetig, das Jar hat hier keinen — es ist derselbe Aufbau, egal an
+    # welchem Kanal er ankommt.
+    #
+    # Die Ventilstellung selbst ist ein ENUM mit neun Eintraegen
+    # (STATE_NOT_AVAILABLE … ERROR_POSITION); ein Halbbyte, das darueber
+    # hinausgeht, wird nicht gemeldet statt in die Liste gebogen.
+    5: (
+        Regel("FROST_PROTECTION", _bit(7)),
+        Regel("PARTY_MODE", _bit(6)),
+        Regel("WINDOW_STATE", _bit(5)),
+        Regel("BOOST_MODE", _bit(4)),
+        Regel("VALVE_STATE", lambda v: v[0] & 0x0F),
+    ),
     # 6 ERROR_CODE (1 Byte). Das Jar faechert dasselbe Byte zusaetzlich auf
     # rund zwanzig Fehlermerkmale auf (ERROR_OVERHEAT, SABOTAGE, …); welches
     # Bit welches ist, steht in den Bitmasken der einzelnen Parameter und
