@@ -151,7 +151,21 @@ SUPPORTED_METHODS = (
     "Program.getAll",
     "Room.getAll",
     "Subsection.getAll",
+    # Systemvariablen — die QCCU fuehrt sie selbst (siehe `sysvar_anlegen`
+    # in qccu.py). Sie stehen hier VOLLSTAENDIG: `system.listMethods` ist ein
+    # Tuersteher, nicht nur eine Auskunft. aiohomematic weist einen Aufruf
+    # schon VOR dem Netzwerkzugriff ab, wenn die Methode hier fehlt
+    # (`if self._supported_methods and method not in self._supported_methods:
+    # raise UnsupportedException`) — ein Handler ohne Eintrag wird nie
+    # erreicht.
     "SysVar.getAll",
+    "SysVar.getValueByName",
+    "SysVar.setBool",
+    "SysVar.setFloat",
+    "SysVar.createBool",
+    "SysVar.createEnum",
+    "SysVar.createFloat",
+    "SysVar.deleteSysVarByName",
 )
 
 # ⚠️ BEWUSST NICHT gemeldet — wir koennten sie nur mit einem Fehler
@@ -159,11 +173,13 @@ SUPPORTED_METHODS = (
 # als ein ehrliches Schweigen. aiohomematic schreibt dafuer eine Warnung
 # („methods not supported by the backend") und laesst den Aufruf sein:
 #
-#   Device.setName, Channel.setName          kein Namensregister
-#   Program.execute, SysVar.getValueByName   nichts auszufuehren/abzufragen
-#   SysVar.create*/set*/deleteSysVarByName   keine Systemvariablen
-#   Interface.getLinkInfo/setLinkInfo        Direktverknuepfungen offen
+#   Program.execute                          keine Programme auszufuehren
+#   Interface.getLinkInfo/setLinkInfo        kein Namensregister fuer
+#                                            Direktverknuepfungen
 #   Interface.suppressServiceMessages        keine Unterdrueckungsliste
+#
+# Die Systemvariablen standen bis 2026.8.40 ebenfalls hier. Sie stehen jetzt
+# oben, weil die QCCU sie wirklich fuehrt.
 #
 # Wird eine davon doch einmal im Aufbau gebraucht, faellt es sofort auf:
 # der Aufbau bricht ab, bevor ein Geraet erscheint (so geschehen mit
@@ -458,11 +474,157 @@ class JsonRpc:
         # Diese Skripte schreiben eine Liste — eine leere ist die zutreffende
         # Auskunft: die QCCU fuehrt keine Programme, Systemvariablen und
         # keine Service-/Alarmmeldungen.
+        if name == "get_system_variable_descriptions.fn":
+            return self._sysvar_beschreibungen()
+        if name == "set_system_variable.fn":
+            return self._sysvar_text_setzen(s)
         if name in ("get_service_messages.fn", "get_alarm_messages.fn",
-                    "get_program_descriptions.fn",
-                    "get_system_variable_descriptions.fn"):
+                    "get_program_descriptions.fn"):
             return "[]"
         return ""
+
+    # ---- Systemvariablen -----------------------------------------------
+    #
+    # ⚠️ Die Form eines Eintrags ist nicht beliebig — aiohomematic greift auf
+    # sechs Felder DIREKT zu (`var[...]`, kein `.get`) und stirbt sonst mit
+    # KeyError: id, isInternal, name, type, value, unit. Optional sind
+    # valueList, minValue, maxValue.
+    #
+    # ⚠️ Zwei Auswertungen stehen AUSSERHALB seines `try` und reissen darum
+    # nicht nur den einen Eintrag, sondern den GESAMTEN Abruf mit:
+    #   * `"." in raw_value` beim Typ NUMBER — darum wird NUMBER nie gemeldet,
+    #     sondern gleich FLOAT oder INTEGER (siehe SYSVAR_TYPEN in qccu.py).
+    #   * `val_list.split(";")` — `valueList` ist EINE Zeichenkette mit
+    #     Semikolon, KEINE Liste.
+    #
+    # ⚠️ `isInternal` wird mit `is True` verglichen — ein "true" als
+    # Zeichenkette wirkt dort nicht. Es muss ein echtes JSON-Boolean sein.
+    def _sysvar_satz(self, name, e):
+        """Ein Eintrag fuer `SysVar.getAll`."""
+        typ = e["typ"]
+        wert = e.get("wert")
+        if typ in ("LOGIC", "ALARM"):
+            wert = bool(wert)
+        elif typ == "FLOAT":
+            wert = float(wert or 0.0)
+        elif typ in ("INTEGER", "LIST"):
+            wert = int(wert or 0)
+        else:
+            wert = "" if wert is None else str(wert)
+        satz = {"id": str(e["id"]), "name": str(name),
+                "isInternal": bool(e.get("intern")), "type": typ,
+                "value": wert, "unit": str(e.get("einheit") or "")}
+        if e.get("werte"):
+            satz["valueList"] = ";".join(str(w) for w in e["werte"])
+        if e.get("min") is not None:
+            satz["minValue"] = e["min"]
+        if e.get("max") is not None:
+            satz["maxValue"] = e["max"]
+        return satz
+
+    def _sysvar_beschreibungen(self):
+        """Die Antwort auf `get_system_variable_descriptions.fn`.
+
+        ⚠️ Ohne diese Auskunft bleibt JEDE Systemvariable ein schreib-
+        geschuetzter Sensor. aiohomematic setzt `extended_sysvar` genau dann,
+        wenn die Beschreibung den Marker `HAHM` enthaelt — erst dann entsteht
+        aus LOGIC ein Schalter, aus LIST eine Auswahl, aus FLOAT/INTEGER eine
+        Zahl und aus STRING ein Textfeld. Ohne Marker: `SysvarDpSensor`, und
+        die Schreibwege sind unerreichbar.
+
+        Die QCCU kennt keine schreibgeschuetzten Systemvariablen — was sie
+        fuehrt, hat jemand angelegt, um es zu benutzen. Darum traegt jede
+        Beschreibung den Marker; der Text des Anwenders steht dahinter.
+        aiohomematic schneidet den Marker fuer die Anzeige wieder heraus.
+
+        Das Skript kodiert prozentual (`UriEncode()`), und die Gegenstelle
+        dekodiert mit ISO-8859-1 — also genau so herum kodieren.
+        """
+        aus = []
+        for name, e in self.q.sysvar_liste():
+            text = ("HAHM " + str(e.get("beschreibung") or "")).strip()
+            aus.append({"id": str(e["id"]),
+                        "description": quote(text, safe="",
+                                             encoding="iso-8859-1",
+                                             errors="replace")})
+        return json.dumps(aus)
+
+    def _sysvar_text_setzen(self, skript):
+        """`set_system_variable.fn` — der Weg fuer Zeichenketten.
+
+        ⚠️ Eine Systemvariable vom Typ STRING wird NICHT ueber eine
+        SysVar-Methode geschrieben, sondern ueber dieses Skript
+        (`set_system_variable`, aiohomematic `set_system_variable`). Wer nur
+        die JSON-RPC-Methoden baut, kann Zahlen und Schalter setzen, Text
+        aber nicht.
+        """
+        n = re.search(r'sv_name\s*=\s*"([^"]*)"', skript)
+        w = re.search(r'sv_value\s*=\s*"([^"]*)"', skript)
+        if not n:
+            return ""
+        self.q.sysvar_setzen(n.group(1), w.group(1) if w else "")
+        return ""
+
+    def _sysvar(self, method, p):
+        """Die SysVar-Methoden.
+
+        ⚠️ Jeder Parameter kommt als ZEICHENKETTE an, auch Zahlen und
+        Wahrheitswerte: aiohomematic serialisiert in `_get_params` jeden Wert
+        per `str()`. Ein Schalter kommt also als "1"/"0" herein, nie als
+        `true`. `_sysvar_pruefen` in qccu.py bringt das in Form.
+        """
+        name = str(p.get("name") or "")
+
+        if method == "SysVar.getAll":
+            return [self._sysvar_satz(n, e) for n, e in self.q.sysvar_liste()], None
+
+        if method == "SysVar.getValueByName":
+            # ⚠️ Hier gehoert der NACKTE Wert hin, kein Eintrag und keine
+            # Liste: aiohomematic reicht `result` unveraendert an den
+            # HA-Dienst `get_variable_value` durch.
+            with self.q.lock:
+                e = self.q.sysvars.get(name)
+            if not e:
+                return None, {"name": "NotFound", "code": -32602,
+                              "message": f"Systemvariable {name} gibt es nicht"}
+            return self._sysvar_satz(name, e)["value"], None
+
+        if method in ("SysVar.setBool", "SysVar.setFloat"):
+            if not self.q.sysvar_setzen(name, p.get("value")):
+                return None, {"name": "NotFound", "code": -32602,
+                              "message": f"Systemvariable {name} gibt es nicht"}
+            return "", None
+
+        if method == "SysVar.deleteSysVarByName":
+            self.q.sysvar_loeschen(name)
+            # ⚠️ Der Schluessel `result` muss stehen (Direktindex bei der
+            # Gegenstelle); ihr Inhalt wird nur protokolliert.
+            return "", None
+
+        if method in ("SysVar.createBool", "SysVar.createEnum",
+                      "SysVar.createFloat"):
+            intern = str(p.get("internal") or "0") not in ("0", "false", "False", "")
+            if method == "SysVar.createBool":
+                e = self.q.sysvar_anlegen(name, "LOGIC", wert=p.get("init_val"),
+                                          intern=intern)
+            elif method == "SysVar.createEnum":
+                # ⚠️ `valueList` kommt als EINE Zeichenkette mit Semikolon —
+                # die Gegenstelle setzt sie vor dem Senden zusammen.
+                werte = [w for w in str(p.get("valueList") or "").split(";") if w]
+                e = self.q.sysvar_anlegen(name, "LIST", wert=0, werte=werte,
+                                          intern=intern)
+            else:
+                e = self.q.sysvar_anlegen(name, "FLOAT", wert=p.get("minValue"),
+                                          mn=_zahl(p.get("minValue")),
+                                          mx=_zahl(p.get("maxValue")),
+                                          intern=intern)
+            if e is None:
+                return None, {"name": "InvalidParams", "code": -32602,
+                              "message": f"Systemvariable {name!r} nicht anlegbar"}
+            # Die Gegenstelle liest hier kein Feld aus (`.get("result", {})`).
+            return {"id": e["id"], "name": name}, None
+
+        return None, {"name": "MethodNotFound", "code": -32601, "message": method}
 
     def _posteingang(self):
         """Was im Posteingang steht — zwei Dinge, die dasselbe Ziel haben.
@@ -819,7 +981,7 @@ class JsonRpc:
         # die zutreffende Auskunft — die QCCU fuehrt weder Programme noch
         # Systemvariablen, Raeume oder Gewerke.
         if method in ("Program.getAll", "Room.getAll", "Subsection.getAll",
-                      "SysVar.getAll", "Interface.getSuppressedServiceMessages"):
+                      "Interface.getSuppressedServiceMessages"):
             return [], None
         if method == "Channel.hasProgramIds":
             return False, None
@@ -896,11 +1058,12 @@ class JsonRpc:
         # SUPPORTED_METHODS; hier stehen sie nur, damit ein Aufruf trotzdem
         # eine klare Antwort bekommt.)
         if method in ("Program.execute",
-                      "SysVar.getValueByName",
                       "Interface.getLinkInfo", "Interface.setLinkInfo",
                       "Interface.suppressServiceMessages"):
             return None, {"name": "NotSupported", "code": -32601,
                           "message": f"{method} wird von der QCCU nicht gefuehrt"}
+        if method.startswith("SysVar."):
+            return self._sysvar(method, p)
         if method == "Device.listAllDetail":
             return self.list_all_detail(), None
         if method == "ReGa.runScript":
@@ -930,6 +1093,14 @@ class JsonRpc:
             return "", None
 
         return None, {"name": "MethodNotFound", "code": -32601, "message": method}
+
+
+def _zahl(v):
+    """Eine Zahl aus dem, was hereinkam — oder None."""
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
 
 
 def _wert_ein(wert, json_typ):

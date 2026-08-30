@@ -429,6 +429,15 @@ class QCCU:
         # zweiter Ort fuer dieselbe Sache. Wer zuerst aufnimmt, sieht die
         # Reparatur gar nicht; sie wird beim Melden automatisch quittiert.
         self.warteraum = set()
+        # Systemvariablen. Eine Zentrale von eq-3 fuehrt sie in der ReGa; die
+        # QCCU hat keine ReGa, also fuehrt sie sie selbst — Name -> Eintrag.
+        # Siehe `sysvar_anlegen` fuer die Form eines Eintrags.
+        self.sysvars = {}
+        # ⚠️ Kennungen sind ZEICHENKETTEN und beginnen bei 100. Die 40 und die
+        # 41 sind bei eq-3 vergeben und stehen in aiohomematics
+        # `IGNORE_SYSVARS_BY_ID` — eine Variable mit einer dieser Kennungen
+        # wird dort stillschweigend uebergangen.
+        self._sysvar_id = 100
         # Aufgenommene Geraete, deren Meldung noch auf ihren Namen wartet.
         # Adresse -> Wecker. Siehe `aufnehmen`.
         self._freigabe = {}
@@ -604,6 +613,88 @@ class QCCU:
             self.save_store()
         return d
 
+    # ---- Systemvariablen -------------------------------------------------
+    #
+    # ⚠️ Die Typen sind die von `HubValueType`: LOGIC, ALARM, FLOAT, INTEGER,
+    # LIST, STRING. NUMBER gibt es dort auch, wird hier aber NICHT benutzt:
+    # aiohomematic entscheidet bei NUMBER ueber `"." in raw_value`, ob es eine
+    # Gleit- oder Ganzzahl ist — und diese Zeile steht ausserhalb seines
+    # `try`. Eine Zahl statt einer Zeichenkette wirft dort einen TypeError,
+    # der den GESAMTEN Abruf abbricht, nicht nur den einen Eintrag. Wer FLOAT
+    # und INTEGER direkt nennt, umgeht die Falle.
+    SYSVAR_TYPEN = ("LOGIC", "ALARM", "FLOAT", "INTEGER", "LIST", "STRING")
+
+    def sysvar_anlegen(self, name, typ, wert=None, werte=None, mn=None,
+                       mx=None, einheit="", beschreibung="", intern=False):
+        """Eine Systemvariable anlegen oder eine vorhandene ueberschreiben."""
+        name = str(name or "").strip()
+        typ = str(typ or "").upper()
+        if not name or typ not in self.SYSVAR_TYPEN:
+            return None
+        with self.lock:
+            alt = self.sysvars.get(name)
+            if alt:
+                kennung = alt["id"]
+            else:
+                kennung = str(self._sysvar_id)
+                self._sysvar_id += 1
+            e = {"id": kennung, "typ": typ, "einheit": str(einheit or ""),
+                 "beschreibung": str(beschreibung or ""), "intern": bool(intern)}
+            if werte:
+                e["werte"] = [str(w) for w in werte]
+            if mn is not None:
+                e["min"] = mn
+            if mx is not None:
+                e["max"] = mx
+            e["wert"] = self._sysvar_pruefen(typ, wert, e)
+            self.sysvars[name] = e
+        self.save_store()
+        return e
+
+    @staticmethod
+    def _sysvar_pruefen(typ, wert, eintrag):
+        """Einen Wert in die Form bringen, die der Typ verlangt."""
+        try:
+            if typ in ("LOGIC", "ALARM"):
+                if isinstance(wert, str):
+                    return wert.strip().lower() in ("1", "true", "yes", "on", "y", "t")
+                return bool(wert)
+            if typ == "FLOAT":
+                return float(wert if wert is not None else 0.0)
+            if typ in ("INTEGER", "LIST"):
+                return int(float(wert if wert is not None else 0))
+            return "" if wert is None else str(wert)
+        except (TypeError, ValueError):
+            # Ein unbrauchbarer Wert setzt die Variable auf ihren Grundwert,
+            # statt einen Eintrag zu hinterlassen, den die Gegenstelle beim
+            # Auslesen verwirft.
+            return {"LOGIC": False, "ALARM": False, "FLOAT": 0.0,
+                    "INTEGER": 0, "LIST": 0}.get(typ, "")
+
+    def sysvar_setzen(self, name, wert):
+        """Den Wert einer vorhandenen Systemvariablen aendern."""
+        name = str(name or "").strip()
+        with self.lock:
+            e = self.sysvars.get(name)
+            if not e:
+                return False
+            e["wert"] = self._sysvar_pruefen(e["typ"], wert, e)
+        self.save_store()
+        return True
+
+    def sysvar_loeschen(self, name):
+        """Eine Systemvariable entfernen."""
+        with self.lock:
+            weg = self.sysvars.pop(str(name or "").strip(), None)
+        if weg:
+            self.save_store()
+        return bool(weg)
+
+    def sysvar_liste(self):
+        """Alle Systemvariablen — Name und Eintrag, sortiert."""
+        with self.lock:
+            return sorted(self.sysvars.items())
+
     def aufnehmen(self, address):
         """Ein wartendes Geraet freigeben und den Gegenstellen melden.
 
@@ -708,6 +799,13 @@ class QCCU:
             except Exception as ex:
                 print(f"  ! Geraet {addr} nicht ladbar: {ex}")
         self.einstellungen.update(data.get("einstellungen") or {})
+        for n, e in (data.get("sysvars") or {}).items():
+            if isinstance(e, dict) and e.get("typ") in self.SYSVAR_TYPEN:
+                self.sysvars[str(n)] = dict(e)
+        self._sysvar_id = max(int(data.get("sysvar_id") or 100),
+                              *(int(e["id"]) + 1 for e in self.sysvars.values()
+                                if str(e.get("id", "")).isdigit()),
+                              100)
         subs = data.get("subscribers") or {}
         if subs:
             self.subscribers.update(subs)
@@ -753,6 +851,9 @@ class QCCU:
             data["subscribers"] = dict(self.subscribers)
         if self.einstellungen:
             data["einstellungen"] = dict(self.einstellungen)
+            if self.sysvars:
+                data["sysvars"] = {n: dict(e) for n, e in self.sysvars.items()}
+                data["sysvar_id"] = self._sysvar_id
         with self._store_lock:
             try:
                 tmp = self.store + ".tmp"
