@@ -31,9 +31,16 @@ except Exception:
     raise SystemExit(0)
 # Nur bekannte Schluessel, damit eine erweiterte Oberflaeche hier nichts
 # Unerwartetes in die Umgebung schiebt.
+# ⚠️ WER HIER FEHLT, WIRD STILL VERWORFEN. `bidcos_port` stand seit der
+# Ports-Arbeit in `config.yaml`, wurde als Port angemeldet und beschrieben —
+# und kam nie an: die Schnittstelle BidCos-RF liess sich als Erweiterung
+# nicht einschalten, waehrend sie im nackten Container lief (dort haengt
+# `--bidcos-port` am Aufruf). Eine neue Einstellung ist erst fertig, wenn ihr
+# Name AUCH hier steht.
 for name in ("SERIAL", "OWN_ADDR", "RPC_PORT", "REGA_PORT",
              "WEB_PORT", "JSON_PORT", "CUL_PORT", "ADVERTISE",
-             "SOFORT_MELDEN", "ALT_PORTS", "LOCALHOST_ONLY"):
+             "SOFORT_MELDEN", "ALT_PORTS", "LOCALHOST_ONLY",
+             "BIDCOS_PORT", "BIDCOS_SENDEN", "BIDCOS_FREMD"):
     wert = o.get(name.lower())
     if wert is None or wert == "":
         continue

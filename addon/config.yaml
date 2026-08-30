@@ -93,6 +93,8 @@ options:
   cul_port: 2000
   json_port: 8082
   bidcos_port: 2001
+  bidcos_senden: false
+  bidcos_fremd: ""
   sofort_melden: false
   alt_ports: false
   localhost_only: false
@@ -110,6 +112,15 @@ schema:
   json_port: "port?"
   # XML-RPC-Port der Schnittstelle BidCos-RF. 0 = aus.
   bidcos_port: "port?"
+  # ⚠️ Lässt die Schnittstelle in den Funk EINGREIFEN: sie quittiert dann
+  # Rahmen an die eigene Adresse und lernt Geräte an. Ohne das liest sie nur
+  # mit — Geräte und Werte erscheinen, aber es geht nichts hinaus, und der
+  # Anlern-Knopf in der Oberfläche bleibt aus.
+  bidcos_senden: "bool?"
+  # Adressen fremder BidCoS-Zentralen im selben Funknetz (Komma getrennt,
+  # je 6 Hexziffern). Deren Verkehr wird dann nicht als eigener gedeutet und
+  # nicht quittiert — nötig, wenn nebenan schon eine CCU oder ein FHEM läuft.
+  bidcos_fremd: "str?"
   # Frisch angelernte Geräte sofort melden, statt sie im Posteingang warten
   # zu lassen. ⚠️ Nur einschalten, wenn die Gegenstelle keinen Posteingang
   # hat (FHEM/HMCCU) — Home Assistant verlangt sonst zusätzlich eine
