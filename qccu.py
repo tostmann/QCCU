@@ -58,6 +58,11 @@ class Tables:
         # global feststellen statt je Geraet raten.
         self.links_bekannt = any("links" in e for e in self.catalog.values()
                                  if isinstance(e, dict))
+        # Fuehrt der Katalog die Firmware-Baender? Bis 2026.8.38 nicht. Ohne
+        # sie kann die Fassung eines Geraets nicht ausgewertet werden.
+        self.varianten_bekannt = any("varianten" in e
+                                     for e in self.catalog.values()
+                                     if isinstance(e, dict))
         self._sdt_namen = None
 
     def _load(self, base, name, pflicht=True):
@@ -81,15 +86,70 @@ class Tables:
             "veraltet": self.alt,
         }
 
-    def channels_of(self, devtype):
+    @staticmethod
+    def fassung_zahl(text):
+        """`"2.8.10"` -> 133130, oder None.
+
+        So zaehlt die Zentrale Firmwarefassungen: `major<<16 | minor<<8 |
+        patch`. Genau diese Zahlen stehen als `minVersion`/`maxVersion` in
+        den Gerätebeschreibungen — 66048 ist 1.2.0, 196608 ist 3.0.0.
+        """
+        try:
+            teile = [int(x) for x in str(text).split(".")]
+        except (TypeError, ValueError):
+            return None
+        if not 1 <= len(teile) <= 3 or any(x < 0 for x in teile):
+            return None
+        while len(teile) < 3:
+            teile.append(0)
+        if teile[1] > 255 or teile[2] > 255:
+            return None
+        return (teile[0] << 16) | (teile[1] << 8) | teile[2]
+
+    def fuer_geraet(self, devtype, fassung=None):
+        """Die Beschreibung, die fuer DIESES Geraet gilt.
+
+        Ein Geraetetyp hat oft mehrere Beschreibungen, und welche gilt,
+        entscheidet die FASSUNG der Firmware: die Zentrale schlaegt sie ueber
+        `DeviceType.findDeviceTypeByVersion` nach, also ueber das
+        `minVersion`/`maxVersion`-Band. Beim HmIP-ASIR unterscheiden sich die
+        Baender in der internen Verdrahtung — die alte Fassung hat keine, die
+        neue den Link 1->2 —, und ein Geraet ohne Verdrahtung meldet sich nach
+        dem Anlernen wieder ab.
+
+        ⚠️ Ohne bekannte Fassung bleibt es bei der Vorgabe des Katalogs. Das
+        ist Absicht: jedes Geraet, das vor 2026.8.39 angelernt wurde, hat
+        keine gespeicherte Firmware, und die Vorgabe ist genau das, womit es
+        bisher gelaufen ist. Raten waere hier keine Verbesserung.
+        """
         e = self.catalog.get(str(devtype))
+        if not e:
+            return {}
+        roh = self.fassung_zahl(fassung) if fassung is not None else None
+        if roh is None:
+            return e
+        for v in e.get("varianten", ()):
+            if not v.get("min", 0) <= roh <= v.get("max", 0xFFFFFFFF):
+                continue
+            eigen = [k for k in ("channels", "chinfo", "links", "spec")
+                     if k in v]
+            if not [k for k in eigen if k != "spec"]:
+                return e
+            zusammen = dict(e)
+            for k in eigen:
+                zusammen[k] = v[k]
+            return zusammen
+        return e
+
+    def channels_of(self, devtype, eintrag=None):
+        e = eintrag if eintrag is not None else self.catalog.get(str(devtype))
         return e["channels"] if e else {}
 
     def label_of(self, devtype):
         e = self.catalog.get(str(devtype))
         return e["label"] if e else f"Typ {devtype}"
 
-    def links_of(self, devtype):
+    def links_of(self, devtype, eintrag=None):
         """Die interne Verdrahtung eines Geraetetyps: [[Quellkanal, Zielkanal]].
 
         Ground Truth aus der Geraetebeschreibung des Herstellers
@@ -102,8 +162,9 @@ class Tables:
         leere Liste. Der Anlernpfad muss das aushalten — er darf daraus NICHT
         schliessen, das Geraet habe keine Verdrahtung.
         """
-        e = self.catalog.get(str(devtype)) or {}
-        return [tuple(p) for p in e.get("links", ()) if len(p) == 2]
+        e = (eintrag if eintrag is not None
+             else self.catalog.get(str(devtype))) or {}
+        return [tuple(p) for p in (e.get("links") or ()) if len(p) == 2]
 
     def params_of(self, channel_type, pset="VALUES", version=None):
         """Parameter eines Kanaltyps — mit Fassung, wenn die Tabelle sie fuehrt.
@@ -141,12 +202,13 @@ class Tables:
                     self._sdt_namen.setdefault(e["type"], name)
         return self._sdt_namen.get(nummer)
 
-    def chinfo_of(self, devtype, kanal):
+    def chinfo_of(self, devtype, kanal, eintrag=None):
         """Fassung und geraeteeigene Parameter eines Kanals."""
-        e = self.catalog.get(str(devtype)) or {}
+        e = (eintrag if eintrag is not None
+             else self.catalog.get(str(devtype))) or {}
         return (e.get("chinfo") or {}).get(str(kanal)) or {}
 
-    def paramset_of(self, devtype, kanal, pset="VALUES"):
+    def paramset_of(self, devtype, kanal, pset="VALUES", eintrag=None):
         """Das Paramset eines Kanals bei DIESEM Geraetetyp.
 
         So setzt es auch eine Zentrale von eQ-3 zusammen (an einer HmIP-PS-2
@@ -154,10 +216,10 @@ class Tables:
         die Liste der Kanaltyp-Fassung, dazu was die Geraetebeschreibung
         selbst nennt.
         """
-        ctype = self.channels_of(devtype).get(str(kanal))
+        ctype = self.channels_of(devtype, eintrag).get(str(kanal))
         if not ctype:
             return {}
-        info = self.chinfo_of(devtype, kanal)
+        info = self.chinfo_of(devtype, kanal, eintrag)
         out = dict(self.params_of(ctype, pset, info.get("v")))
         for schluessel in (info.get("extra") or {}).get(pset, []):
             name = schluessel.split("@")[0]
@@ -190,11 +252,23 @@ def channel_paramsets(ctype):
 class Device:
     """Ein angelerntes Geraet, wie es die Gegenstelle sieht."""
 
-    def __init__(self, address, devtype, tables, firmware="1.0.0"):
+    def __init__(self, address, devtype, tables, firmware="1.0.0",
+                 fassung=None):
         self.address = address.upper()
         self.devtype = int(devtype)
         self.firmware = firmware
         self.tables = tables
+        # ⚠️ `fassung` ist die im Anlernruf ANGESAGTE Firmware — und nur die
+        # taugt zur Bandwahl. `firmware` traegt die Vorgabe „1.0.0", wenn
+        # nichts bekannt ist; daraus ein Band zu waehlen hiesse, einen
+        # Platzhalter fuer eine Messung zu halten. Ein Geraet, das vor
+        # 2026.8.39 angelernt wurde, hat keine — es bleibt bei der Vorgabe
+        # des Katalogs, also bei dem, womit es bisher gelaufen ist.
+        self.fassung = fassung
+        try:
+            self.eintrag = tables.fuer_geraet(self.devtype, fassung)
+        except Exception:                                # noqa: BLE001
+            self.eintrag = None
         self.values = {}
         self.master = {}
         self.unreach = None
@@ -223,7 +297,16 @@ class Device:
 
     def channel_list(self):
         return sorted(((int(k), v) for k, v in
-                       self.tables.channels_of(self.devtype).items()))
+                       self.tables.channels_of(self.devtype,
+                                               self.eintrag).items()))
+
+    def paramset(self, kanal, pset="VALUES"):
+        """Das Paramset eines Kanals — mit der Beschreibung DIESES Geraets."""
+        return self.tables.paramset_of(self.devtype, kanal, pset, self.eintrag)
+
+    def links(self):
+        """Die interne Verdrahtung — mit der Beschreibung DIESES Geraets."""
+        return self.tables.links_of(self.devtype, self.eintrag)
 
     def descriptions(self):
         """Geraet und Kanaele, wie `listDevices` sie erwartet."""
@@ -502,8 +585,8 @@ class QCCU:
                 self.names.pop(k, None)
 
     def add_device(self, address, devtype, firmware="1.0.0", announce=True,
-                   neu_angelernt=False):
-        d = Device(address, devtype, self.t, firmware)
+                   neu_angelernt=False, fassung=None):
+        d = Device(address, devtype, self.t, firmware, fassung)
         with self.lock:
             self.devices[d.address] = d
         if self.verbose:
@@ -610,7 +693,8 @@ class QCCU:
         for addr, e in (data.get("devices") or {}).items():
             try:
                 self.add_device(addr, int(e["devtype"]),
-                                e.get("firmware", "1.0.0"), announce=False)
+                                e.get("firmware", "1.0.0"), announce=False,
+                                fassung=e.get("fassung"))
                 if e.get("rf"):
                     self.rf[addr.upper()] = e["rf"].lower()
                 gd = self.devices.get(addr.upper())
@@ -639,6 +723,8 @@ class QCCU:
         with self.lock:
             data = {"devices": {a: {"devtype": d.devtype,
                                     "firmware": d.firmware,
+                                    **({"fassung": d.fassung}
+                                       if d.fassung else {}),
                                     "rf": self.rf.get(a),
                                     # Die zuletzt gemeldeten Werte. Sie sind
                                     # nicht die Wahrheit — die steht im Geraet

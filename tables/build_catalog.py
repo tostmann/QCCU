@@ -32,6 +32,7 @@ def build(jar_path):
     names = [n for n in z.namelist() if n.startswith(SPEC) and n.endswith(".xml")]
 
     catalog = {}
+    varianten = {}
     stats = {"files": 0, "types": 0, "skipped": 0}
 
     for n in names:
@@ -100,22 +101,83 @@ def build(jar_path):
 
         for m in re.finditer(r'<devType\s+label="([^"]+)"\s+id="(\d+)"([^/>]*)', d):
             label, devid, rest = m.group(1), int(m.group(2)), m.group(3)
-            fw = re.search(r'minVersion="(\d+)"[^>]*maxVersion="(\d+)"', rest)
+            # ⚠️ `minVersion` und `maxVersion` EINZELN lesen. Fehlt
+            # `maxVersion`, ist das Band nach oben offen — bisher liess die
+            # gemeinsame Regex solche Eintraege ganz ohne Band durchgehen,
+            # und das sind gerade die JUENGSTEN Beschreibungen.
+            mn = re.search(r'minVersion="(\d+)"', rest)
+            mx = re.search(r'maxVersion="(\d+)"', rest)
             entry = {
                 "label": label,
                 "channels": {str(k): v for k, v in sorted(channels.items())},
                 "chinfo": {str(k): v for k, v in sorted(chinfo.items())},
                 "spec": n.rsplit("/", 1)[-1],
+                "min": int(mn.group(1)) if mn else 0,
+                "max": int(mx.group(1)) if mx else None,
             }
             if links:
                 entry["links"] = links
-            if fw:
-                entry["firmware"] = [int(fw.group(1)), int(fw.group(2))]
-            old = catalog.get(str(devid))
-            if old is None or len(entry["channels"]) > len(old["channels"]):
-                catalog[str(devid)] = entry
-                if old is None:
-                    stats["types"] += 1
+            varianten.setdefault(str(devid), []).append(entry)
+
+    # ⚠️ WELCHE Beschreibung fuer ein Geraet gilt, entscheidet die FASSUNG
+    # seiner Firmware — nicht die Kanalzahl. Die Zentrale schlaegt sie ueber
+    # `DeviceType.findDeviceTypeByVersion` nach: gewaehlt wird die
+    # Beschreibung, deren `minVersion`/`maxVersion`-Band die Firmware aus dem
+    # Anlernruf enthaelt (`maxVersion` fehlt = nach oben offen).
+    #
+    # QCCU nahm bisher „die mit den meisten Kanaelen". Beim HmIP-ASIR (Typ
+    # 298) fuehrt das nachweislich in die Irre: die Fassung fuer alte Firmware
+    # hat SECHS Kanaele und LEERE `<internalLinks>`, die fuer neue hat vier
+    # Kanaele und den Link 1->2. Nach der Kanalzahl gewinnt immer die alte —
+    # und ein Geraet ohne Verdrahtung meldet sich nach dem Anlernen wieder ab.
+    #
+    # ⚠️ Die alte Regel bleibt trotzdem die VORGABE, und zwar mit Absicht.
+    # Sie gilt fuer alles, was die Firmware eines Geraets nicht kennt — also
+    # fuer jedes Geraet, das vor dieser Fassung angelernt wurde. Sie durch
+    # „juengstes Band" zu ersetzen, waere fuer die einen richtig und fuer die
+    # anderen schlechter: der HmIP-BWTH-A im Bestand laeuft mit 2.8.10, und
+    # die alte Regel trifft bei ihm zufaellig genau die richtige Beschreibung.
+    # Wer die Firmware KENNT, waehlt ueber das Band; wer sie nicht kennt,
+    # bleibt bei dem, was bisher lief.
+    #
+    # Eine Fassung, die sich in Kanaelen, Kanalfassungen und Verdrahtung NICHT
+    # von der Vorgabe unterscheidet, wird auf ihr Band eingedampft — das ist
+    # der Normalfall und haelt die Tabelle klein.
+    for devid, liste in varianten.items():
+        # Dieselbe Beschreibung steht mehrfach da, wenn ein Typ unter mehreren
+        # Namen verkauft wird (eQ-3 und OEM). Fuer die Bandwahl ist das ein
+        # Eintrag.
+        gesehen = set()
+        eindeutig = []
+        for e in liste:
+            schluessel = (e["min"], e["max"], e["spec"])
+            if schluessel in gesehen:
+                continue
+            gesehen.add(schluessel)
+            eindeutig.append(e)
+        # ⚠️ Die Vorgabe wird in DATEIREIHENFOLGE bestimmt, nicht in
+        # Bandreihenfolge. Bei gleicher Kanalzahl entschied bisher, wer zuerst
+        # kam; sortiert man vorher um, aendern sich 86 Eintraege — nicht weil
+        # sie besser wuerden, sondern weil ein Gleichstand anders ausgeht.
+        # Solche Bewegung gehoert nicht in eine Aenderung, die etwas anderes
+        # will.
+        vorgabe = max(eindeutig, key=lambda e: len(e["channels"]))
+        eindeutig = sorted(eindeutig, key=lambda e: (
+            e["min"], e["max"] if e["max"] is not None else 1 << 40))
+        eintrag = {k: v for k, v in vorgabe.items() if k not in ("min", "max")}
+        baender = []
+        for e in eindeutig:
+            band = {"min": e["min"], "spec": e["spec"]}
+            if e["max"] is not None:
+                band["max"] = e["max"]
+            for feld in ("channels", "chinfo", "links"):
+                if e.get(feld) != vorgabe.get(feld):
+                    band[feld] = e.get(feld)
+            baender.append(band)
+        if len(baender) > 1:
+            eintrag["varianten"] = baender
+        catalog[devid] = eintrag
+        stats["types"] += 1
 
     return catalog, stats
 

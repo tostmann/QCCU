@@ -255,6 +255,11 @@ need_tables() {
     # Unterschied ist von aussen nicht zu sehen, deshalb wird in die Datei
     # geschaut statt auf ihren Namen.
     grep -q '"links"' "$TABLES/catalog.json" 2>/dev/null || return 1
+    # Dasselbe fuer die Firmware-Baender (`varianten`, ab 2026.8.39): ohne sie
+    # waehlt QCCU die Geraetebeschreibung nach der Kanalzahl statt nach der
+    # Fassung des Geraets — und trifft damit bei Typen mit mehreren
+    # Beschreibungen die falsche (HmIP-ASIR: die ohne interne Verdrahtung).
+    grep -q '"varianten"' "$TABLES/catalog.json" 2>/dev/null || return 1
     if [ "${BIDCOS_PORT:-0}" != "0" ]; then
         [ -f "$TABLES/bidcos_types.json" ] \
             && [ -f "$TABLES/bidcos_layouts.json" ] \

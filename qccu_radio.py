@@ -1608,12 +1608,20 @@ class Radio:
                         print(f"  <- {addr}:0 CONFIG_PENDING={wert}")
             self.qccu.set_value_internal(addr, 0, param, wert)
 
-    def _paramset(self, devtype, channel):
-        """Das VALUES-Paramset eines Kanals — gemerkt, nicht neu gebaut."""
-        schluessel = (int(devtype), int(channel))
+    def _paramset(self, d, channel):
+        """Das VALUES-Paramset eines Kanals — gemerkt, nicht neu gebaut.
+
+        ⚠️ Gefragt wird das GERAET, nicht der Typ: welche Beschreibung gilt,
+        haengt an seiner Firmwarefassung. Zwei Geraete desselben Typs mit
+        verschiedenen Fassungen koennen verschiedene Kanalfassungen haben —
+        deshalb steht die Adresse im Schluessel.
+        """
+        schluessel = (d.address, int(channel))
         eintrag = self._pset_cache.get(schluessel)
         if eintrag is None:
-            eintrag = self.t.paramset_of(devtype, channel, "VALUES") or {}
+            holen = getattr(d, "paramset", None)
+            eintrag = (holen(channel, "VALUES") if holen
+                       else self.t.paramset_of(d.devtype, channel, "VALUES")) or {}
             self._pset_cache[schluessel] = eintrag
         return eintrag
 
@@ -1632,7 +1640,7 @@ class Radio:
             return False
         if not dict(d.channel_list()).get(int(channel)):
             return False
-        return param in self._paramset(d.devtype, channel)
+        return param in self._paramset(d, channel)
 
     def _kanaltyp(self, addr, channel):
         """Kanaltyp eines Kanals — oder None, wenn das Geraet ihn nicht hat."""
@@ -1652,7 +1660,7 @@ class Radio:
             return None
         if not dict(d.channel_list()).get(int(channel)):
             return None
-        desc = self._paramset(d.devtype, channel).get(param)
+        desc = self._paramset(d, channel).get(param)
         return desc if isinstance(desc, dict) else None
 
     def _form(self, desc, zahl):
@@ -2419,6 +2427,14 @@ class Radio:
         # Schluessel-Flags(1), Nonce(4), MIC(4), Einmalschluessel(8) — die
         # Nachbarfelder oben und unten belegen die Lage. Bisher las QCCU ihn
         # nicht und behauptete stattdessen fuer JEDES Geraet `0x40`.
+        # ⚠️ Die Firmware entscheidet, WELCHE Beschreibung fuer dieses Geraet
+        # gilt: die Zentrale waehlt sie ueber das `minVersion`/`maxVersion`-
+        # Band (`DeviceType.findDeviceTypeByVersion`). QCCU las die drei Bytes
+        # bisher nicht und nahm „die Beschreibung mit den meisten Kanaelen" —
+        # beim HmIP-ASIR ist das die alte Fassung OHNE interne Verdrahtung.
+        # Gezaehlt wird `major.minor.patch`; als Zahl `major<<16|minor<<8|patch`,
+        # genau die Form der Baender (66048 = 1.2.0).
+        fassung = f"{air[28]}.{air[29]}.{air[30]}"
         opmode  = air[31]
         nonce   = air[33:37]
         otk     = air[41:49]
@@ -2495,7 +2511,7 @@ class Radio:
             with self.lock:
                 self._nachtrag[newa.hex()] = {
                     "ccu_addr": ccu_addr, "devtype": devtype,
-                    "opmode": opmode, "src": src.hex(),
+                    "opmode": opmode, "src": src.hex(), "fassung": fassung,
                     "bis": time.time() + NACHTRAG_FENSTER}
             self._pair_busy = False
             self.pair_last = (f"Bestätigung blieb aus — {newa.hex()} wird "
@@ -2508,8 +2524,9 @@ class Radio:
                       f"{newa.hex()} trotzdem, wird nachgetragen.")
             return
 
-        self._anlernen_eintragen(newa.hex(), ccu_addr, devtype)
-        self._anlernen_rest(newa.hex(), ccu_addr, devtype, opmode, src.hex())
+        self._anlernen_eintragen(newa.hex(), ccu_addr, devtype, fassung)
+        self._anlernen_rest(newa.hex(), ccu_addr, devtype, opmode, src.hex(),
+                            fassung)
 
     # -- Abschluss des Anlernens, aus zwei Wegen erreichbar ---------------
     #
@@ -2517,7 +2534,7 @@ class Radio:
     # Weg 2: sie kam nicht, aber das Geraet funkt trotzdem unter der
     #        angebotenen Adresse (`_nachtrag_einloesen`).
 
-    def _anlernen_eintragen(self, hmid, ccu_addr, devtype):
+    def _anlernen_eintragen(self, hmid, ccu_addr, devtype, fassung=None):
         """Geraet fuehren und Funkadresse binden — das MUSS zuerst geschehen.
 
         Die erste Anfrage des Geraets (Zeit, Zustand) kommt rund eine Sekunde
@@ -2526,14 +2543,17 @@ class Radio:
         Werksreset nicht mehr heraus — es wiederholt dann JEDE Sendung
         dreifach. Am Geraet gemessen, 17.08.2026.
         """
-        self.qccu.add_device(ccu_addr, devtype, neu_angelernt=True)
+        self.qccu.add_device(ccu_addr, devtype, neu_angelernt=True,
+                             **({"firmware": fassung, "fassung": fassung}
+                                if fassung else {}))
         self.bind(hmid, ccu_addr)
         # Der Vorgang ist erledigt — eine noch offene Vormerkung waere von
         # jetzt an nur noch eine Fussangel.
         with self.lock:
             self._nachtrag.pop(hmid, None)
 
-    def _anlernen_rest(self, hmid, ccu_addr, devtype, opmode, src):
+    def _anlernen_rest(self, hmid, ccu_addr, devtype, opmode, src,
+                       fassung=None):
         """Wegemeldung, Verdrahtung, Aufraeumen — alles nach dem Eintrag."""
         # Wegemeldung wie die echte Zentrale: rund 185 ms nach ihrer Quittung.
         # ⚠️ Diese Zahl steht NICHT im Jar — dort ist die Wegemeldung schlicht
@@ -2559,7 +2579,7 @@ class Radio:
 
         # Die Verknuepfungen erst spaeter — zu frueh gesendet nimmt das Geraet
         # sie nicht an (am echten Geraet gemessen).
-        self._verdrahten(bytes.fromhex(hmid), devtype, opmode)
+        self._verdrahten(bytes.fromhex(hmid), devtype, opmode, fassung)
 
         self.spuren_raeumen(src, ccu_addr)
 
@@ -2602,10 +2622,12 @@ class Radio:
                   f"{hmid} — die Bestätigung war verlorengegangen.")
         # Eintragen SOFORT, damit der gerade laufende Frame nicht doch noch
         # als fremd durchfaellt; der Rest im eigenen Faden, weil er wartet.
-        self._anlernen_eintragen(hmid, e["ccu_addr"], e["devtype"])
+        self._anlernen_eintragen(hmid, e["ccu_addr"], e["devtype"],
+                                 e.get("fassung"))
         threading.Thread(
             target=self._anlernen_rest,
-            args=(hmid, e["ccu_addr"], e["devtype"], e["opmode"], e["src"]),
+            args=(hmid, e["ccu_addr"], e["devtype"], e["opmode"], e["src"],
+                  e.get("fassung")),
             daemon=True).start()
 
     def _app_quittung(self, hmid, appseq, ergebnis):
@@ -2693,7 +2715,7 @@ class Radio:
                         f"{LINK_VERSUCHE} Anlaeufen")
         return None
 
-    def _verdrahten(self, newa, devtype, opmode=0):
+    def _verdrahten(self, newa, devtype, opmode=0, fassung=None):
         """Die interne Verdrahtung des Geraets einrichten — beide Richtungen.
 
         Quelle ist die Geraetebeschreibung des Herstellers, nicht eine Liste
@@ -2711,7 +2733,11 @@ class Radio:
         """
         links = []
         try:
-            links = self.t.links_of(devtype)
+            # ⚠️ Ueber die FASSUNG aufloesen, nicht ueber den Typ allein: bei
+            # mehreren Beschreibungen desselben Typs haengt die Verdrahtung am
+            # Firmware-Band (HmIP-ASIR: alte Fassung keine, neue 1->2).
+            links = self.t.links_of(devtype,
+                                    self.t.fuer_geraet(devtype, fassung))
         except Exception as ex:                          # noqa: BLE001
             self._log("##", f"ANLERNEN Verdrahtung nicht lesbar: {ex}")
 
