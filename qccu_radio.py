@@ -221,6 +221,9 @@ UMRECHNUNG = {
     #   DoubleToInteger(2.0, 0.0) — Halbgradschritte
     "SET_POINT_TEMPERATURE": (2.0, 0.0),
     "PARTY_SET_POINT_TEMPERATURE": (2.0, 0.0),
+    # ClimateStateParameterFactory.createControlDifferentialTemperature…:
+    #   DoubleToInteger(2.0, 0.0) — ebenfalls Halbgrad, aber MIN -10,0
+    "CONTROL_DIFFERENTIAL_TEMPERATURE": (2.0, 0.0),
     # GeneralStateParameterFactory.createLevel: DoubleToInteger(200.0, 0.0)
     "LEVEL": (200.0, 0.0),
     "PWM_LEVEL": (200.0, 0.0),
@@ -456,9 +459,8 @@ SDT_REGELN = {
 #     Aktion 2 (EXECUTION_START)      danach EIN Pegelbyte
 #     Aktion 128..159 (geraetespez.)  danach Paare <Datentyp> <Daten>
 #
-# Je Parameter: (Aktion, Datentyp oder None, Byte fuer WAHR).
-# Aktion und Datentyp sind die letzten Argumente seiner StateParameter-Fabrik
-# im HMIPServer-Jar — `(directExecutionCode, dataIndex, dataType)`:
+# Aktion, Lage und Datentyp sind die letzten Argumente der StateParameter-
+# Fabrik im HMIPServer-Jar — `(directExecutionCode, dataIndex, dataType)`:
 #
 #   STATE                  createStateParameter        → 2, 0
 #                          BoolToInteger({0,0,0,-56}) → WAHR ist 0xC8, denn
@@ -471,6 +473,10 @@ SDT_REGELN = {
 #   BOOST_MODE             createBoostModeParameter    → -128, 1, 0
 #                          Datentyp 0 LOGIC (1 Byte)
 #   CONTROL_MODE           createControlModeParameter  → -128, 0, 4
+#   CONTROL_DIFFERENTIAL_…  createControlDifferentialT… → -128, 1, 4
+#                          DoubleToInteger(2.0, 0.0), MIN -10.0
+#   ACTIVE_PROFILE         createActiveProfileParameter → -128, 0, 5
+#                          IntegerToInteger(1.0, -1.0) → Profil 1 ist 0
 #
 # ⚠️ Bei CONTROL_MODE heisst der Datentyp 4 im Jar `DIFFERENTIAL_TEMPERATURE`
 # — der Name passt nicht zum Parameter, die Zahl steht aber genau so in der
@@ -482,13 +488,101 @@ SDT_REGELN = {
 AKTION_START = 0x02
 AKTION_THERMOSTAT = 0x80
 
+# Die Datentypen aus `DirectExecutionDataType` (Wert, Laenge in Byte).
+DT_LOGIC = 0x00                    # 1
+DT_TEMPERATURE_SET_POINT = 0x02    # 1
+DT_DIFFERENTIAL_TEMPERATURE = 0x04  # 1
+DT_UNSIGNED_INTEGER_16BIT = 0x05   # 2
+
+# ⚠️ Ein Datentyp traegt oft MEHRERE Parameter in EINEM Byte, und `dataIndex`
+# sagt, wo einer davon liegt. Das steht nicht im Rahmen — der Rahmen fuehrt
+# nur `<Datentyp> <Daten>` (`DirectExecutionCommandFrame.setPayload`) —,
+# sondern in `TransactionTaskFactory`, die den Wert VOR dem Einsetzen an seine
+# Stelle schiebt und Parameter mit gleichem <Code, Datentyp, Occurrence> in
+# dasselbe Byte verodert:
+#
+#   LOGIC                  0 -> (v&1)<<6 | 0x80    jeder Platz hat ein
+#                          1 -> (v&1)<<4 | 0x20    MARKIERBIT, darum laesst
+#                          2 -> (v&1)<<2 | 0x08    sich einer allein setzen
+#                       sonst -> (v&1)    | 0x02
+#   TEMPERATURE_SET_POINT  0 -> v<<6               Bits 7..6
+#                       sonst -> v & 0x3F          Bits 5..0
+#   DIFFERENTIAL_TEMPERATURE  ebenso
+#   UNSIGNED_INTEGER_16BIT    zwei Byte, hohes zuerst
+#
+# ⚠️ QCCU hat den Wert bisher ROH eingesetzt. Fuer den Sollwert ging das gut:
+# 4,5..30,5 °C sind 9..61 und liegen ohnehin in den unteren sechs Bit, und der
+# Modus stand dann auf 0 — der am 30.08.2026 belegte Rahmen `80 01 02 2C` ist
+# genau `Modus 0 | 44`. Fuer BOOST_MODE ging es NICHT: 0x01 statt 0x30 traf
+# das Feld nicht, und das Geraet antwortete mit NAK (am HmIP-BWTH-A gemessen).
+#
+# Aufbau: (Aktion, Datentyp, dataIndex, Wert-fuer-WAHR)
 STELLBEFEHLE = {
-    "STATE":                 (AKTION_START, None, 0xC8),
-    "LEVEL":                 (AKTION_START, None, 0xC8),
-    "SET_POINT_TEMPERATURE": (AKTION_THERMOSTAT, 0x02, 1),
-    "BOOST_MODE":            (AKTION_THERMOSTAT, 0x00, 1),
-    "CONTROL_MODE":          (AKTION_THERMOSTAT, 0x04, 1),
+    "STATE":                 (AKTION_START, None, 0, 0xC8),
+    "LEVEL":                 (AKTION_START, None, 0, 0xC8),
+    "SET_POINT_TEMPERATURE": (AKTION_THERMOSTAT, DT_TEMPERATURE_SET_POINT, 1, 1),
+    "SET_POINT_MODE":        (AKTION_THERMOSTAT, DT_TEMPERATURE_SET_POINT, 0, 1),
+    "BOOST_MODE":            (AKTION_THERMOSTAT, DT_LOGIC, 1, 1),
+    "CONTROL_MODE":          (AKTION_THERMOSTAT, DT_DIFFERENTIAL_TEMPERATURE, 0, 1),
+    "CONTROL_DIFFERENTIAL_TEMPERATURE":
+                             (AKTION_THERMOSTAT, DT_DIFFERENTIAL_TEMPERATURE, 1, 1),
+    "ACTIVE_PROFILE":        (AKTION_THERMOSTAT, DT_UNSIGNED_INTEGER_16BIT, 0, 1),
 }
+
+# ⚠️ Die Betriebsart wird NIE allein geschrieben. Am 30.08.2026 am HmIP-BWTH-A
+# gemessen: `80 01 02 00` (Modus 0 in Bit 7..6, sonst nichts) liess die
+# Betriebsart auf 1 stehen und zog den SOLLWERT auf 5,0 °C — das Geraet las das
+# ganze Byte als Sollwert. Der Grund steht im Jar, in
+# `de/eq3/cbcs/statemanagement/rules/evaluation/stateRules.json`
+# (`stateRestoreDefinitions`): die Zentrale schreibt einen SATZ von Parametern,
+# und der eigentliche Umschalter ist CONTROL_MODE im Datentyp 4 — nicht die
+# oberen zwei Bit des Datentyps 2.
+#
+#   SET_POINT_MODE == 1  ->  CONTROL_MODE, CONTROL_DIFFERENTIAL_TEMPERATURE 0,
+#                            SET_POINT_MODE, SET_POINT_TEMPERATURE
+#   SET_POINT_MODE == 0  ->  CONTROL_MODE, CONTROL_DIFFERENTIAL_TEMPERATURE 0,
+#                            ACTIVE_PROFILE
+#
+# `None` heisst „den heutigen Wert des Geraets nehmen" — genau das meint
+# `{"type": "STATE_PARAMETER_VALUE"}` in der Regel.
+KOMPOSITE = {
+    ("SET_POINT_MODE", 1): (("CONTROL_MODE", 1),
+                            ("CONTROL_DIFFERENTIAL_TEMPERATURE", 0.0),
+                            ("SET_POINT_MODE", 1),
+                            ("SET_POINT_TEMPERATURE", None)),
+    ("SET_POINT_MODE", 0): (("CONTROL_MODE", 0),
+                            ("CONTROL_DIFFERENTIAL_TEMPERATURE", 0.0),
+                            ("ACTIVE_PROFILE", None)),
+}
+
+
+def daten_bytes(datentyp, dataindex, roh):
+    """Den Rohwert an seine Stelle im Datenfeld schieben.
+
+    Rueckgabe: Hexziffern, oder None, wenn der Wert dort nicht hineinpasst.
+    Die Faelle sind die aus `TransactionTaskFactory` — kein eigener Entwurf.
+    """
+    if datentyp is None:                       # EXECUTION_START: ein Pegelbyte
+        return f"{roh:02X}" if 0 <= roh <= 0xFF else None
+    if datentyp == DT_LOGIC:
+        if not 0 <= roh <= 1:
+            return None
+        lage = {0: (6, 0x80), 1: (4, 0x20), 2: (2, 0x08)}.get(dataindex, (0, 0x02))
+        return f"{((roh & 1) << lage[0]) | lage[1]:02X}"
+    if datentyp in (DT_TEMPERATURE_SET_POINT, DT_DIFFERENTIAL_TEMPERATURE):
+        if dataindex == 0:
+            # ⚠️ Nur zwei Bit. Wer hier den Sollwert einsetzt, schreibt einen
+            # Modus und loescht den Sollwert.
+            return f"{(roh << 6) & 0xFF:02X}" if 0 <= roh <= 3 else None
+        # ⚠️ Der untere Platz ist SECHS Bit im Zweierkomplement. Das Jar
+        # maskiert ein Java-`byte` (`(byte)(v & 0x3F)`); Pythons `&` liefert
+        # fuer negative Zahlen dasselbe Ergebnis. Ohne die negative Haelfte
+        # waere CONTROL_DIFFERENTIAL_TEMPERATURE (MIN -10,0 -> roh -20) nicht
+        # zu senden.
+        return f"{roh & 0x3F:02X}" if -0x20 <= roh <= 0x3F else None
+    if datentyp == DT_UNSIGNED_INTEGER_16BIT:
+        return f"{roh:04X}" if 0 <= roh <= 0xFFFF else None
+    return None
 
 APP_RESP_REQ = 0x80
 # ⚠️ Das erste Byte des Anwendungskopfes traegt DREI Dinge, nicht zwei:
@@ -2046,7 +2140,10 @@ class Radio:
                     print(f"  ! Erreichbarkeit nicht vermerkt: {ex}")
 
     def _stellbefehl(self, ccu_address, channel, param, value):
-        """Rumpf eines Stellbefehls bauen — oder None, wenn er nicht geht.
+        """EIN Datenfeld bauen — (Aktion, Datentyp, Hexdaten, Klartext).
+
+        Den fertigen Rumpf baut `_rumpf`; hier entsteht nur der Beitrag EINES
+        Parameters, weil sich mehrere ein Byte teilen koennen.
 
         JEDER Stellbefehl ist ein DIRECT_EXECUTION_COMMAND
         (`ApplicationFrameType 6`; auf der Luft `0x86`, das obere Bit ist der
@@ -2078,7 +2175,7 @@ class Radio:
                 print(f"  ! {param} wird nicht gesendet — kein belegter "
                       f"Stellbefehl fuer diesen Parameter")
             return None
-        aktion, datentyp, wahr = eintrag
+        aktion, datentyp, dataindex, wahr = eintrag
 
         desc = self._beschreibung(ccu_address, channel, param)
         if desc is None:
@@ -2116,18 +2213,81 @@ class Radio:
 
         faktor, versatz = UMRECHNUNG.get(param, (1.0, 0.0))
         roh = int(round(zahl * faktor + versatz))
-        if not 0 <= roh <= 0xFF:
+        daten = daten_bytes(datentyp, dataindex, roh)
+        if daten is None:
             if self.verbose:
-                print(f"  ! {param}={value!r} ergibt {roh} und passt in kein "
-                      f"Byte — nicht gesendet")
+                print(f"  ! {param}={value!r} ergibt {roh} und passt nicht in "
+                      f"das Datenfeld (Datentyp {datentyp}, Lage {dataindex}) "
+                      f"— nicht gesendet")
             return None
 
+        return (aktion, datentyp, daten,
+                f"{param}={value!r} (roh 0x{roh & 0xFF:02X}, Feld 0x{daten})")
+
+    def _heutiger_wert(self, ccu_address, channel, param):
+        """Was das Geraet fuer diesen Parameter zuletzt gemeldet hat."""
+        d = (getattr(self.qccu, "devices", None) or {}).get(ccu_address.upper())
+        werte = getattr(d, "values", None) or {}
+        return werte.get((int(channel), param))
+
+    def _rumpf(self, ccu_address, channel, param, value):
+        """Den Rumpf eines DIRECT_EXECUTION_COMMAND bauen.
+
+        Ein Parameter kann einen SATZ von Parametern nach sich ziehen
+        (`KOMPOSITE`), und mehrere Werte koennen sich EIN Byte teilen. Das Jar
+        legt sie in eine `TreeMap` unter `<Code, Datentyp, Occurrence>` und
+        VERODERT, was auf denselben Schluessel faellt
+        (`TransactionTaskFactory`, „oldData"-Zweig); die Reihenfolge im Rahmen
+        ist die des Schluessels, also nach Datentyp aufsteigend.
+        """
+        satz = KOMPOSITE.get((param, value))
+        if satz is None:
+            satz = ((param, value),)
+        elif self.verbose:
+            print(f"  {param}={value!r} wird als Satz geschrieben "
+                  f"({', '.join(p for p, _ in satz)}) — so haelt es die "
+                  f"Zentrale in stateRules.json")
+
+        bloecke = {}
+        klartexte = []
+        for p, v in satz:
+            if v is None:
+                v = self._heutiger_wert(ccu_address, channel, p)
+                if v is None:
+                    if self.verbose:
+                        print(f"  ! {p} ist am Geraet nicht bekannt — der Satz "
+                              f"fuer {param} bleibt ungesendet")
+                    return None
+            feld = self._stellbefehl(ccu_address, channel, p, v)
+            if feld is None:
+                return None
+            aktion, datentyp, daten, klartext = feld
+            klartexte.append(klartext)
+            schluessel = (aktion, datentyp)
+            roh = bytes.fromhex(daten)
+            schon = bloecke.get(schluessel)
+            if schon is not None:
+                breite = max(len(schon), len(roh))
+                roh = roh.rjust(breite, b"\x00")
+                schon = schon.rjust(breite, b"\x00")
+                roh = bytes(a | b for a, b in zip(roh, schon))
+            bloecke[schluessel] = roh
+
+        aktionen = {a for a, _ in bloecke}
+        if len(aktionen) != 1:
+            if self.verbose:
+                print(f"  ! {param}: der Satz mischt Aktionen {aktionen} — "
+                      f"das baut die Zentrale nicht so, nicht gesendet")
+            return None
+        aktion = aktionen.pop()
+
         kanal = int(channel)
-        if datentyp is None:
-            rumpf = f"{aktion:02X}{kanal:02X}{roh:02X}"
-        else:
-            rumpf = f"{aktion:02X}{kanal:02X}{datentyp:02X}{roh:02X}"
-        return rumpf, f"{param}={value!r} (roh 0x{roh:02X})"
+        rumpf = f"{aktion:02X}{kanal:02X}"
+        for (_, datentyp) in sorted(bloecke, key=lambda k: (k[1] is not None,
+                                                            k[1] or 0)):
+            daten = bloecke[(aktion, datentyp)].hex().upper()
+            rumpf += daten if datentyp is None else f"{datentyp:02X}{daten}"
+        return rumpf, ", ".join(klartexte)
 
     def _do_set(self, ccu_address, channel, param, value):
         """Der eigentliche Sendevorgang — laeuft im Arbeitsfaden."""
@@ -2142,7 +2302,7 @@ class Radio:
                 print(f"  ! keine Funkadresse zu {ccu_address}")
             return
 
-        gebaut = self._stellbefehl(ccu_address, channel, param, value)
+        gebaut = self._rumpf(ccu_address, channel, param, value)
         if gebaut is None:
             return
         rumpf, klartext = gebaut
