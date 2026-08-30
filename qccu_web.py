@@ -252,7 +252,11 @@ footer a{color:var(--mut)} footer a:hover{color:var(--acc)}
 
 <div class="card">
   <h2 class="mitknopf">Funk
-    <button class="quiet" onclick="oeffneFirmware()">Stick-Firmware</button>
+    <span>
+      <button class="quiet" id="knopf_luft" style="display:none"
+              onclick="location.href='api/luft.log'">Rohmitschnitt laden</button>
+      <button class="quiet" onclick="oeffneFirmware()">Stick-Firmware</button>
+    </span>
   </h2>
   <div class="body" id="radio"></div>
 </div>
@@ -889,6 +893,15 @@ async function laden(){
   // Rauschboden: die einzige Zahl, die einen einziehenden Störer meldet,
   // BEVOR schwache Batteriegeräte ausfallen. Fehlt sie, ist der Stick älter
   // als q-culfw 2.0.71 — dann steht hier nichts, statt einer Null zu lügen.
+  // Der Mitschnitt ist nur zu holen, wenn `raw_log` an ist. Als Erweiterung
+  // liegt er in /data und ist von aussen sonst NICHT erreichbar.
+  const kl=document.getElementById('knopf_luft');
+  if(kl){
+    const mb=r.mitschnitt;
+    kl.style.display = (mb===null||mb===undefined) ? 'none' : '';
+    if(mb!==null&&mb!==undefined)
+      kl.textContent='Rohmitschnitt laden ('+(mb/1048576).toFixed(1)+' MB)';
+  }
   const fg=r.funkgute;
   if(fg && (fg.pll_fail||fg.pll_lost)){
     h+='<dt>Oszillator</dt><dd class="'+(fg.pll_fail?'bad':'warn')+'">'
@@ -1077,6 +1090,35 @@ class WebHandler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "max-age=300, must-revalidate")
             self.end_headers()
             return self.wfile.write(daten)
+        if self.path.split("?")[0] == "/api/luft.log":
+            # ⚠️ Erst die umgebrochene Runde, dann die laufende — sonst steht
+            # die Datei verkehrt herum in der Zeit, und wer einen Fehler
+            # sucht, liest die Vorgeschichte hinter dem Ereignis.
+            hole = getattr(self.radio, "raw_dateien", None) if self.radio else None
+            dateien = hole() if hole else []
+            if not dateien:
+                return self._json({"error": "Kein Rohmitschnitt — die "
+                                            "Einstellung `raw_log` ist aus."}, 404)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Disposition",
+                             'attachment; filename="qccu-luft.log"')
+            self.end_headers()
+            for d in dateien:
+                try:
+                    with open(d, "rb") as f:
+                        while True:
+                            block = f.read(65536)
+                            if not block:
+                                break
+                            self.wfile.write(block)
+                except Exception:                            # noqa: BLE001
+                    # Abbruch mitten im Strom: die Laenge steht nicht im Kopf,
+                    # der Browser bekommt eben weniger. Besser als ein Fehler
+                    # nach schon gesendeten Daten.
+                    break
+            return None
+
         if self.path == "/api/state":
             return self._json(self._state())
         self._json({"error": "unbekannt"}, 404)

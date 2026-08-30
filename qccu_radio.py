@@ -957,6 +957,20 @@ class Radio:
             if self._raw_zeilen % self.RAW_PRUEF_JE == 0:
                 self._raw_umbrechen()
 
+    def raw_dateien(self):
+        """Die Mitschnitt-Dateien, aelteste zuerst — oder eine leere Liste.
+
+        Fuer den Download in der Oberflaeche: als Erweiterung liegt der
+        Mitschnitt in `/data` und ist von aussen NICHT erreichbar (das SSH-
+        Add-on sieht den Datenspeicher fremder Erweiterungen nicht, und
+        `docker exec` sperrt der Protection Mode). Ein Mitschnitt, den
+        niemand holen kann, ist ein halbes Werkzeug.
+        """
+        if not self._raw:
+            return []
+        name = self._raw.name
+        return [p for p in (name + ".1", name) if os.path.exists(p)]
+
     def _raw_umbrechen(self):
         """Ist der Mitschnitt voll, eine Runde weiterschieben.
 
@@ -2528,6 +2542,10 @@ class Radio:
                 # meldete derweil „Firmware aktuell", und der Anwender suchte
                 # den Fehler beim Geraet.
                 "netzschluessel_fehlt": bool(self.netzschluessel_fehlt),
+                # Damit die Oberflaeche den Download nur zeigt, wenn es auch
+                # etwas zu holen gibt.
+                "mitschnitt": sum(os.path.getsize(p) for p in self.raw_dateien()
+                                  if os.path.exists(p)) if self._raw else None,
                 "icmp": dict(self.icmp_seen),
                 "devices": {h: a for h, a in self.by_hmid.items()}}
 
