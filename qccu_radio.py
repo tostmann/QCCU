@@ -664,6 +664,41 @@ LINK_PAUSE = 0.3
 # gibt die Konfigurationstransaktion erst nach 600 s auf. So lange halten wir
 # das Anlernfenster nicht auf; drei Anlaeufe decken den einzelnen
 # Empfangsverlust ab, um den es hier geht.
+# Die ANSWER des Geraets deuten — `AnswerType` im HMIPServer-Jar:
+#
+#     ACK                              0    angenommen
+#     ACK_DEPRECATED_WITH_STATUS_INFO  1    angenommen, Zustand liegt bei
+#     NAK                            128    abgelehnt
+#     NAK_BUSY                       129
+#     NAK_OUT_OF_MEMORY              130
+#     NAK_PEER_UNKNOWN               132
+#     NAK_INVALID_CHANNEL            133
+#     NAK_OPERATION_NOT_ALLOWED      134
+#
+# ⚠️ NICHT das ganze Byte vergleichen. `AnswerType.getByValue` maskiert mit
+# 0x8F, und `AnswerFrame.setPayload` liest Bit 6 (0x40) als `configPending` —
+# ein Geraet mit anstehender Konfiguration quittiert also mit 0x40, und wer
+# „alles ausser 0 ist eine Ablehnung" rechnet, haelt genau dieses ACK fuer
+# einen Korb und wiederholt einen Befehl, der angekommen ist.
+ANTWORT_MASKE = 0x8F
+ANTWORT_CONFIG_PENDING = 0x40
+ANTWORT_NAMEN = {
+    0x00: "ACK", 0x01: "ACK_MIT_ZUSTAND",
+    0x80: "NAK", 0x81: "NAK_BUSY", 0x82: "NAK_OUT_OF_MEMORY",
+    0x84: "NAK_PEER_UNKNOWN", 0x85: "NAK_INVALID_CHANNEL",
+    0x86: "NAK_OPERATION_NOT_ALLOWED",
+}
+
+
+def antwort_deuten(roh):
+    """(angenommen, Klartext) zu einem ANSWER-Byte."""
+    art = (roh or 0) & ANTWORT_MASKE
+    name = ANTWORT_NAMEN.get(art, f"unbekannt 0x{art:02X}")
+    if (roh or 0) & ANTWORT_CONFIG_PENDING:
+        name += "+configPending"
+    return art in (0x00, 0x01), name
+
+
 LINK_VERSUCHE = 3
 LINK_WIEDERHOLUNG = 0.22
 # Wie lange auf die ANSWER gewartet wird. Im Mitschnitt antwortete das Geraet
@@ -2316,6 +2351,23 @@ class Radio:
 
         ev = threading.Event()
         self._acked[hmid] = ev
+        # ⚠️ Die Kurzquittung sagt „angekommen", nicht „angenommen". Das Jar
+        # trennt beides (`ApplicationTask.evaluateTaskResponse` wertet die
+        # ANSWER ueber die appSeq aus), und `920536e` hat diese Auswertung nur
+        # fuer die Verdrahtung nachgezogen. Am 30.08.2026 am HmIP-BWTH-A
+        # gemessen: BOOST_MODE ging hinaus, das Geraet antwortete
+        # `PM03020980C685` — appSeq 09, AnswerType 0x80 = NAK —, und QCCU
+        # meldete `urteile=['ok']`. Der Wert stand derweil in der Oberflaeche.
+        #
+        # ⚠️ Ein ausbleibender ANSWER ist KEINE Ablehnung. Auf
+        # SET_POINT_TEMPERATURE antwortet dasselbe Geraet mit einem
+        # STATUS-Rahmen (FrameType 5) statt mit einer ANSWER — gemessen im
+        # selben Mitschnitt. Darum wird nur gedeutet, was tatsaechlich kommt.
+        antwort = {"ev": threading.Event(), "ergebnis": None}
+        with self.lock:
+            self._app_ack[(hmid, seq)] = antwort
+        angenommen = None
+        klartext = "keine ANSWER"
         acked = False
         after = None
         verdicts = []
@@ -2339,13 +2391,28 @@ class Radio:
                         print(f"     quittiert nach Versuch {attempt}")
                     break
             after = self._read_counters() if before else None
+
+            # ⚠️ Noch INNERHALB des try: eine Ausnahme weiter oben darf den
+            # Eintrag nicht stehenlassen. `_cmd_worker` faengt sie und meldet
+            # nur „Sendepfad scheiterte" — der Eintrag bliebe sonst liegen.
+            if antwort["ev"].wait(LINK_ANTWORT_ZEIT if acked else 0):
+                angenommen, klartext = antwort_deuten(antwort["ergebnis"])
         finally:
             self._acked.pop(hmid, None)
+            with self.lock:
+                self._app_ack.pop((hmid, seq), None)
             self._gate.set()
 
         if not acked and self.verbose:
             print(f"     keine Quittung nach {self.tx_tries} Versuchen")
-        self._log("##", f"ERGEBNIS quittiert={acked} urteile={verdicts}")
+        if angenommen is False:
+            self._log("##", f"BEFEHL {ccu_address}:{channel} {param} vom "
+                            f"Geraet ABGELEHNT ({klartext})")
+            if self.verbose:
+                print(f"  ! {ccu_address}:{channel} {param} abgelehnt "
+                      f"({klartext}) — der Wert gilt am Geraet NICHT")
+        self._log("##", f"ERGEBNIS quittiert={acked} urteile={verdicts} "
+                        f"antwort={klartext}")
 
         if before and after:
             d = {k: after[k] - before[k] for k in CNT_KEYS}
@@ -2858,9 +2925,10 @@ class Radio:
                 eintrag["ev"].clear()
                 self._submit(cmd, "cmd")
                 if eintrag["ev"].wait(LINK_ANTWORT_ZEIT):
-                    if eintrag["ergebnis"]:
+                    gut, klartext = antwort_deuten(eintrag["ergebnis"])
+                    if not gut:
                         self._log("##", f"VERDRAHTUNG appSeq=0x{appseq:02X} "
-                                        f"abgelehnt (0x{eintrag['ergebnis']:02X})")
+                                        f"abgelehnt ({klartext})")
                         return False
                     if versuch > 1:
                         self._log("##", f"VERDRAHTUNG appSeq=0x{appseq:02X} "
