@@ -642,10 +642,16 @@ class QCCU:
                  "beschreibung": str(beschreibung or ""), "intern": bool(intern)}
             if werte:
                 e["werte"] = [str(w) for w in werte]
-            if mn is not None:
-                e["min"] = mn
-            if mx is not None:
-                e["max"] = mx
+            # ⚠️ Grenzen NUR bei Zahlen. Die Gegenstelle parst `minValue` und
+            # `maxValue` mit demselben Datentyp wie den Wert — an einer
+            # LOGIC-Variablen mit Grenzen wirft ihr `to_bool` einen TypeError,
+            # und dann verschwindet der Eintrag STILL aus der Liste (ihr
+            # `except` verwirft ihn), ohne dass die QCCU etwas merkt.
+            if typ in ("FLOAT", "INTEGER"):
+                if mn is not None:
+                    e["min"] = mn
+                if mx is not None:
+                    e["max"] = mx
             e["wert"] = self._sysvar_pruefen(typ, wert, e)
             self.sysvars[name] = e
         self.save_store()
@@ -799,12 +805,26 @@ class QCCU:
             except Exception as ex:
                 print(f"  ! Geraet {addr} nicht ladbar: {ex}")
         self.einstellungen.update(data.get("einstellungen") or {})
-        for n, e in (data.get("sysvars") or {}).items():
-            if isinstance(e, dict) and e.get("typ") in self.SYSVAR_TYPEN:
-                self.sysvars[str(n)] = dict(e)
+        # ⚠️ EIGENE Schleifennamen. `n` ist weiter oben der Geraetezaehler und
+        # `e` der Geraeteeintrag — wer sie hier wiederverwendet, laesst
+        # `load_store` den Namen einer Systemvariablen als Geraetezahl
+        # zurueckgeben und protokolliert Unsinn.
+        for sn, se in (data.get("sysvars") or {}).items():
+            if not isinstance(se, dict) or se.get("typ") not in self.SYSVAR_TYPEN:
+                continue
+            if not str(se.get("id") or "").strip():
+                continue
+            # ⚠️ Beim Laden in Form bringen. Ein von Hand verbogener Speicher
+            # brachte sonst einen Wert mit, an dem `SysVar.getAll` spaeter
+            # scheitert — und dann faellt nicht der eine Eintrag aus, sondern
+            # die ganze Auskunft.
+            se = dict(se)
+            se["id"] = str(se["id"])
+            se["wert"] = self._sysvar_pruefen(se["typ"], se.get("wert"), se)
+            self.sysvars[str(sn)] = se
         self._sysvar_id = max(int(data.get("sysvar_id") or 100),
-                              *(int(e["id"]) + 1 for e in self.sysvars.values()
-                                if str(e.get("id", "")).isdigit()),
+                              *(int(v["id"]) + 1 for v in self.sysvars.values()
+                                if str(v.get("id", "")).isdigit()),
                               100)
         subs = data.get("subscribers") or {}
         if subs:
@@ -851,9 +871,14 @@ class QCCU:
             data["subscribers"] = dict(self.subscribers)
         if self.einstellungen:
             data["einstellungen"] = dict(self.einstellungen)
-            if self.sysvars:
-                data["sysvars"] = {n: dict(e) for n, e in self.sysvars.items()}
-                data["sysvar_id"] = self._sysvar_id
+        # ⚠️ EIGENE Ebene. Eingerueckt unter `einstellungen` wurden die
+        # Systemvariablen nur gesichert, wenn zufaellig auch Einstellungen
+        # dastanden — im Betrieb durch die `wunsch_*`-Vorgaben verdeckt, im
+        # Pruefstand und in jeder eingebetteten Nutzung ein stiller Verlust
+        # beim Neustart.
+        if self.sysvars:
+            data["sysvars"] = {n: dict(e) for n, e in self.sysvars.items()}
+            data["sysvar_id"] = self._sysvar_id
         with self._store_lock:
             try:
                 tmp = self.store + ".tmp"

@@ -24,9 +24,11 @@ QCCU ist ein Nachbau der CCU-*Schnittstellen*, kein Nachbau der CCU:
 * **Ja:** Homematic-IP-Geräte anlernen, lesen, schalten; Zustandsänderungen
   per Rückruf; die Gerätebeschreibungen einer CCU (Datentypen, Grenzen,
   Wertelisten, Einheiten); die **Uhrzeit**, nach der ein frisch angelerntes
-  Gerät fragt; mehrere Clients gleichzeitig; BidCoS über den CUL-Zugang.
-* **Nein:** keine CCU-Weboberfläche, keine Programme, Systemvariablen, Räume
-  oder Direktverknüpfungen; keine Gerätekonfiguration (MASTER-Parameter) und
+  Gerät fragt; mehrere Clients gleichzeitig; BidCoS über den CUL-Zugang;
+  **Systemvariablen** (Schalter, Zahl, Auswahl, Text — in Home Assistant als
+  bedienbare Entitäten).
+* **Nein:** keine CCU-Weboberfläche, keine Programme, Räume oder
+  Direktverknüpfungen; keine Gerätekonfiguration (MASTER-Parameter) und
   Wochenprofile; keine Firmware-Aktualisierung der Geräte; keine Übernahme
   einer laufenden Zentrale ohne Neu-Anlernen.
 * **Der eine harte Unterschied:** eine Zentrale von eQ-3 beschafft sich den

@@ -112,9 +112,9 @@ _gemeldete_luecken = set()
 # Wer hier eine Methode weglaesst, die er in Wahrheit beantworten koennte,
 # sperrt sich selbst aus.
 #
-# Deshalb steht hier auch, was wir nur LEER beantworten (Programme,
-# Systemvariablen, Raeume). Das ist keine Beschoenigung: die QCCU hat keine
-# Programme, und eine leere Liste ist die zutreffende Auskunft darauf.
+# Deshalb steht hier auch, was wir nur LEER beantworten (Programme, Raeume,
+# Gewerke). Das ist keine Beschoenigung: die QCCU hat keine Programme, und
+# eine leere Liste ist die zutreffende Auskunft darauf.
 SUPPORTED_METHODS = (
     # Anmeldung und Selbstauskunft
     "Session.login",
@@ -144,8 +144,8 @@ SUPPORTED_METHODS = (
     "Interface.getInstallMode",
     "Interface.setInstallModeHMIP",
     # Auskuenfte, die bei uns leer ausfallen. Eine leere Liste ist die
-    # zutreffende Antwort: die QCCU fuehrt weder Programme noch
-    # Systemvariablen, Raeume oder Gewerke.
+    # zutreffende Antwort: die QCCU fuehrt weder Programme noch Raeume oder
+    # Gewerke. (Systemvariablen fuehrt sie — siehe weiter unten.)
     "Interface.getSuppressedServiceMessages",
     "Channel.hasProgramIds",
     "Program.getAll",
@@ -178,7 +178,7 @@ SUPPORTED_METHODS = (
 #                                            Direktverknuepfungen
 #   Interface.suppressServiceMessages        keine Unterdrueckungsliste
 #
-# Die Systemvariablen standen bis 2026.8.40 ebenfalls hier. Sie stehen jetzt
+# Die Systemvariablen standen bis 2026.8.39 ebenfalls hier. Sie stehen jetzt
 # oben, weil die QCCU sie wirklich fuehrt.
 #
 # Wird eine davon doch einmal im Aufbau gebraucht, faellt es sofort auf:
@@ -472,8 +472,8 @@ class JsonRpc:
         if name == "accept_device_in_inbox.fn":
             return self._aufnehmen(s)
         # Diese Skripte schreiben eine Liste — eine leere ist die zutreffende
-        # Auskunft: die QCCU fuehrt keine Programme, Systemvariablen und
-        # keine Service-/Alarmmeldungen.
+        # Auskunft: die QCCU fuehrt keine Programme und keine Service- oder
+        # Alarmmeldungen.
         if name == "get_system_variable_descriptions.fn":
             return self._sysvar_beschreibungen()
         if name == "set_system_variable.fn":
@@ -558,11 +558,10 @@ class JsonRpc:
         die JSON-RPC-Methoden baut, kann Zahlen und Schalter setzen, Text
         aber nicht.
         """
-        n = re.search(r'sv_name\s*=\s*"([^"]*)"', skript)
-        w = re.search(r'sv_value\s*=\s*"([^"]*)"', skript)
-        if not n:
+        n = _rega_string(skript, "sv_name")
+        if n is None:
             return ""
-        self.q.sysvar_setzen(n.group(1), w.group(1) if w else "")
+        self.q.sysvar_setzen(n, _rega_string(skript, "sv_value") or "")
         return ""
 
     def _sysvar(self, method, p):
@@ -611,6 +610,11 @@ class JsonRpc:
                 # ⚠️ `valueList` kommt als EINE Zeichenkette mit Semikolon —
                 # die Gegenstelle setzt sie vor dem Senden zusammen.
                 werte = [w for w in str(p.get("valueList") or "").split(";") if w]
+                if not werte:
+                    # Eine Auswahl ohne Auswahlmoeglichkeiten waere in der
+                    # Haussteuerung ein Bedienelement, das nichts kann.
+                    return None, {"name": "InvalidParams", "code": -32602,
+                                  "message": "valueList ist leer"}
                 e = self.q.sysvar_anlegen(name, "LIST", wert=0, werte=werte,
                                           intern=intern)
             else:
@@ -1095,6 +1099,23 @@ class JsonRpc:
         return None, {"name": "MethodNotFound", "code": -32601, "message": method}
 
 
+def _rega_string(skript, name):
+    """Eine Zeichenkette aus einem ReGa-Skript herausholen — oder None.
+
+    ⚠️ Der Wert ist ESCAPED. Die Gegenstelle schuetzt ihn mit
+    `_escape_rega_string`, bevor sie ihn einsetzt: jeder Backslash wird
+    verdoppelt und jedes Anfuehrungszeichen bekommt einen Backslash davor,
+    damit der Wert die Zeichenkette im Skript nicht sprengt. Wer naiv bis zum
+    naechsten Anfuehrungszeichen liest, bricht bei `er sagte "hallo"` mitten
+    im Wort ab und verdoppelt jeden Backslash in einem Pfad.
+    """
+    m = re.search(r'\b' + re.escape(name) + r'\s*=\s*"((?:[^"\\]|\\.)*)"',
+                  skript or "")
+    if not m:
+        return None
+    return m.group(1).replace('\\"', '"').replace("\\\\", "\\")
+
+
 def _zahl(v):
     """Eine Zahl aus dem, was hereinkam — oder None."""
     try:
@@ -1207,7 +1228,7 @@ class JsonRpcHandler(BaseHTTPRequestHandler):
     LEISE = frozenset((
         "Session.login", "Session.renew", "Session.logout",
         "ReGa.runScript", "Program.getAll", "SysVar.getAll",
-        "Room.getAll", "Subsection.getAll", "SysVar.getValue",
+        "Room.getAll", "Subsection.getAll", "SysVar.getValueByName",
         "CCU.getAuthEnabled", "CCU.getHttpsRedirectEnabled",
     ))
 
