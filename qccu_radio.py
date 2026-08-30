@@ -545,6 +545,15 @@ STELLBEFEHLE = {
 #
 # `None` heisst „den heutigen Wert des Geraets nehmen" — genau das meint
 # `{"type": "STATE_PARAMETER_VALUE"}` in der Regel.
+# ⚠️ Was hier steht, darf NUR im Satz hinaus. Faellt ein Wert durch die
+# Satz-Tabelle, ist das KEIN Grund, ihn als Einzelfeld zu schicken — beim
+# Modus waere das genau der Rahmen, der am Geraet den Sollwert zerreisst
+# (`80 01 02 80` fuer AWAY). `aiohomematic` schickt fuer den
+# Abwesenheitsmodus SET_POINT_MODE=2 zusammen mit PARTY_TIME_START/END
+# (`model/custom/climate.py`, `enable_away_mode_by_calendar`); solange fuer
+# diesen Fall kein Satz belegt ist, geht gar nichts hinaus.
+NUR_IM_SATZ = frozenset({"SET_POINT_MODE"})
+
 KOMPOSITE = {
     ("SET_POINT_MODE", 1): (("CONTROL_MODE", 1),
                             ("CONTROL_DIFFERENTIAL_TEMPERATURE", 0.0),
@@ -2276,6 +2285,12 @@ class Radio:
         ist die des Schluessels, also nach Datentyp aufsteigend.
         """
         satz = KOMPOSITE.get((param, value))
+        if satz is None and param in NUR_IM_SATZ:
+            if self.verbose:
+                print(f"  ! {param}={value!r} kennt keinen belegten Satz — "
+                      f"einzeln geschickt wuerde dieser Parameter am Geraet "
+                      f"Schaden anrichten, also geht nichts hinaus")
+            return None
         if satz is None:
             satz = ((param, value),)
         elif self.verbose:
