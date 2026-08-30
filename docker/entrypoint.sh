@@ -241,6 +241,13 @@ PY
 need_tables() {
     [ -f "$TABLES/paramsets.json" ] && [ -f "$TABLES/catalog.json" ] \
         && [ -f "$TABLES/extra_params.json" ] || return 1
+    # ⚠️ Hier reicht die EXISTENZ der Datei nicht. Ein Katalog bis 2026.8.34
+    # fuehrt die interne Verdrahtung der Geraete nicht (`links`), und ohne die
+    # richtet QCCU nach dem Anlernen keine Verknuepfungen ein — ein Geraet
+    # meldet sich dann kurz darauf wieder ab (am HmIP-BWTH-A gemessen). Der
+    # Unterschied ist von aussen nicht zu sehen, deshalb wird in die Datei
+    # geschaut statt auf ihren Namen.
+    grep -q '"links"' "$TABLES/catalog.json" 2>/dev/null || return 1
     if [ "${BIDCOS_PORT:-0}" != "0" ]; then
         [ -f "$TABLES/bidcos_types.json" ] \
             && [ -f "$TABLES/bidcos_layouts.json" ] \
@@ -261,7 +268,8 @@ serve() {
     if ! need_tables; then
         if [ -f "$TABLES/paramsets.json" ]; then
             log "die Gerätetabellen stammen aus einer älteren Fassung und werden"
-            log "neu angelegt (Kanalfassungen je Gerätetyp, Fassung 2026.8.13)."
+            log "neu angelegt (Kanalfassungen je Gerätetyp seit 2026.8.13,"
+            log "interne Verdrahtung der Geräte seit 2026.8.35)."
         else
             log "erster Start — die Gerätetabellen werden angelegt."
         fi

@@ -51,6 +51,13 @@ class Tables:
         # Tabellen fuehren `KANALTYP/vN`. Beide werden gelesen; welche
         # vorliegt, entscheidet der Schluessel.
         self.alt = not any("/v" in k for k in self.paramsets)
+        # Fuehrt der Katalog die interne Verdrahtung der Geraete? Bis 2026.8.34
+        # tat er das nicht. Der Unterschied ist von aussen nicht zu sehen —
+        # „dieser Typ hat keine Links" und „diese Tabelle kennt keine Links"
+        # sehen gleich aus —, und der Anlernpfad haengt daran. Deshalb einmal
+        # global feststellen statt je Geraet raten.
+        self.links_bekannt = any("links" in e for e in self.catalog.values()
+                                 if isinstance(e, dict))
         self._sdt_namen = None
 
     def _load(self, base, name, pflicht=True):
@@ -81,6 +88,22 @@ class Tables:
     def label_of(self, devtype):
         e = self.catalog.get(str(devtype))
         return e["label"] if e else f"Typ {devtype}"
+
+    def links_of(self, devtype):
+        """Die interne Verdrahtung eines Geraetetyps: [[Quellkanal, Zielkanal]].
+
+        Ground Truth aus der Geraetebeschreibung des Herstellers
+        (`<internalLinks><internalLink sourceIndex= targetIndex=>`), beim
+        Tabellenbau uebernommen. 80 der 304 Geraetetypen fuehren solche Links,
+        bis zu acht Stueck; wo keine stehen, richtet auch eine Zentrale von
+        eQ-3 keine ein.
+
+        ⚠️ Alte Tabellen (bis 2026.8.34) kennen das Feld nicht und liefern eine
+        leere Liste. Der Anlernpfad muss das aushalten — er darf daraus NICHT
+        schliessen, das Geraet habe keine Verdrahtung.
+        """
+        e = self.catalog.get(str(devtype)) or {}
+        return [tuple(p) for p in e.get("links", ()) if len(p) == 2]
 
     def params_of(self, channel_type, pset="VALUES", version=None):
         """Parameter eines Kanaltyps — mit Fassung, wenn die Tabelle sie fuehrt.

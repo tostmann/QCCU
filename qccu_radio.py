@@ -99,6 +99,58 @@ SDT_DEUTUNG = {
 APP_RESP_REQ = 0x80
 RXF_FOR_US = 0x01
 
+# Das erste Nutzlastbyte eines STATUS-Frames traegt neben dem Inhaltsformat
+# vier Zustandsbits. Belegt aus `StatusFrame.setPayload()` (HMIPServer-Jar):
+#
+#     lowBat          = (payload[0] & 0x80) != 0
+#     configPending   = (payload[0] & 0x40) != 0
+#     piggybackAppACK = (payload[0] & 0x20) != 0
+#     dutyCycle       = (payload[0] & 0x10) != 0
+#     booted          = (payload[0] & 0x04) != 0
+#     contentFormat   = payload[0] & 0x03
+#
+# ⚠️ `configPending` ist die Auskunft des GERAETS, dass seine Konfiguration
+# unvollstaendig ist — es wartet auf die Zentrale. Es einfach mit ACK zu
+# quittieren, wie QCCU es tut, laesst das Geraet in diesem Zustand stehen.
+# Gemeldet wird es hier, damit der Zustand ueberhaupt sichtbar ist; einen
+# Schreibweg fuer die Konfiguration gibt es weiterhin nicht.
+# Nach dem Anlernen richtet die Zentrale die INTERNE VERDRAHTUNG des Geraets
+# ein: je Paar ein CONFIGURATION-Frame (`ApplicationFrameType.CONFIGURATION(1)`)
+# mit `ConfigurationRequestType.CREATE_LINK(1)`, in beide Richtungen. Die
+# Nutzlast beginnt laut `ConfigurationFrame.parsePayload()` mit Kanalnummer und
+# Anfragetyp, danach folgen Partneradresse und Partnerkanal.
+#
+# ⚠️ WELCHE Kanaele verknuepft werden, wird NICHT geraten: es steht in der
+# Geraetebeschreibung des Herstellers und liegt seit 2026.8.35 im Katalog
+# (`Tables.links_of`, Feld `links`, aus `<internalLink sourceIndex targetIndex>`).
+# 80 der 304 Geraetetypen fuehren solche Links, bis zu acht Stueck.
+#
+# Gegenprobe: die Beschreibung der HmIP-PS-2 sagt 1 -> 3 — genau die beiden
+# Kanaele, die im Referenzmitschnitt verknuepft wurden (Geraetetaste ch1 auf
+# das eigene Relais ch3). Die HmIP-BWTH-A sagt 8 -> 10, also Heizbedarf auf das
+# eigene Relais; die fest verdrahteten PS-2-Zahlen trafen dort ch1 und ch3 und
+# damit die falschen Kanaele.
+#
+# ⚠️ OHNE DIESE FRAMES BRICHT DAS GERAET DEN ANLERNVORGANG AB. An der BWTH-A
+# gemessen (30.08.2026, `luft_bwth.log`): Join sauber, zwei Statusmeldungen —
+# dann Stille, nach 39,7 s ein SERVICE-Rundruf an `f00001` und nach 47,1 s
+# wieder Anlernrufe alle 10 s aus einer NEUEN Funkadresse, gleiche SGTIN.
+# Sobald die Frames gesendet wurden, blieb dasselbe Geraet — in einem Lauf
+# sogar OHNE dass es sie quittierte (`luft_exp3.log`). Belegt ist also, dass
+# sie RAUSGEHEN muessen; dass das Geraet sie annimmt, ist dafuer nicht noetig.
+#
+# Die appSeq beginnt bei 5 und geht in Zweierschritten — so stand es im
+# Mitschnitt der PS-2 (0x05 und 0x07).
+LINK_APPSEQ_START = 0x05
+LINK_APPSEQ_SCHRITT = 2
+LINK_ERSTE_PAUSE = 2.35    # zu frueh gesendet nimmt das Geraet sie nicht an
+LINK_PAUSE = 0.3
+
+SF_LOWBAT = 0x80
+SF_CONFIG_PENDING = 0x40
+SF_DUTYCYCLE = 0x10
+SF_BOOTED = 0x04
+
 CT_NETWORK_MGMT = 1
 CT_ICMP = 2
 CT_MAC_CONTROL = 4
@@ -1702,16 +1754,17 @@ class Radio:
         # (fester Takt, in allen Referenzzyklen gleich). Nicht 2,5 s — in der
         # Luecke suchte das Geraet bereits einen Router.
         time.sleep(0.15)
-        self._submit("mT31f00002" + "01" + newa.hex() + "0000004017", "cmd")
+        self._log("##", f"ANLERNEN Betriebsmodus des Geraets 0x{opmode:02x}")
+        if self.verbose and opmode != 0x40:
+            print(f"  Anlernen: Betriebsmodus 0x{opmode:02x} "
+                  f"(Router={'ja' if opmode & 0x40 else 'nein'}, "
+                  f"ListenerMode={opmode & 0x0F})")
+        self._submit("mT31f00002" + "01" + newa.hex() + "000000"
+                     + f"{opmode:02x}" + "17", "cmd")
 
-        # Die beiden Verknuepfungen wie bisher spaeter — zu frueh gesendet
-        # nimmt das Geraet sie nicht an (am echten Geraet gemessen).
-        time.sleep(2.35)
-        self._submit("ms" + newa.hex().upper() + "C1050101"
-                     + newa.hex().upper() + "030000", "cmd")
-        time.sleep(0.3)
-        self._submit("ms" + newa.hex().upper() + "C1070301"
-                     + newa.hex().upper() + "010000", "cmd")
+        # Die Verknuepfungen erst spaeter — zu frueh gesendet nimmt das Geraet
+        # sie nicht an (am echten Geraet gemessen).
+        self._verdrahten(newa, devtype)
 
         self.spuren_raeumen(src.hex(), ccu_addr)
 
@@ -1792,6 +1845,63 @@ class Radio:
     # Funkadresse mit unserem Netzschluessel. Sie war also NICHT im
     # Werkszustand und liess sich folglich auch nicht neu anlernen: ein
     # angelerntes Geraet sendet keinen Anlernruf. In der Oberflaeche war davon
+    def _verdrahten(self, newa, devtype):
+        """Die interne Verdrahtung des Geraets einrichten — beide Richtungen.
+
+        Quelle ist die Geraetebeschreibung des Herstellers, nicht eine Liste
+        im Code. Ein Typ ohne Eintrag bekommt nichts; das ist eine Aussage der
+        Beschreibung und keine Luecke.
+        """
+        links = []
+        try:
+            links = self.t.links_of(devtype)
+        except Exception as ex:                          # noqa: BLE001
+            self._log("##", f"ANLERNEN Verdrahtung nicht lesbar: {ex}")
+
+        if not links:
+            # ⚠️ Die beiden Faelle auseinanderhalten. Eine alte Tabelle kennt
+            # das Feld gar nicht — dann ist „keine Links" keine Auskunft,
+            # sondern Unwissen, und das Geraet meldet sich hinterher wieder
+            # ab. Das gehoert gesagt, nicht stillschweigend hingenommen.
+            if not getattr(self.t, "links_bekannt", False):
+                self._log("##", "ANLERNEN VERDRAHTUNG UNBEKANNT — alte Tabellen")
+                print("  ! Die Gerätetabellen führen die interne Verdrahtung "
+                      "nicht (Fassung bis 2026.8.34). Das Gerät wird angelernt, "
+                      "kann sich aber danach wieder abmelden. Abhilfe: Tabellen "
+                      "neu anlegen (Behälter neu starten oder `setup`).")
+                merke = getattr(self.qccu, "merke_ereignis", None)
+                if merke:
+                    merke("warn", "Die Gerätetabellen kennen die interne "
+                                  "Verdrahtung nicht — bitte neu anlegen, sonst "
+                                  "meldet sich ein neues Gerät wieder ab.")
+            else:
+                self._log("##", f"ANLERNEN Typ {devtype} ohne interne Verdrahtung")
+            return
+
+        appseq = LINK_APPSEQ_START
+        erste = True
+        for quelle, ziel in links:
+            for a, b in ((quelle, ziel), (ziel, quelle)):
+                time.sleep(LINK_ERSTE_PAUSE if erste else LINK_PAUSE)
+                erste = False
+                self._submit(f"ms{newa.hex().upper()}C1{appseq:02X}"
+                             f"{a:02X}01{newa.hex().upper()}"
+                             f"{b:02X}0000", "cmd")
+                appseq = (appseq + LINK_APPSEQ_SCHRITT) & 0xFF
+        # ⚠️ Den eigenen Zaehler nachziehen. Die Verknuepfungen laufen an
+        # `_next_seq` vorbei (5, 7, 9 …), und `_handle` uebernimmt die appSeq
+        # AUCH aus den Quittungen des Geraets — das ist das Echo unserer
+        # eigenen Nummer. Ohne das hier koennte der naechste Befehl dieselbe
+        # Nummer noch einmal vergeben.
+        with self.lock:
+            self.appseq[newa.hex()] = (appseq - LINK_APPSEQ_SCHRITT) & 0xFF
+        self._save_state()
+        self._log("##", "ANLERNEN verdrahtet: "
+                        + ", ".join(f"{q}<->{z}" for q, z in links))
+        if self.verbose:
+            print("  Anlernen: interne Verdrahtung "
+                  + ", ".join(f"Kanal {q} <-> {z}" for q, z in links))
+
     # nichts zu sehen — die Frames wurden still verworfen, und der Anwender
     # drueckte vergeblich die Taste. Die Auskunft war da, wir haben sie
     # weggeworfen.

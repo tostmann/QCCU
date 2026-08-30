@@ -76,6 +76,28 @@ def build(jar_path):
             stats["skipped"] += 1
             continue
 
+        # ⚠️ Die INTERNE VERDRAHTUNG des Geraets — die Ground Truth, nach der
+        # eine Zentrale nach dem Anlernen die Verknuepfungen einrichtet. Sie
+        # steht in der Beschreibung und muss NICHT geraten werden:
+        #
+        #     <internalLinks><internalLink sourceIndex="8" targetIndex="10"/>
+        #
+        # Gegenprobe an der HmIP-PS-2: dort steht 1 -> 3, und genau diese
+        # beiden Kanaele hat die echte Zentrale im Referenzmitschnitt
+        # verknuepft (Geraetetaste ch1 auf das eigene Relais ch3).
+        #
+        # 102 der 350 Beschreibungen fuehren solche Links, bis zu acht Stueck.
+        # Wo keine stehen, richtet die Zentrale auch keine ein.
+        links = []
+        for il in wurzel.iter("internalLink"):
+            quelle, ziel = il.get("sourceIndex"), il.get("targetIndex")
+            if (quelle is None or ziel is None
+                    or not quelle.isdigit() or not ziel.isdigit()):
+                continue
+            paar = [int(quelle), int(ziel)]
+            if paar not in links:
+                links.append(paar)
+
         for m in re.finditer(r'<devType\s+label="([^"]+)"\s+id="(\d+)"([^/>]*)', d):
             label, devid, rest = m.group(1), int(m.group(2)), m.group(3)
             fw = re.search(r'minVersion="(\d+)"[^>]*maxVersion="(\d+)"', rest)
@@ -118,7 +140,9 @@ def main():
 
     print(f"  {g.out}: {len(cat)} Geraetetypen "
           f"(aus {st['files']} Beschreibungen, {st['skipped']} ohne Kanaele)")
-    for devid in ("263", "490", "406"):
+    mit_links = sum(1 for e in cat.values() if e.get("links"))
+    print(f"    davon {mit_links} mit interner Verdrahtung (internalLinks)")
+    for devid in ("263", "490", "406", "516"):
         e = cat.get(devid)
         if e:
             ch = ", ".join(f"{k}:{v}" for k, v in list(e["channels"].items())[:4])
