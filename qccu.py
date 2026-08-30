@@ -1871,6 +1871,10 @@ def main():
                 bt, radio=radio, state_file=zustand, verbose=lc.verbose,
                 version=NAME_UND_FASSUNG, fremde_zentralen=fremd,
                 senden_erlaubt=bool(g.bidcos_senden))
+            # Anlernvorgaenge beider Familien landen in DERSELBEN Liste
+            # „Zuletzt geschehen" — der Anwender soll nicht zwei Stellen
+            # ansehen muessen, um zu erfahren, was gerade passiert ist.
+            bidcos.ereignis = lc.merke_ereignis
             brpc = SimpleXMLRPCServer((dienst_bind, g.bidcos_port),
                                       requestHandler=RpcHandler,
                                       allow_none=True, logRequests=False)
@@ -1966,6 +1970,37 @@ def main():
     # ueber XML-RPC (FHEM/HMCCU). Frueher hing er am Web-Zweig — wer die
     # Oberflaeche abschaltete, hatte auch keine Wiederanbindung.
     threading.Thread(target=stick_waechter, daemon=True).start()
+    def bestand_nachmelden():
+        """Uebernommenen Rueckrufen den Bestand von sich aus schicken.
+
+        ⚠️ Die Abonnentenliste ueberlebt den Neustart. Danach HAELT QCCU die
+        Gegenstelle fuer angemeldet, die Gegenstelle haelt ihre Verbindung
+        fuer bestehend — und niemand schickt ein neues `init`. Was in der
+        Zwischenzeit angelernt wurde, erfaehrt sie dann nie. Deshalb hier
+        einmal von sich aus melden, ohne auf ein `init` zu warten.
+
+        Das ist kein Ersatz fuer `init`: es geht an genau die Rueckrufe, die
+        aus dem Speicher kamen. Meldet sich die Gegenstelle regulaer neu, ist
+        der Weg der alte.
+        """
+        for zentrale, name in ((lc, "HmIP"), (bidcos, "BidCoS")):
+            if zentrale is None:
+                continue
+            try:
+                with zentrale.lock:
+                    bestand = [b for d in zentrale.devices.values()
+                               for b in d.descriptions()]
+                    abos = list(zentrale.subscribers)
+                if not (bestand and abos):
+                    continue
+                for ident in abos:
+                    zentrale._enqueue(("bestand", ident, bestand))
+                print(f"  {name}: Bestand ({len(bestand)}) an uebernommene "
+                      f"Rueckrufe nachgemeldet: {', '.join(abos)}")
+            except Exception as ex:                      # noqa: BLE001
+                print(f"  ! {name}: Bestand nicht nachgemeldet: {ex}")
+
+    bestand_nachmelden()
     threading.Thread(target=stille_waechter, daemon=True).start()
     print("  bereit — mit Strg-C beenden")
 

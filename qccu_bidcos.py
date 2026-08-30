@@ -168,6 +168,35 @@ class BidcosTables:
         return dict(self.psets.get(schluessel) or {})
 
 
+def _aus_sysinfo(spec, byte):
+    """`"23.0:1.0"` -> Wert aus dem Sysinfo-Byte.
+
+    Links vom Doppelpunkt steht die Lage (Byte.Bit), rechts die Groesse
+    (Byte.Bit). Fehlt die Groesse, gilt ein ganzes Byte.
+    """
+    lage, _, groesse = str(spec).partition(":")
+    try:
+        idx, _, bit = lage.partition(".")
+        # ⚠️ Wir tragen aus dem Anlernruf NUR das Byte an Index 23 mit. Ein
+        # Aufbau, der woanders hinzeigt, wuerde sonst stillschweigend das
+        # falsche Byte lesen. In allen 230 Dateien steht heute 23 — aber
+        # „heute" ist kein Grund, es nicht zu pruefen.
+        if int(idx) != 23:
+            return 0
+        bit = int(bit or 0)
+        if not groesse:
+            bytes_, bits = 1, 0
+        else:
+            b, _, r = groesse.partition(".")
+            bytes_, bits = int(b or 0), int(r or 0)
+    except ValueError:
+        return 0
+    breite = bytes_ * 8 + bits
+    if breite <= 0 or breite > 8:
+        return 0
+    return (int(byte) >> bit) & ((1 << breite) - 1)
+
+
 class BidcosDevice:
     """Ein erkanntes BidCoS-Geraet, wie die Gegenstelle es sieht.
 
@@ -222,6 +251,43 @@ class BidcosDevice:
     @property
     def firmware(self):
         return firmware_text(self.firmware_byte) if self.firmware_byte is not None else "0.0"
+
+    def kanalzahlen_aus_sysinfo(self, sysinfo):
+        """Kanalzahlen aus dem Sysinfo-Byte des Anlernrufs setzen.
+
+        Beleg aus den rftypes selbst (`firmware/rftypes`, debmatic): der
+        Aufbau traegt am Kanal ein Attribut
+
+            <channel index="1" type="SWITCH" count_from_sysinfo="23.0:1.0">
+
+        Die Notation ist im selben Verzeichnis durchgaengig `Byte.Bit`:
+        `size="0.1"` ist EIN Bit, `size="1.0"` ein Byte, `size="2.0"` zwei
+        Byte (so steht die Modell-Kennung an Index 10). `23.0:1.0` heisst
+        also: ein ganzes Byte an Index 23 — und dieses Byte IST die Zahl der
+        Kanaele.
+
+        Ueber alle 230 Dateien kommen vor: `23.0:1.0` (49x, ganzes Byte),
+        `23.0:0.3` (30x, drei Bit), `0.4`, `0.5`, `0.2` und zweimal `23.0`
+        ohne Groesse. Die Bit-Varianten stehen genau dort, wo Bit 23.5 oder
+        23.7 zur Geraeteerkennung dient — die oberen Bits sind dann belegt
+        und gehoeren nicht zum Zaehler.
+
+        ⚠️ Eine 0 wird NICHT uebernommen: kein Geraet hat null Kanaele, und
+        ein Byte, das wir falsch lesen, soll das Geraet nicht unsichtbar
+        machen. Dann bleibt es bei der bisherigen Annahme.
+        """
+        if sysinfo is None:
+            return {}
+        gesetzt = {}
+        for nr, ch in (self.tables.aufbau(self.layout).get("channels") or {}).items():
+            spec = ch.get("count_from_sysinfo")
+            if not spec:
+                continue
+            anzahl = _aus_sysinfo(spec, sysinfo)
+            if anzahl:
+                gesetzt[str(nr)] = anzahl
+        self.kanalzahlen.update(gesetzt)
+        return gesetzt
 
     def dynamisch(self):
         """Kanaele, deren Anzahl das Geraet nennen muss und die noch fehlt."""

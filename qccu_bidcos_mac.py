@@ -217,6 +217,11 @@ def devinfo_aus(frame):
         "modell": (p[1] << 8) | p[2],
         "serial": p[3:13].decode("ascii", "replace").rstrip("\x00"),
         "adresse": frame.src,
+        # Index 23 des Anlernrufs. Aus diesem Byte holen die rftypes die
+        # Kanalzahl (`count_from_sysinfo`) — mal ganz, mal nur die unteren
+        # Bits. Roh mitnehmen, ausgewertet wird es dort, wo der Aufbau des
+        # Geraetetyps bekannt ist.
+        "sysinfo": p[14] if len(p) > 14 else None,
     }
     if len(p) >= 14:
         daten["klasse"] = p[13]
@@ -456,6 +461,8 @@ class Zentrale:
                     # ein Geraet, dessen Modellkennung er nicht fuehrt, nicht
                     # ueber die Gattung erkennen — und genau dafuer gibt es sie.
                     "klasse": info.get("klasse"), "bits": info.get("bits"),
+                    # Aus diesem Byte kommt die Kanalzahl.
+                    "sysinfo": info.get("sysinfo"),
                     "befehle": [r.as_befehl() for r in rahmen],
                     "gesendet": self.senden_erlaubt})
 

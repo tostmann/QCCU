@@ -57,7 +57,8 @@ import time
 import xmlrpc.client
 
 from qccu_bidcos import BidcosTables, BidcosDevice
-from qccu_bidcos_mac import Zentrale, zufaellige_adresse, status_aus, Frame
+from qccu_bidcos_mac import (Zentrale, zufaellige_adresse, status_aus, Frame,
+                             statusabfrage)
 
 INTERFACE_NAME = "BidCos-RF"
 DEFAULT_PORT = 2001
@@ -119,6 +120,14 @@ class BidcosRpc:
             print(f"  ! BidCoS: die gemerkte Adresse {eigen} gehoert einer "
                   f"fremden Zentrale — es wird eine neue gewuerfelt.")
             eigen = zufaellige_adresse(gesperrt=fremde_zentralen)
+        # Wer gerade angelernt werden WILL — eine Momentaufnahme, absichtlich
+        # nur im Arbeitsspeicher. Wer verstummt, faellt heraus.
+        self._wuensche = {}
+        # Adresse -> (Zeitpunkt, Pegel) des zuletzt gehoerten Rahmens.
+        self._gehoert = {}
+        # Haken in „Zuletzt geschehen". Wird von aussen gesetzt; ohne ihn
+        # bleibt es beim Protokoll.
+        self.ereignis = None
         self.zentrale = Zentrale(eigen, senden_erlaubt=bool(senden_erlaubt),
                                  fremde_zentralen=fremde_zentralen)
         self._sichern()
@@ -218,6 +227,127 @@ class BidcosRpc:
         self._werte_offen = False
         self._sichern()
 
+    WUNSCH_GEDULD = 300.0
+
+    # Wie lange auf die Antwort auf eine Statusabfrage gewartet wird. Am
+    # Aufbau gemessen (20.08.2026): Abfrage -> Antwort in 149 ms.
+    PING_WARTEN = 1.5
+
+    def erreichbar(self, adresse):
+        """Aktiv nachsehen, ob ein Geraet noch antwortet.
+
+        Gesendet wird eine Statusabfrage; als Antwort zaehlt jeder Rahmen,
+        der DANACH von dieser Adresse eintrifft. Rueckgabe: True/False, oder
+        None, wenn die Adresse gar nicht im Bestand steht.
+        """
+        adresse = (adresse or "").upper()
+        with self.lock:
+            if adresse not in self.devices:
+                return None
+        vorher = self.zuletzt_gehoert(adresse) or 0.0
+        # ⚠️ `statusabfrage` liefert einen Frame, `_senden` erwartet die
+        # fertige `As`-Zeile. Ein Frame direkt hineingereicht laesst den
+        # Schreibversuch scheitern — und QCCU wertet einen gescheiterten
+        # Schreibversuch als toten Zugang und loest den Funk.
+        befehl = statusabfrage(self.zentrale.eigene_id, adresse,
+                               msgcnt=self.zentrale.naechster_zaehler()
+                               ).as_befehl()
+        if not self._senden(befehl):
+            return False
+        ende = time.time() + self.PING_WARTEN
+        while time.time() < ende:
+            if (self.zuletzt_gehoert(adresse) or 0.0) > vorher:
+                return True
+            time.sleep(0.02)
+        return False
+
+    def zuletzt_gehoert(self, adresse):
+        """Wann zuletzt etwas von diesem Geraet kam (Zeitstempel oder None)."""
+        with self.lock:
+            e = self._gehoert.get((adresse or "").upper())
+        return e[0] if e else None
+
+    def pegel(self, adresse):
+        """Empfangspegel des zuletzt gehoerten Rahmens (dBm oder None)."""
+        with self.lock:
+            e = self._gehoert.get((adresse or "").upper())
+        return e[1] if e and isinstance(e[1], (int, float)) else None
+
+
+    def _melde(self, art, text):
+        """Einen Vorgang in „Zuletzt geschehen" eintragen, wenn moeglich."""
+        haken = self.ereignis
+        if haken is not None:
+            try:
+                haken(art, text)
+            except Exception:
+                pass
+
+    def _wunsch_merken(self, v, lage):
+        adresse = v["adresse"]
+        with self.lock:
+            e = self._wuensche.setdefault(adresse, {"anzahl": 0})
+            e.update({"zuletzt": time.time(), "modell": v.get("modell"),
+                      "klasse": v.get("klasse"), "firmware": v.get("firmware"),
+                      "lage": lage})
+            e["anzahl"] += 1
+            neu_zu_melden = e.get("gemeldet") != lage
+            e["gemeldet"] = lage
+        if neu_zu_melden:
+            self._melde("ok" if lage == "wird angelernt" else "warn",
+                        f"BidCoS {adresse} will angelernt werden — {lage}")
+
+    def anlernwuensche_liste(self):
+        """Wer gerade angelernt werden WILL — der Ruf, nicht der Bestand.
+
+        Gleiche Feldnamen wie im HmIP-Zweig, damit die Oberflaeche EINE
+        gemischte Liste zeichnen kann; `interface` sagt, aus welcher Familie
+        der Ruf kam.
+
+        ⚠️ Anders als bei HmIP ist hier KEIN Schluessel noetig: ein
+        BidCoS-Geraet laesst sich anlernen, sobald das Fenster offen ist.
+        Der Hinweis muss das sagen, sonst sucht der Anwender einen Schluessel,
+        den es nicht gibt.
+        """
+        jetzt = time.time()
+        with self.lock:
+            for a in [a for a, e in self._wuensche.items()
+                      if jetzt - e.get("zuletzt", 0) > self.WUNSCH_GEDULD]:
+                self._wuensche.pop(a, None)
+            eintraege = sorted(self._wuensche.items(),
+                               key=lambda kv: -kv[1].get("zuletzt", 0))
+            bestand = set(self.devices)
+        offen = self.zentrale.anlernen_offen()
+        ziel = self.zentrale.anlern_ziel
+        out = []
+        for adresse, e in eintraege:
+            if adresse in bestand:
+                continue          # schon angelernt — kein offener Wunsch mehr
+            typ = None
+            if self.t is not None and e.get("modell") is not None:
+                treffer = self.t.erkennen(modell=e["modell"],
+                                          firmware=e.get("firmware"),
+                                          klasse=e.get("klasse"), bits=None)
+                typ = (treffer or {}).get("type")
+            if not self.zentrale.senden_erlaubt:
+                hinweis = "Schnittstelle sendet nicht."
+            elif ziel and ziel != adresse:
+                hinweis = f"Anlernfenster gilt nur {ziel}."
+            elif offen:
+                hinweis = "wird gerade angelernt."
+            else:
+                hinweis = "Anlernfenster ist zu — oben oeffnen."
+            out.append({
+                "id": adresse, "address": adresse,
+                "name": f"{typ or 'Unbekanntes Geraet'} {adresse} — {hinweis}",
+                "interface": self.interface_name,
+                "hmid": adresse, "label": typ,
+                "devtype": e.get("modell"), "hinweis": hinweis,
+                "vor_sek": max(0.0, jetzt - e.get("zuletzt", jetzt)),
+                "anzahl": e.get("anzahl", 1),
+            })
+        return out
+
     def zustand(self):
         """Was die Oberflaeche ueber diese Schnittstelle wissen muss."""
         return {
@@ -227,6 +357,7 @@ class BidcosRpc:
             "abonnenten": len(self.subscribers),
             "senden_erlaubt": self.zentrale.senden_erlaubt,
             "anlernen_offen": self.zentrale.anlernen_offen(),
+            "anlern_ziel": self.zentrale.anlern_ziel,
             "tabellen": self.t.zustand() if self.t else None,
         }
 
@@ -254,6 +385,11 @@ class BidcosRpc:
             # Schaltbefehl angekommen UND ausgefuehrt ist.
             if f.subtyp == 0x01:
                 self._send_quittiert(f)
+        # Jeder gehoerte Rahmen ist ein Lebenszeichen — auch eine blosse
+        # Quittung. Das ist die einzige Stelle, an der ALLE vorbeikommen.
+        if f is not None:
+            with self.lock:
+                self._gehoert[f.src.upper()] = (time.time(), f.rssi)
         vorgaenge = self.zentrale.verarbeite(zeile)
         for v in vorgaenge:
             if v["art"] == "status":
@@ -279,6 +415,7 @@ class BidcosRpc:
                 print(f"  BidCoS Anlernruf von {v['adresse']} "
                       f"(Modell 0x{(v.get('modell') or 0):04X}, "
                       f"Klasse 0x{(v.get('klasse') or 0):02X}) — {lage}")
+                self._wunsch_merken(v, lage)
             elif v["art"] == "anlernruf_fremd":
                 print(f"  BidCoS: {v['geraet']} will angelernt werden — "
                       f"NICHT beantwortet, das Fenster gilt nur {v['ziel']}.")
@@ -396,6 +533,9 @@ class BidcosRpc:
                   f"(Modell 0x{(modell or 0):04X}"
                   + (f" = {typ}" if typ else " — in den Tabellen NICHT gefuehrt")
                   + f", Klasse 0x{(v.get('klasse') or 0):02X})")
+            self._melde("bad", f"BidCoS {a}: Anlernen gescheitert bei Rahmen "
+                               f"{lauf.get('schritt', 0) + 1} von 3 — das "
+                               f"Geraet hat nicht quittiert.")
 
     def _anlernen_bestaetigen(self, vorgang):
         """Den bestaetigenden Schaltbefehl senden und das Geraet aufnehmen.
@@ -432,10 +572,31 @@ class BidcosRpc:
             return
         geraet = BidcosDevice(adresse, eintrag, self.t,
                               firmware=vorgang.get("firmware"))
+        # Die Kanalzahl steht im Anlernruf, nicht in der Tabelle: der Aufbau
+        # sagt nur, WO sie steht (`count_from_sysinfo`).
+        gesetzt = geraet.kanalzahlen_aus_sysinfo(vorgang.get("sysinfo"))
+        if gesetzt:
+            print(f"    Kanalzahl aus dem Anlernruf: "
+                  + ", ".join(f"Kanal {k} x{v}" for k, v in sorted(gesetzt.items())))
         with self.lock:
+            vorher = self.devices.get(adresse)
+            alt_kanaele = len(vorher.channel_list()) if vorher else 0
             self.devices[adresse] = geraet
         self._sichern()
         print(f"  BidCoS angelernt: {adresse} = {geraet.devtype}")
+        # ⚠️ Wird ein BEKANNTES Geraet neu angelernt und hat sich dabei sein
+        # Aufbau geaendert (die Kanalzahl steht erst im Anlernruf), ist ein
+        # blosses `newDevices` wirkungslos: die Gegenstelle kennt die Adresse
+        # und nimmt ihre zwischengespeicherte Beschreibung. Erst abmelden,
+        # dann neu melden — sonst bleibt sie auf dem alten Stand.
+        if vorher is not None and alt_kanaele != len(geraet.channel_list()):
+            print(f"    Aufbau geaendert ({alt_kanaele} -> "
+                  f"{len(geraet.channel_list())} Kanaele) — erst abmelden, "
+                  f"dann neu melden.")
+            self._enqueue(("delete", None, [adresse]))
+        self._melde("ok", f"BidCoS {adresse} angelernt = {geraet.devtype}")
+        with self.lock:
+            self._wuensche.pop(adresse, None)
         self._enqueue(("new", adresse, geraet.descriptions()))
         offen = geraet.dynamisch()
         if offen:
@@ -713,6 +874,9 @@ class BidcosRpc:
         if on:
             self.zentrale.anlernen_oeffnen(int(seconds), ziel=ziel)
             self.install_until = time.time() + int(seconds)
+            self._melde("ok", f"BidCoS Anlernfenster offen ({int(seconds)} s"
+                              + (f", nur {str(ziel).upper()}" if ziel
+                                 else ", jedes Geraet") + ")")
             if ziel:
                 print(f"  BidCoS Anlernfenster offen fuer {seconds}s "
                       f"— NUR fuer {str(ziel).upper()}")
@@ -725,9 +889,14 @@ class BidcosRpc:
                       f"Geraet, das jetzt anlernen will (auch fremde!). "
                       f"Mit Geraeteadresse aufrufen, um es einzugrenzen.")
         else:
+            # Nur melden, wenn wirklich eines offen war — die Gegenstelle
+            # schickt `setInstallMode(False)` auch routinemaessig.
+            war_offen = self.zentrale.anlernen_offen() > 0
             self.zentrale.anlernen_schliessen()
             self.install_until = 0.0
             print("  BidCoS Anlernfenster zu")
+            if war_offen:
+                self._melde("ok", "BidCoS Anlernfenster geschlossen")
         return ""
 
     def setInstallModeWithWhitelist(self, on, seconds=60, whitelist=None):
