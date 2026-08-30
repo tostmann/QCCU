@@ -51,6 +51,7 @@ docker run -d --name qccu --restart unless-stopped \
     --device-cgroup-rule='c 166:* rmw' --device-cgroup-rule='c 189:* rmw' \
     -v qccu-data:/data \
     -e ADVERTISE=<IP dieses Rechners> \
+    -e TZ=Europe/Berlin \
     -e CUL_PORT=2000 \
     -p 2000:2000 -p 2010:2010 -p 8181:8181 -p 8080:8080 -p 8082:8082 \
     tostmann/qccu
@@ -59,6 +60,11 @@ docker run -d --name qccu --restart unless-stopped \
 - `ADVERTISE`: die IP, unter der FHEM oder Home Assistant diesen Rechner
   erreicht. Sie geht in die Rückruf-Anmeldung ein; ohne sie schaltet alles,
   aber Zustandsänderungen kommen nicht an.
+- `TZ`: die Zeitzone dieses Rechners. Ein frisch angelerntes Gerät fragt nach
+  der Uhrzeit und bekommt die **Ortszeit** — ohne `TZ` ist das UTC, und ein
+  Thermostat führt sein Wochenprogramm entsprechend versetzt aus. Beim Start
+  sagt QCCU, welche Zeit gilt — die Zeile steht im Protokoll, dort ist es zu
+  prüfen.
 - `-v /dev:/dev` und die beiden cgroup-Regeln: serieller Port (166) und
   USB-Bus zum Flashen (189). Den Stick findet QCCU selbst.
 - Weboberfläche: `http://<rechner>:8080`

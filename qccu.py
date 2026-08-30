@@ -18,7 +18,7 @@ from xmlrpc.server import SimpleXMLRPCServer, SimpleXMLRPCRequestHandler
 # zugleich die Marke des Abbilds auf Docker Hub UND der Wert von `version`
 # in addon/config.yaml — der Supervisor zieht `<image>:<version>`. Wer hier
 # hochzaehlt, muss beides mitziehen, sonst schlaegt die Installation fehl.
-VERSION = "2026.8.34"
+VERSION = "2026.8.35"
 PRODUKT = "QCCU"
 NAME_UND_FASSUNG = f"{PRODUKT} {VERSION}"
 
@@ -1444,6 +1444,34 @@ def ports_waehlen(g):
     return zeilen
 
 
+def zeitlage_melden():
+    """Die Ortszeit ansagen, mit der QCCU die Geraete versorgt.
+
+    ⚠️ Das ist keine Zierde. Ein frisch angelerntes HmIP-Geraet fragt nach
+    einem Zeitgeber und bekommt von QCCU die ORTSZEIT dieses Rechners
+    (`Radio.zeit_payload`, so hat es die echte Zentrale im Referenzmitschnitt
+    getan). Steht im Behaelter keine Zeitzone, ist das UTC — ein Thermostat
+    fuehrt sein Wochenprogramm dann zwei Stunden daneben aus. Am 30.08.2026
+    an einem HmIP-BWTH-A gemessen: es bekam 23:45 statt 01:45 und schaltete
+    entsprechend um.
+
+    Der Supervisor von Home Assistant setzt `TZ` bei Erweiterungen selbst; wer
+    den Behaelter von Hand startet, muss es tun. Darum wird hier gesagt, was
+    tatsaechlich gilt — nicht, was gemeint war.
+    """
+    jetzt = time.localtime()
+    versatz = -(time.altzone if jetzt.tm_isdst else time.timezone)
+    zone = time.tzname[1 if jetzt.tm_isdst else 0]
+    vz = "+" if versatz >= 0 else "-"
+    print(f"  Ortszeit {time.strftime('%d.%m.%Y %H:%M:%S', jetzt)} "
+          f"({zone}, UTC{vz}{abs(versatz) // 3600:02d}:{abs(versatz) % 3600 // 60:02d})"
+          f" — diese Zeit bekommen die Geraete.")
+    if not os.environ.get("TZ") and versatz == 0:
+        print("  ! Keine Zeitzone gesetzt (TZ), es gilt UTC. Ein Thermostat "
+              "fuehrt sein Wochenprogramm dann versetzt aus.")
+        print("    Abhilfe beim Behaelter: -e TZ=Europe/Berlin")
+
+
 def main():
     a = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -2060,6 +2088,7 @@ def main():
     bestand_nachmelden()
     threading.Thread(target=stille_waechter, daemon=True).start()
     threading.Thread(target=fenster_waechter, daemon=True).start()
+    zeitlage_melden()
     print("  bereit — mit Strg-C beenden")
 
     def beenden(grund):

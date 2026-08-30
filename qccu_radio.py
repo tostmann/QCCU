@@ -273,6 +273,9 @@ class Radio:
             if "type" in e and "len" in e and e["type"] >= 0 and e["len"] > 0:
                 self.vlen[e["type"]] = e["len"]
         self._sdt_unbekannt = set()
+        # Zuletzt gemeldeter Stand von CONFIG_PENDING je Geraet — nur damit
+        # der Wechsel einmal im Protokoll steht statt in jedem Frame.
+        self._config_pending = {}
 
         self.tx_timeout = 0.4
         self.tx_tries = 3
@@ -1026,6 +1029,11 @@ class Radio:
             return
 
         flags = pt[2]
+        # ⚠️ VOR der Formatpruefung. Die Zustandsbits liegen in payload[0] und
+        # gelten fuer JEDES Inhaltsformat — auch fuer 3
+        # (`parseDeviceSpecificPayload`), dessen Eintraege QCCU nicht zerlegt.
+        # Gerade dort sind sie das Einzige, was aus dem Frame zu holen ist.
+        self._statusflaggen(addr, flags)
         fmt = flags & 0x03
         if fmt > 2:
             return
@@ -1060,6 +1068,41 @@ class Radio:
             val = pt[i:i + vl]
             i += vl
             self._emit(addr, ch, typ, val, flags)
+
+    def _statusflaggen(self, addr, flags):
+        """Die Zustandsbits eines STATUS-Frames auf den Wartungskanal legen.
+
+        `CONFIG_PENDING`, `LOW_BAT` und `DUTY_CYCLE` fuehrt MAINTENANCE/VALUES
+        ohnehin — und aiohomematic zaehlt `CONFIG_PENDING` zu den
+        `RELEVANT_INIT_PARAMETERS`. Bisher warf QCCU die drei Bits weg:
+        `flags` ging nur als Formatangabe in die Schleife.
+
+        ⚠️ MIT UNTERSTRICH. `LOWBAT`/`DUTYCYCLE` ohne ist die BidCoS-Schreibung
+        aus den rftypes; in den HmIP-Paramsets gibt es sie nicht (alle 16
+        MAINTENANCE-Fassungen nachgesehen: `DUTY_CYCLE` in 9, `LOW_BAT` in 5,
+        die Formen ohne Unterstrich in keiner). Mit dem falschen Namen filtert
+        `_kanal_fuehrt` still weg, und es sieht aus wie „das Geraet meldet es
+        nicht". aiohomematic fuehrt beide Schreibweisen als VERSCHIEDENE
+        Parameter — der Name muss stimmen, nicht ungefaehr stimmen.
+
+        Ein Wechsel von `CONFIG_PENDING` wird zusaetzlich protokolliert. Das
+        ist der einzige Weg, an dem sich von aussen ablesen laesst, ob ein
+        frisch angelerntes Geraet noch auf seine Konfiguration wartet.
+        """
+        for bit, param in ((SF_CONFIG_PENDING, "CONFIG_PENDING"),
+                           (SF_LOWBAT, "LOW_BAT"),
+                           (SF_DUTYCYCLE, "DUTY_CYCLE")):
+            wert = bool(flags & bit)
+            if not self._kanal_fuehrt(addr, 0, param):
+                continue
+            if param == "CONFIG_PENDING":
+                vorher = self._config_pending.get(addr)
+                if vorher != wert:
+                    self._config_pending[addr] = wert
+                    self._log("<<", f"{addr} CONFIG_PENDING={wert}")
+                    if self.verbose:
+                        print(f"  <- {addr}:0 CONFIG_PENDING={wert}")
+            self.qccu.set_value_internal(addr, 0, param, wert)
 
     def _kanal_fuehrt(self, addr, channel, param):
         """Fuehrt dieser Kanal diesen Parameter ueberhaupt?
@@ -1203,6 +1246,14 @@ class Radio:
         Aufnahme, nicht UTC.
         """
         wochentag = (t.tm_wday + 1) % 7          # Python Montag=0 -> CCU Sonntag=0
+        # ⚠️ Die oberen zwei Bits des Stundenbytes sind der Sommerzeit-Zustand,
+        # nicht „offen": `TimeInfoFrame.setPayload` liest
+        # `daylightSavingState = (byte)(temp >> 6 & 3)`, und
+        # `HomeMaticIPFrameFactory.createCurrentTimeFrame` setzt ihn auf 2 bei
+        # Sommerzeit, sonst auf 1. Der Referenzframe (August, MESZ) trug
+        # `0x96` = 2<<6 | 22 — das passt und war der Grund, warum hier lange
+        # ein festes `0x80` stand. Fest waere es ab der Zeitumstellung falsch.
+        sommerzeit = 2 if t.tm_isdst else 1
         return bytes((0x00,
                       t.tm_year - 2000,
                       t.tm_mon,
@@ -1298,14 +1349,6 @@ class Radio:
             except Exception as ex:
                 print(f"  ! Lebenszeichen nicht vermerkt: {ex}")
 
-        # ⚠️ Die oberen zwei Bits des Stundenbytes sind der Sommerzeit-Zustand,
-        # nicht „offen": `TimeInfoFrame.setPayload` liest
-        # `daylightSavingState = (byte)(temp >> 6 & 3)`, und
-        # `HomeMaticIPFrameFactory.createCurrentTimeFrame` setzt ihn auf 2 bei
-        # Sommerzeit, sonst auf 1. Der Referenzframe (August, MESZ) trug
-        # `0x96` = 2<<6 | 22 — das passt und war der Grund, warum hier lange
-        # ein festes `0x80` stand. Fest waere es ab der Zeitumstellung falsch.
-        sommerzeit = 2 if t.tm_isdst else 1
         if not self.icmp_answer:
             return
 
@@ -1670,6 +1713,13 @@ class Radio:
         src     = air[3:6]
         sgtin   = air[10:22]
         devtype = int.from_bytes(air[24:28], "big")
+        # ⚠️ Der Betriebsmodus steht offen im Anlernruf, zwischen Firmware und
+        # Schluessel-Flags: `AbstractInclusionRequestFrame` liest SGTIN(12),
+        # Herstellercode(2), Geraetetyp(4), Firmware(3), Betriebsmodus(1),
+        # Schluessel-Flags(1), Nonce(4), MIC(4), Einmalschluessel(8) — die
+        # Nachbarfelder oben und unten belegen die Lage. Bisher las QCCU ihn
+        # nicht und behauptete stattdessen fuer JEDES Geraet `0x40`.
+        opmode  = air[31]
         nonce   = air[33:37]
         otk     = air[41:49]
 
@@ -1753,6 +1803,13 @@ class Radio:
         # Wegemeldung wie die echte Zentrale: rund 185 ms nach ihrer Quittung
         # (fester Takt, in allen Referenzzyklen gleich). Nicht 2,5 s — in der
         # Luecke suchte das Geraet bereits einen Router.
+        # ⚠️ Der Betriebsmodus im ROUTE_RESPONSE ist DER DES GERAETS, nicht der
+        # der Zentrale: `RouteResponse.setOperationMode()` zerlegt genau dieses
+        # Byte in `acessController` (0x80), `router` (0x40), `portableDevice`
+        # (0x20) und `ListenerMode` (0x0F). QCCU hatte hier `40` fest stehen —
+        # den Wert der PS-2 aus dem Referenzzyklus. Damit erklaerte es jedes
+        # Geraet zum Router, auch eines, das keiner ist. Gemeldet wird jetzt,
+        # was das Geraet im Anlernruf selbst angesagt hat.
         time.sleep(0.15)
         self._log("##", f"ANLERNEN Betriebsmodus des Geraets 0x{opmode:02x}")
         if self.verbose and opmode != 0x40:
@@ -1788,63 +1845,6 @@ class Radio:
         self.pair_until = 0.0
         self._pair_busy = False
 
-    # -- Anlernwuensche: gehoerte, aber unbekannte Geraete ----------------
-    #
-    # ⚠️ NICHT „Posteingang". In einer Zentrale von eq-3 heisst so die Liste
-    # der bereits ANGELERNTEN, nur noch nicht in Betrieb genommenen Geraete.
-    # Was hier steht, ist das Gegenteil: Geraete, die noch gar nicht dazu
-    # gehoeren und darum bitten. Denselben Namen fuer beides zu benutzen,
-    # laesst den Anwender vergeblich nach einem Geraet suchen, das er zu
-    # besitzen glaubt (Dirk, 19.08.2026).
-    FREMDE_GRUNDFRIST = 300.0     # untere Schranke — auch beim ersten Ruf
-    FREMDE_FEHLRUFE = 3           # so viele ausgebliebene Rufe = verstummt
-    FREMDE_HOECHSTFRIST = 3600.0  # obere Schranke
-    FREMDE_MAX = 20
-
-    def _merke_anlernwunsch(self, air):
-        """Ein Geraet will angelernt werden — in den Posteingang.
-
-        ⚠️ NUR das gehoert hier hinein. Ein Anlernwunsch heisst: an diesem
-        Geraet wurde der Knopf gedrueckt. Jeden fremden Absender zu sammeln
-        waere das Gegenteil einer Hilfe — in einem Mehrfamilienhaus stuenden
-        dort die Geraete der Nachbarn, denen der Anwender keinen Aufkleber
-        zuordnen kann.
-
-        Die Anfrage traegt Kennung und Typ offen; beides ist ohne Schluessel
-        lesbar und macht den Eintrag erst brauchbar."""
-        try:
-            hmid = air[3:6].hex()
-            sgtin = air[10:22].hex().upper()
-            devtype = int.from_bytes(air[24:28], "big")
-        except Exception:                            # noqa: BLE001
-            return
-        jetzt = time.time()
-        with self.lock:
-            e = self._fremde.get(hmid)
-            if e is None:
-                if len(self._fremde) >= self.FREMDE_MAX:
-                    aeltester = min(self._fremde, key=lambda k: self._fremde[k]["zuletzt"])
-                    del self._fremde[aeltester]
-                self._fremde[hmid] = {"sgtin": sgtin, "devtype": devtype,
-                                      "zuerst": jetzt, "zuletzt": jetzt, "anzahl": 1}
-                neu = True
-            else:
-                e.update(sgtin=sgtin, devtype=devtype, zuletzt=jetzt)
-                e["anzahl"] += 1
-                neu = False
-        if neu:
-            self._log("<<", f"Anlernwunsch von {hmid} (Typ {devtype}) — Posteingang")
-            if self.verbose:
-                print(f"  Anlernwunsch: {hmid}, Typ {devtype}")
-
-    # -- Verwaiste Geraete: funken mit unserem Schluessel, gehoeren nicht mehr
-    #
-    # ⚠️ Der Fall, der diesen Code ausgeloest hat (19.08.2026): eine PS-2 wurde
-    # ausgeschlossen, quittierte den Ausschluss auf Anwendungsebene
-    # (NM_EXCLUDE_READY) — und funkte danach weiter unter ihrer alten
-    # Funkadresse mit unserem Netzschluessel. Sie war also NICHT im
-    # Werkszustand und liess sich folglich auch nicht neu anlernen: ein
-    # angelerntes Geraet sendet keinen Anlernruf. In der Oberflaeche war davon
     def _verdrahten(self, newa, devtype):
         """Die interne Verdrahtung des Geraets einrichten — beide Richtungen.
 
@@ -1902,6 +1902,73 @@ class Radio:
             print("  Anlernen: interne Verdrahtung "
                   + ", ".join(f"Kanal {q} <-> {z}" for q, z in links))
 
+    # -- Anlernwuensche: gehoerte, aber unbekannte Geraete ----------------
+    #
+    # ⚠️ NICHT „Posteingang". In einer Zentrale von eq-3 heisst so die Liste
+    # der bereits ANGELERNTEN, nur noch nicht in Betrieb genommenen Geraete.
+    # Was hier steht, ist das Gegenteil: Geraete, die noch gar nicht dazu
+    # gehoeren und darum bitten. Denselben Namen fuer beides zu benutzen,
+    # laesst den Anwender vergeblich nach einem Geraet suchen, das er zu
+    # besitzen glaubt (Dirk, 19.08.2026).
+    FREMDE_GRUNDFRIST = 300.0     # untere Schranke — auch beim ersten Ruf
+    FREMDE_FEHLRUFE = 3           # so viele ausgebliebene Rufe = verstummt
+    FREMDE_HOECHSTFRIST = 3600.0  # obere Schranke
+    FREMDE_MAX = 20
+
+    def _merke_anlernwunsch(self, air):
+        """Ein Geraet will angelernt werden — in den Posteingang.
+
+        ⚠️ NUR das gehoert hier hinein. Ein Anlernwunsch heisst: an diesem
+        Geraet wurde der Knopf gedrueckt. Jeden fremden Absender zu sammeln
+        waere das Gegenteil einer Hilfe — in einem Mehrfamilienhaus stuenden
+        dort die Geraete der Nachbarn, denen der Anwender keinen Aufkleber
+        zuordnen kann.
+
+        Die Anfrage traegt Kennung und Typ offen; beides ist ohne Schluessel
+        lesbar und macht den Eintrag erst brauchbar."""
+        try:
+            hmid = air[3:6].hex()
+            sgtin = air[10:22].hex().upper()
+            devtype = int.from_bytes(air[24:28], "big")
+            # Der Betriebsmodus liegt offen daneben (siehe `_pair_do`). Er ist
+            # hier festzuhalten, weil er sonst nirgends stehenbleibt: der
+            # Anlernruf ist die EINZIGE Gelegenheit, an der ein Geraet ihn
+            # ansagt — danach ist er nur noch aus dem Verhalten zu erraten.
+            opmode = air[31]
+        except Exception:                            # noqa: BLE001
+            return
+        jetzt = time.time()
+        with self.lock:
+            e = self._fremde.get(hmid)
+            if e is None:
+                if len(self._fremde) >= self.FREMDE_MAX:
+                    aeltester = min(self._fremde, key=lambda k: self._fremde[k]["zuletzt"])
+                    del self._fremde[aeltester]
+                self._fremde[hmid] = {"sgtin": sgtin, "devtype": devtype,
+                                      "opmode": opmode,
+                                      "zuerst": jetzt, "zuletzt": jetzt, "anzahl": 1}
+                neu = True
+            else:
+                e.update(sgtin=sgtin, devtype=devtype, opmode=opmode, zuletzt=jetzt)
+                e["anzahl"] += 1
+                neu = False
+        if neu:
+            self._log("<<", f"Anlernwunsch von {hmid} (Typ {devtype}, "
+                            f"Betriebsmodus 0x{opmode:02x}) — Posteingang")
+            if self.verbose:
+                print(f"  Anlernwunsch: {hmid}, Typ {devtype}, "
+                      f"Betriebsmodus 0x{opmode:02x} "
+                      f"(Router={'ja' if opmode & 0x40 else 'nein'}, "
+                      f"ListenerMode={opmode & 0x0F})")
+
+    # -- Verwaiste Geraete: funken mit unserem Schluessel, gehoeren nicht mehr
+    #
+    # ⚠️ Der Fall, der diesen Code ausgeloest hat (19.08.2026): eine PS-2 wurde
+    # ausgeschlossen, quittierte den Ausschluss auf Anwendungsebene
+    # (NM_EXCLUDE_READY) — und funkte danach weiter unter ihrer alten
+    # Funkadresse mit unserem Netzschluessel. Sie war also NICHT im
+    # Werkszustand und liess sich folglich auch nicht neu anlernen: ein
+    # angelerntes Geraet sendet keinen Anlernruf. In der Oberflaeche war davon
     # nichts zu sehen — die Frames wurden still verworfen, und der Anwender
     # drueckte vergeblich die Taste. Die Auskunft war da, wir haben sie
     # weggeworfen.
@@ -2145,6 +2212,10 @@ class Radio:
                 "hinweis": hinweis,
                 "vor_sek": max(0.0, jetzt - e["zuletzt"]),
                 "anzahl": e.get("anzahl", 1),
+                # Betriebsmodus, wie das Geraet ihn selbst ansagt — Router-Bit
+                # 0x40, ListenerMode in 0x0F. Steht nur hier, weil er nur im
+                # Anlernruf ueberhaupt vorkommt.
+                "opmode": e.get("opmode"),
             })
         return out
 

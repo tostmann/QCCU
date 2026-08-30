@@ -107,6 +107,8 @@ def build(jar_path):
                 "chinfo": {str(k): v for k, v in sorted(chinfo.items())},
                 "spec": n.rsplit("/", 1)[-1],
             }
+            if links:
+                entry["links"] = links
             if fw:
                 entry["firmware"] = [int(fw.group(1)), int(fw.group(2))]
             old = catalog.get(str(devid))
@@ -146,7 +148,8 @@ def main():
         e = cat.get(devid)
         if e:
             ch = ", ".join(f"{k}:{v}" for k, v in list(e["channels"].items())[:4])
-            print(f"    {devid:>4} {e['label']:<22} {ch} ...")
+            lk = "".join(f" [{q}->{z}]" for q, z in e.get("links", ()))
+            print(f"    {devid:>4} {e['label']:<22} {ch} ...{lk}")
     return 0
 
 
