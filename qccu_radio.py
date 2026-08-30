@@ -430,6 +430,51 @@ SDT_REGELN = {
 }
 
 
+# --- Stellbefehle ----------------------------------------------------------
+#
+# Ein Stellbefehl geht als DIRECT_EXECUTION_COMMAND hinaus
+# (`ApplicationFrameType 6`; auf der Luft `0x86`, das obere Bit ist der
+# Antwortwunsch). Der Rumpf ist `<Aktion> <Kanal> …` — so baut ihn
+# `DirectExecutionCommandFrame.generatePayload()` und so liest ihn
+# `setPayload()` zurueck:
+#
+#     Aktion 2 (EXECUTION_START)      danach EIN Pegelbyte
+#     Aktion 128..159 (geraetespez.)  danach Paare <Datentyp> <Daten>
+#
+# Je Parameter: (Aktion, Datentyp oder None, Byte fuer WAHR).
+# Aktion und Datentyp sind die letzten Argumente seiner StateParameter-Fabrik
+# im HMIPServer-Jar — `(directExecutionCode, dataIndex, dataType)`:
+#
+#   STATE                  createStateParameter        → 2, 0
+#                          BoolToInteger({0,0,0,-56}) → WAHR ist 0xC8, denn
+#                          das Byte einer EXECUTION_START ist ein PEGEL.
+#   LEVEL                  createLevel                 → 2, 0
+#                          DoubleToInteger(200.0, 0.0) → 0..1 wird 0..200
+#   SET_POINT_TEMPERATURE  createSetPointTemperature…  → -128, 1, 2
+#                          128 THERMOSTATIC_RADIATOR_VALVE,
+#                          Datentyp 2 TEMPERATURE_SET_POINT (1 Byte)
+#   BOOST_MODE             createBoostModeParameter    → -128, 1, 0
+#                          Datentyp 0 LOGIC (1 Byte)
+#   CONTROL_MODE           createControlModeParameter  → -128, 0, 4
+#
+# ⚠️ Bei CONTROL_MODE heisst der Datentyp 4 im Jar `DIFFERENTIAL_TEMPERATURE`
+# — der Name passt nicht zum Parameter, die Zahl steht aber genau so in der
+# Fabrik. Uebernommen wie sie dasteht und NICHT nach dem Namen zurechtgelegt;
+# belegt ist damit die Herkunft, nicht die Wirkung. Das zeigt erst ein Geraet.
+#
+# Was hier fehlt, wird NICHT gesendet: ein Stellbefehl, dessen Aufbau wir uns
+# ausdenken, ist schlimmer als gar keiner — er kommt beim Geraet an.
+AKTION_START = 0x02
+AKTION_THERMOSTAT = 0x80
+
+STELLBEFEHLE = {
+    "STATE":                 (AKTION_START, None, 0xC8),
+    "LEVEL":                 (AKTION_START, None, 0xC8),
+    "SET_POINT_TEMPERATURE": (AKTION_THERMOSTAT, 0x02, 1),
+    "BOOST_MODE":            (AKTION_THERMOSTAT, 0x00, 1),
+    "CONTROL_MODE":          (AKTION_THERMOSTAT, 0x04, 1),
+}
+
 APP_RESP_REQ = 0x80
 RXF_FOR_US = 0x01
 
@@ -1881,6 +1926,90 @@ class Radio:
                 except Exception as ex:
                     print(f"  ! Erreichbarkeit nicht vermerkt: {ex}")
 
+    def _stellbefehl(self, ccu_address, channel, param, value):
+        """Rumpf eines Stellbefehls bauen — oder None, wenn er nicht geht.
+
+        JEDER Stellbefehl ist ein DIRECT_EXECUTION_COMMAND
+        (`ApplicationFrameType 6`; auf der Luft `0x86`, das obere Bit ist der
+        Antwortwunsch). Der Rumpf beginnt immer mit
+        `<Aktion> <Kanal>` — so baut ihn `DirectExecutionCommandFrame.
+        generatePayload()` im HMIPServer-Jar, und so liest ihn `setPayload()`
+        wieder ein. Danach unterscheidet die Aktion zwei Formen:
+
+            EXECUTION_START (2)        ein einzelnes Pegelbyte
+            geraetespezifisch (128..)  Paare <Datentyp> <Daten>
+
+        Welche Aktion und welcher Datentyp zu einem Parameter gehoeren, steht
+        in seiner StateParameter-Fabrik als die drei letzten Argumente
+        `(directExecutionCode, dataIndex, dataType)` — abgeschrieben, nicht
+        geraten (`STELLBEFEHLE`).
+
+        Der Wert wird mit DERSELBEN Umrechnung zurueckgerechnet, mit der ein
+        gemeldeter Wert hereinkommt (`UMRECHNUNG`, hier rueckwaerts:
+        `roh = wert * Faktor + Offset`) — eine zweite Zahlentabelle fuer die
+        Gegenrichtung wuerde frueher oder spaeter auseinanderlaufen.
+
+        ⚠️ Gegen die Grenzen des Parameters geprueft, bevor etwas hinausgeht.
+        Ein Sollwert von 40 °C ist an einem Geraet mit MAX 30.5 kein Befehl,
+        sondern ein Byte, das es verwerfen oder missdeuten kann.
+        """
+        eintrag = STELLBEFEHLE.get(param)
+        if eintrag is None:
+            if self.verbose:
+                print(f"  ! {param} wird nicht gesendet — kein belegter "
+                      f"Stellbefehl fuer diesen Parameter")
+            return None
+        aktion, datentyp, wahr = eintrag
+
+        desc = self._beschreibung(ccu_address, channel, param)
+        if desc is None:
+            if self.verbose:
+                print(f"  ! {ccu_address}:{channel} fuehrt {param} nicht")
+            return None
+
+        # BOOL kommt als Wahrheitswert herein, ENUM als Zeichenkette aus der
+        # Werteliste — beides erst in eine Zahl bringen, dann umrechnen.
+        typ = desc.get("TYPE")
+        try:
+            if typ == "BOOL":
+                # Der Wert fuer WAHR steht in der Tabelle: STATE traegt 0xC8,
+                # weil das Byte einer EXECUTION_START ein PEGEL ist und ein
+                # eingeschalteter Schaltkanal auf 100 % steht.
+                zahl = wahr if value in (True, 1, "1", "true", "True", "on") else 0
+            elif typ == "ENUM":
+                liste = list(desc.get("VALUE_LIST") or ())
+                zahl = liste.index(value) if value in liste else int(value)
+            else:
+                zahl = float(value)
+        except (TypeError, ValueError):
+            if self.verbose:
+                print(f"  ! {param}={value!r} ist kein brauchbarer Wert")
+            return None
+
+        if typ in ("FLOAT", "INTEGER"):
+            mn, mx = desc.get("MIN"), desc.get("MAX")
+            if (isinstance(mn, (int, float)) and isinstance(mx, (int, float))
+                    and not mn <= zahl <= mx):
+                if self.verbose:
+                    print(f"  ! {param}={value!r} liegt ausserhalb "
+                          f"{mn}..{mx} — nicht gesendet")
+                return None
+
+        faktor, versatz = UMRECHNUNG.get(param, (1.0, 0.0))
+        roh = int(round(zahl * faktor + versatz))
+        if not 0 <= roh <= 0xFF:
+            if self.verbose:
+                print(f"  ! {param}={value!r} ergibt {roh} und passt in kein "
+                      f"Byte — nicht gesendet")
+            return None
+
+        kanal = int(channel)
+        if datentyp is None:
+            rumpf = f"{aktion:02X}{kanal:02X}{roh:02X}"
+        else:
+            rumpf = f"{aktion:02X}{kanal:02X}{datentyp:02X}{roh:02X}"
+        return rumpf, f"{param}={value!r} (roh 0x{roh:02X})"
+
     def _do_set(self, ccu_address, channel, param, value):
         """Der eigentliche Sendevorgang — laeuft im Arbeitsfaden."""
         hmid = None
@@ -1894,18 +2023,16 @@ class Radio:
                 print(f"  ! keine Funkadresse zu {ccu_address}")
             return
 
-        if param != "STATE":
-            if self.verbose:
-                print(f"  ! {param} wird noch nicht gesendet")
+        gebaut = self._stellbefehl(ccu_address, channel, param, value)
+        if gebaut is None:
             return
+        rumpf, klartext = gebaut
 
-        on = value in (True, 1, "1", "true", "True", "on")
         seq = self._next_seq(hmid)
-        payload = f"86{seq:02X}02{int(channel):02X}{0xC8 if on else 0x00:02X}"
-        cmd = f"ms{hmid.upper()}{payload}"
+        cmd = f"ms{hmid.upper()}86{seq:02X}{rumpf}"
 
         before = self._read_counters() if self.measure else None
-        self._log("##", f"BEFEHL {ccu_address}:{channel} STATE={bool(on)} "
+        self._log("##", f"BEFEHL {ccu_address}:{channel} {klartext} "
                         f"appSeq=0x{seq:02X}")
 
         ev = threading.Event()
