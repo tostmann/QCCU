@@ -941,15 +941,34 @@ class Radio:
         with self.lock:
             self.devseq[src.lower()] = pt[1]
 
-        if for_us and (pt[0] & APP_RESP_REQ) and (pt[0] & 0x3F) != FT_ANSWER:
-            # Die Zeitanfrage will die ZEIT, nicht bloss eine Quittung: die
-            # echte CCU beantwortet sie mit einem TIME_INFO-Frame (Referenz-
-            # mitschnitt, 10 Zyklen). Ein ANSWER darauf liesse das Geraet
-            # ohne Uhr — und ohne Uhr kann es kein Wochenprofil ausfuehren.
-            if (pt[0] & 0x3F) == FT_TIME_INFO:
-                self._time_info(src.lower(), pt[1])
-            else:
-                self._answer(src.lower(), pt[1])
+        # ⚠️ Die Zeitanfrage wird beantwortet, AUCH OHNE respReq-Bit. Sie ist
+        # die einzige Ausnahme, und sie ist gemessen: der HmIP-BWTH-A fragt
+        # mit `0x23` (TIME_INFO ohne Antwortwunsch) und WIEDERHOLT die Frage
+        # mit verdoppelndem Abstand — 24 s, 48 s, 96 s (30.08.2026,
+        # `luft_exp3.log`, appSeq 01/07/08/0B, danach 192 s). Ein Turnus sieht
+        # anders aus; das ist ein Wiederholungsverhalten, also wartet das
+        # Geraet auf eine Antwort, ohne sie formal anzufordern. Nach der
+        # Antwort blieb die Wiederholung aus (`luft_exp4.log`), und am Display
+        # stand die Antenne fest.
+        #
+        # ⚠️ NICHT weiter deuten: in einem Lauf OHNE Zeitantwort hat dasselbe
+        # Geraet einen CREATE_LINK trotzdem quittiert (`luft_exp2.log`). Ein
+        # Zusammenhang zwischen Zeitantwort und Annahme der Konfiguration ist
+        # damit NICHT belegt, auch wenn er naheliegt.
+        #
+        # Der Inhalt der Frage ist `timeInfoType=1` — laut Jar
+        # (`TimeInfoFrame.setPayload`, `TimeMasterRequestData`) die Bitte um
+        # einen Zeitgeber, mitsamt der gewuenschten Zeitzonenregel; die
+        # Nutzlast `04 5A 00 0C | 08 53 00 08` ist in Viertelstunden genau die
+        # europaeische: UTC+1 ab letztem Sonntag im Oktober, UTC+2 ab letztem
+        # Sonntag im Maerz. Geantwortet wird mit der UHR (`timeInfoType=0`) —
+        # so hat es die echte Zentrale im Referenzmitschnitt getan.
+        if for_us and (pt[0] & 0x3F) == FT_TIME_INFO:
+            self._time_info(src.lower(), pt[1])
+        elif for_us and (pt[0] & APP_RESP_REQ) and (pt[0] & 0x3F) != FT_ANSWER:
+            # Alles Uebrige nur auf ausdruecklichen Wunsch: eine Quittung, die
+            # niemand angefordert hat, kostet nur Sendezeit.
+            self._answer(src.lower(), pt[1])
 
         if len(pt) < 4 or (pt[0] & 0x3F) != FT_STATUS:
             return
@@ -1124,7 +1143,7 @@ class Radio:
             [1] Jahr-2000     (Jar: `TimeInfoFrame.setPayload`, 2000+p[1])
             [2] Monat
             [3] Wochentag<<5 | Tag   (Wochentag: Sonntag=0, Dienstag=2)
-            [4] 0x80 | Stunde        (Bit 7 aus dem Referenzframe, offen)
+            [4] Sommerzeit<<6 | Stunde
             [5] Minute
             [6] Sekunde
 
@@ -1136,7 +1155,7 @@ class Radio:
                       t.tm_year - 2000,
                       t.tm_mon,
                       (wochentag << 5) | t.tm_mday,
-                      0x80 | t.tm_hour,
+                      (sommerzeit << 6) | t.tm_hour,
                       t.tm_min,
                       t.tm_sec))
 
@@ -1227,6 +1246,14 @@ class Radio:
             except Exception as ex:
                 print(f"  ! Lebenszeichen nicht vermerkt: {ex}")
 
+        # ⚠️ Die oberen zwei Bits des Stundenbytes sind der Sommerzeit-Zustand,
+        # nicht „offen": `TimeInfoFrame.setPayload` liest
+        # `daylightSavingState = (byte)(temp >> 6 & 3)`, und
+        # `HomeMaticIPFrameFactory.createCurrentTimeFrame` setzt ihn auf 2 bei
+        # Sommerzeit, sonst auf 1. Der Referenzframe (August, MESZ) trug
+        # `0x96` = 2<<6 | 22 — das passt und war der Grund, warum hier lange
+        # ein festes `0x80` stand. Fest waere es ab der Zeitumstellung falsch.
+        sommerzeit = 2 if t.tm_isdst else 1
         if not self.icmp_answer:
             return
 
