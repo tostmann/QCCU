@@ -42,6 +42,18 @@ CNT = re.compile(r"^Pm\s+rx=(\d+)\s+ok=(\d+)\s+mic=(\d+)\s+dup=(\d+)"
                  r"\s+acks=(\d+)(?:\s+k6tx=(\d+)\s+k6rx=(\d+))?"
                  r"(?:\s+akdop=(\d+))?"
                  r"\s+fwd=(\d+)\s+tx=(\d+)\s+txerr=(\d+)")
+# Rauschboden und Spitzenwert, seit q-culfw 2.0.71 am ENDE derselben
+# `Pm`-Zeile. Bewusst eine EIGENE Regex statt einer Erweiterung von `CNT`:
+# so bleibt das Zaehlerwerk davon unberuehrt, ob der Stick neu genug ist —
+# ein alter Stick liefert weiter seine Zahlen und hier eben nichts.
+# `-127` heisst „noch keine Probe" und ist KEIN Messwert.
+NOISE = re.compile(r"\bnoise=(-?\d+)\s+npk=(-?\d+)")
+# Zustand des Oszillators: Lock-Verluste / Nachkalibrierungen / Aufgaben,
+# und die erzwungenen Kalibrierlaeufe (einer je Viertelstunde).
+PLL = re.compile(r"\bpll=(\d+)/(\d+)/(\d+)")
+RECAL = re.compile(r"\brecal=(\d+)")
+KEINE_PROBE = -127
+
 RAW = re.compile(r"^P([0-9A-Fa-f]{4,})$")
 STICKSEQ = re.compile(r"^Pm (?:ein|aus) .*\bsn=([0-9A-Fa-f]{8})")
 BUDGET = re.compile(r"^Pm budget=(\d) credit=(\d+)/(\d+) lovf=(\d+)")
@@ -256,6 +268,11 @@ class Radio:
             self._raw = open(raw_log, "a", buffering=1)
             self._log("##", f"--- Start {time.strftime('%Y-%m-%d %H:%M:%S')} ---")
         self.counters = None
+        # Rauschboden, Spitzenwert, PLL- und Kalibrierzaehler — None, solange
+        # der Stick sie nicht liefert (aeltere Firmware als 2.0.71).
+        self.funkgute = None
+        # Die vollstaendige Antwort des Sticks auf `V`.
+        self.v_banner = None
         self.budget = None
         self._cnt_ev = threading.Event()
 
@@ -599,7 +616,13 @@ class Radio:
     def firmware_version(self):
         """Fassung, wie der Stick sie selbst meldet."""
         m = self._ask("V", r"(?:q-culfw|hmip-mac-avr)\s+[0-9]+\.[0-9]+\.[0-9]+")
-        return m.group(0).strip() if m else None
+        if not m:
+            return None
+        # Die GANZE Zeile mitnehmen, nicht nur die Fassungsnummer: das ist die
+        # Kennung, die ein CUL auf `V` ausgibt, und genau die will man in der
+        # Oberflaeche sehen, wenn man wissen will, was da eigentlich haengt.
+        self.v_banner = (m.string or "").strip() or m.group(0).strip()
+        return m.group(0).strip()
 
     def release_for_flash(self):
         """Stick in den Bootlader schicken und den Port GANZ loslassen."""
@@ -760,6 +783,24 @@ class Radio:
         mc = CNT.match(line)
         if mc:
             self.counters = dict(zip(CNT_KEYS, (int(x or 0) for x in mc.groups())))
+            # Getrennt gelesen, damit ein alter Stick die Zaehler behaelt.
+            mn = NOISE.search(line)
+            if mn:
+                boden, spitze = int(mn.group(1)), int(mn.group(2))
+                self.funkgute = {
+                    "noise": None if boden == KEINE_PROBE else boden,
+                    "npk": None if spitze == KEINE_PROBE else spitze}
+            mp = PLL.search(line)
+            mrc = RECAL.search(line)
+            if mp or mrc:
+                g = self.funkgute or {}
+                if mp:
+                    g.update({"pll_lost": int(mp.group(1)),
+                              "pll_relock": int(mp.group(2)),
+                              "pll_fail": int(mp.group(3))})
+                if mrc:
+                    g["recal"] = int(mrc.group(1))
+                self.funkgute = g
             self._cnt_ev.set()
             return
 
@@ -1328,7 +1369,9 @@ class Radio:
     def radio_state(self):
         """Zustand fuer die Oberflaeche."""
         self._read_counters()
-        return {"counters": self.counters, "budget": self.budget,
+        return {"counters": self.counters, "funkgute": self.funkgute,
+                "v_banner": self.v_banner, "pfad": self.port,
+                "budget": self.budget,
                 "own_addr": self.own_addr,
                 "tot": bool(self.tot), "tot_grund": self.tot_grund,
                 # Ohne Netzwerkschluessel schlaegt jedes Anlernen fehl. Der
