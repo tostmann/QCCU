@@ -40,7 +40,8 @@ except Exception:
 for name in ("SERIAL", "OWN_ADDR", "RPC_PORT", "REGA_PORT",
              "WEB_PORT", "JSON_PORT", "CUL_PORT", "ADVERTISE",
              "SOFORT_MELDEN", "ALT_PORTS", "LOCALHOST_ONLY",
-             "BIDCOS_PORT", "BIDCOS_SENDEN", "BIDCOS_FREMD"):
+             "BIDCOS_PORT", "BIDCOS_SENDEN", "BIDCOS_FREMD",
+             "RAW_LOG"):
     wert = o.get(name.lower())
     if wert is None or wert == "":
         continue
@@ -319,6 +320,9 @@ serve() {
     [ -n "$ADVERTISE" ] && set -- "$@" --advertise "$ADVERTISE"
     # Ohne Posteingang (FHEM/HMCCU): frisch Angelerntes sofort melden.
     [ "$SOFORT_MELDEN" = "1" ] && set -- "$@" --sofort-melden
+    # Rohmitschnitt zur Fehlersuche. Er liegt neben den Tabellen in /data und
+    # bricht bei 8 MB auf `.1` um — hoechstens zwei Dateien.
+    [ "$RAW_LOG" = "1" ] && set -- "$@" --raw-log /data/luft.log
     log "Zentrale startet — Web auf $WEB_PORT, XML-RPC auf $RPC_PORT, JSON-RPC auf $JSON_PORT."
     exec "$@"
 }

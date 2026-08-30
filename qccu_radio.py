@@ -914,6 +914,8 @@ class Radio:
         self._raw = None
         self._log_lock = threading.Lock()
         self.measure = bool(raw_log)
+        self._raw_zeilen = 0
+        self._raw_umbruch_aus = False
         if raw_log:
             self._raw = open(raw_log, "a", buffering=1)
             self._log("##", f"--- Start {time.strftime('%Y-%m-%d %H:%M:%S')} ---")
@@ -934,6 +936,15 @@ class Radio:
         qccu.kann_stellen = self.kann_stellen
         qccu.on_install = self.on_install
 
+    # ⚠️ Der Rohmitschnitt waechst unbegrenzt — am Pruefstand rund 380 kB an
+    # einem Tag, mit mehr Geraeten entsprechend mehr. Als Dauerbetrieb auf
+    # einem fremden Rechner ist das eine Falle: er liegt in `/data`, und das
+    # ist bei einer Erweiterung dieselbe Partition wie alles andere. Darum
+    # zwei Dateien und ein Deckel; mehr Geschichte braucht niemand, der einen
+    # Funkfehler sucht.
+    RAW_MAX = 8 * 1024 * 1024
+    RAW_PRUEF_JE = 500          # nicht bei jeder Zeile die Groesse messen
+
     def _log(self, direction, text):
         """Eine Zeile in den Rohmitschnitt."""
         if not self._raw:
@@ -942,6 +953,40 @@ class Radio:
         ts = time.strftime("%H:%M:%S", time.localtime(t)) + ".%03d" % int(t % 1 * 1000)
         with self._log_lock:
             self._raw.write(f"{ts} {direction} {text}\n")
+            self._raw_zeilen += 1
+            if self._raw_zeilen % self.RAW_PRUEF_JE == 0:
+                self._raw_umbrechen()
+
+    def _raw_umbrechen(self):
+        """Ist der Mitschnitt voll, eine Runde weiterschieben.
+
+        Aufrufer haelt `_log_lock`. Scheitert das Umbenennen, wird
+        weitergeschrieben statt den Funk anzuhalten — ein voller Mitschnitt
+        ist ein Aergernis, ein stehengebliebener Funk ein Ausfall.
+        """
+        if self._raw_umbruch_aus:
+            return
+        try:
+            if self._raw.tell() < self.RAW_MAX:
+                return
+            name = self._raw.name
+            self._raw.close()
+            os.replace(name, name + ".1")
+            self._raw = open(name, "a", buffering=1)
+        except Exception as ex:                              # noqa: BLE001
+            # ⚠️ EINMAL melden, dann Ruhe geben. Scheitert das Umbenennen
+            # (volle Platte, schreibgeschuetztes Verzeichnis), scheitert es
+            # beim naechsten Mal genauso — wer es bei jeder Pruefung neu
+            # meldet, ertraenkt das Protokoll in derselben Zeile.
+            if not self._raw_umbruch_aus:
+                print(f"  ! Rohmitschnitt nicht umgebrochen ({ex}) — er "
+                      f"waechst jetzt ungebremst weiter.")
+            self._raw_umbruch_aus = True
+            if self._raw is not None and self._raw.closed:
+                try:
+                    self._raw = open(name, "a", buffering=1)
+                except Exception:                            # noqa: BLE001
+                    self._raw = None
 
     def _load_state(self):
         if not self.state_file or not os.path.exists(self.state_file):
