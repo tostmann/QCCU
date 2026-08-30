@@ -491,6 +491,32 @@ STELLBEFEHLE = {
 }
 
 APP_RESP_REQ = 0x80
+# ⚠️ Das erste Byte des Anwendungskopfes traegt DREI Dinge, nicht zwei:
+#
+#     Bit 7 (0x80)  Antwort erwuenscht
+#     Bit 6 (0x40)  WACH BLEIBEN
+#     Bit 5..0      Rahmentyp
+#
+# Belegt aus `ApplicationHeader.parse`/`generate` (HMIPServer-Jar):
+# `stayAwakeBit = (data[index] & 0x40) != 0`, und beim Bauen
+# `tempvalue |= 0x40`. QCCU hat das obere Bit immer gesetzt und das mittlere
+# nie — fuer ein Geraet, das dauernd hoert, ohne Folgen. Fuer eines, das nur
+# kurz aufwacht, ist es der Unterschied zwischen „hoert den naechsten Frame"
+# und „schlaeft wieder ein".
+APP_STAY_AWAKE = 0x40
+
+# Hoerertypen aus dem Betriebsmodus des Anlernrufs (untere vier Bit).
+# `ListenerMode` im Jar fuehrt zehn Werte; `isNonPermanentListener()` gibt
+# fuer GENAU DREI wahr zurueck — nachgelesen, nicht abgeleitet:
+#
+#     4  EVENT_LISTENER
+#     5  EVENT_LISTENER_WITH_POWER_SAVE
+#     8  CYCLIC_LISTENER
+#
+# Alles Uebrige (0 permanent, 1/3 Burst, 9/11 zyklisch MIT Burst, 12/14
+# permanent an Draht/Backbone) hoert dauerhaft oder laesst sich mit einem
+# Burst wecken. Nur diese drei muss man abwarten.
+LM_NICHT_STAENDIG = (4, 5, 8)
 RXF_FOR_US = 0x01
 
 # Das erste Nutzlastbyte eines STATUS-Frames traegt neben dem Inhaltsformat
@@ -539,6 +565,23 @@ LINK_APPSEQ_START = 0x05
 LINK_APPSEQ_SCHRITT = 2
 LINK_ERSTE_PAUSE = 2.35    # zu frueh gesendet nimmt das Geraet sie nicht an
 LINK_PAUSE = 0.3
+# Wiederholung, wenn die ANSWER des Geraets ausbleibt. Die Zentrale
+# wiederholt im 220-ms-Takt (`Transaction.Retry.Interval`, SendFrameTask) und
+# gibt die Konfigurationstransaktion erst nach 600 s auf. So lange halten wir
+# das Anlernfenster nicht auf; drei Anlaeufe decken den einzelnen
+# Empfangsverlust ab, um den es hier geht.
+LINK_VERSUCHE = 3
+LINK_WIEDERHOLUNG = 0.22
+# Wie lange auf die ANSWER gewartet wird. Im Mitschnitt antwortete das Geraet
+# nach 150–180 ms (`luft_exp4.log`); 600 ms lassen Luft, ohne den Anlernvorgang
+# spuerbar zu dehnen.
+LINK_ANTWORT_ZEIT = 0.6
+# Wie lange ein Anlernvorgang ohne Bestaetigung offen bleibt. Die Zentrale
+# behaelt das Geraet unbegrenzt (der Eintrag entsteht schon beim Anlernruf);
+# hier ist es ein Fenster, damit ein wirklich abgesprungenes Geraet nicht
+# spaeter aus Versehen auftaucht. Zwei Minuten decken den Fall ab, um den es
+# geht: das Geraet meldet sich nach dem Annehmen binnen Sekunden.
+NACHTRAG_FENSTER = 120.0
 
 SF_LOWBAT = 0x80
 SF_CONFIG_PENDING = 0x40
@@ -661,6 +704,20 @@ class Radio:
         self._rssi = {}
         # Funkadresse -> Ereignis: das Geraet hat den Ausschluss angenommen.
         self._exclude_ready = {}
+        # (Funkadresse, appSeq) -> Ereignis: die ANWENDUNGS-Quittung des
+        # Geraets. ⚠️ Nicht dasselbe wie `_acked`: das ist die MAC-Quittung
+        # („angekommen"), dies hier die ANSWER der Anwendungsschicht
+        # („angenommen"). Das Jar unterscheidet beides ebenfalls und ordnet
+        # die ANSWER ueber die appSeq zu (`ApplicationTask.
+        # evaluateTaskResponse`: fremde appSeq wird ignoriert).
+        self._app_ack = {}
+        # Funkadresse -> Befehle, die auf ein Lebenszeichen warten. Fuer
+        # Geraete, die nicht staendig hoeren; im Jar der
+        # `PendingDeviceCommandsHolder`.
+        self._wartend = {}
+        # Funkadresse -> nachzuholender Anlernabschluss, wenn die
+        # Bestaetigung ausgeblieben ist.
+        self._nachtrag = {}
         # (Geraetetyp, Kanal) -> VALUES-Paramset. Beim Deuten einer
         # Statusmeldung wird bis zu drei Dutzend Mal nach einer Beschreibung
         # gefragt; `paramset_of` baut jedes Mal ein neues Woerterbuch aus
@@ -1371,6 +1428,18 @@ class Radio:
 
         with self.lock:
             addr = self.by_hmid.get(src.lower())
+        if not addr and self._nachtrag.get(src.lower()):
+            # ⚠️ DAS Lebenszeichen. Das Geraet funkt gesichert unter der
+            # Adresse, die wir ihm angeboten haben — es HAT das Angebot also
+            # angenommen, nur die Bestaetigung ist uns entgangen. Genau hier
+            # heilt die Zentrale den Fall: `handleApplicationFrame` befoerdert
+            # ein Geraet bei JEDEM gesicherten Anwendungsframe zu INCLUDED,
+            # nicht nur bei der Bestaetigung. Wer stattdessen weiter „fremd"
+            # sagt, treibt ein angelerntes Geraet in die Router-Suche, aus der
+            # es ohne Werksreset nicht herauskommt (gemessen 17.08.2026).
+            self._nachtrag_einloesen(src.lower())
+            with self.lock:
+                addr = self.by_hmid.get(src.lower())
         if not addr:
             # Fremder Absender ohne Anlernwunsch: das ist der Funkverkehr der
             # Nachbarschaft und geht uns nichts an. NICHT in den Posteingang —
@@ -1395,6 +1464,13 @@ class Radio:
 
         with self.lock:
             self.devseq[src.lower()] = pt[1]
+
+        # Die ANSWER des Geraets — die Auskunft, ob es einen Frame ANGENOMMEN
+        # hat. Zugeordnet ueber die appSeq, wie im Jar; Nutzlast 0 heisst ACK,
+        # alles andere ist eine Ablehnung.
+        if (pt[0] & 0x3F) == FT_ANSWER:
+            self._app_quittung(src.lower(), pt[1],
+                               pt[2] if len(pt) > 2 else 0)
 
         # ⚠️ Die Zeitanfrage wird beantwortet, AUCH OHNE respReq-Bit. Sie ist
         # die einzige Ausnahme, und sie ist gemessen: der HmIP-BWTH-A fragt
@@ -1424,6 +1500,12 @@ class Radio:
             # Alles Uebrige nur auf ausdruecklichen Wunsch: eine Quittung, die
             # niemand angefordert hat, kostet nur Sendezeit.
             self._answer(src.lower(), pt[1])
+
+        # Das Geraet ist WACH — jetzt geht hinaus, was auf es gewartet hat.
+        # Die Reihenfolge ist die der Zentrale: erst die Quittung mit dem
+        # Wach-Bit, dann der Befehl.
+        if self._wartend.get(src.lower()):
+            self._nachreichen(src.lower())
 
         if len(pt) < 4 or (pt[0] & 0x3F) != FT_STATUS:
             return
@@ -1741,12 +1823,25 @@ class Radio:
         (self._ansq if kind in ("answer", "zeit") else self._txq).put(job)
         return job
 
+    def _wach_bit(self, hmid):
+        """`APP_STAY_AWAKE`, wenn fuer dieses Geraet noch etwas aussteht.
+
+        So macht es die Zentrale: `createAnswer(..., stayAwake, ...)` und
+        `createCurrentTimeFrame(..., stayAwake, ...)` bekommen beide
+        `dataPending` herein. Ein Geraet, das nur kurz aufwacht, bleibt
+        dadurch wach, bis der wartende Befehl draussen ist — sonst schlaeft
+        es zwischen Quittung und Befehl wieder ein.
+        """
+        with self.lock:
+            return APP_STAY_AWAKE if self._wartend.get(hmid.lower()) else 0
+
     def _answer(self, hmid, appseq):
         """ANSWER auf einen Frame, der eine Antwort angefordert hat."""
         if not self.answer_enabled:
             self._log("##", f"ANTWORT UNTERDRUECKT appSeq=0x{appseq:02X}")
             return
-        self._submit(f"ms{hmid.upper()}02{appseq:02X}00", "answer",
+        kopf = FT_ANSWER | self._wach_bit(hmid)
+        self._submit(f"ms{hmid.upper()}{kopf:02X}{appseq:02X}00", "answer",
                      time.time() + self.answer_delay)
 
     @staticmethod
@@ -1787,7 +1882,8 @@ class Radio:
     def _time_info(self, hmid, appseq):
         """Die Zeitanfrage eines Geraets mit der Ortszeit beantworten."""
         p = self.zeit_payload(time.localtime())
-        self._submit(f"ms{hmid.upper()}{FT_TIME_INFO:02X}{appseq:02X}{p.hex().upper()}",
+        kopf = FT_TIME_INFO | self._wach_bit(hmid)
+        self._submit(f"ms{hmid.upper()}{kopf:02X}{appseq:02X}{p.hex().upper()}",
                      "zeit", time.time() + self.answer_delay)
         if self.verbose:
             print(f"  Zeit an {hmid}: {time.strftime('%a %d.%m.%Y %H:%M:%S')}")
@@ -2385,28 +2481,66 @@ class Radio:
 
         got = self._pair_ok.wait(5.0)
         self._pair_expect = None
+        ccu_addr = sgtin.hex()[-14:].upper()
         if not got:
+            # ⚠️ NICHT alles wegwerfen. Die ausbleibende Bestaetigung heisst
+            # nicht, dass das Geraet das Angebot verworfen hat — sie kann
+            # schlicht verlorengegangen sein. Das Geraet ist dann angelernt,
+            # funkt gesichert unter der angebotenen Adresse, und wir wuerden
+            # es als „fremd" abweisen: Router-Suche, Werksreset. Deshalb
+            # bleibt der Vorgang offen und wird beim ersten gesicherten
+            # Lebenszeichen nachgeholt (`_nachtrag_einloesen`). Die Zentrale
+            # macht dasselbe, nur noch grosszuegiger: sie traegt das Geraet
+            # schon beim Anlernruf ein und behaelt es auch im Fehlerfall.
+            with self.lock:
+                self._nachtrag[newa.hex()] = {
+                    "ccu_addr": ccu_addr, "devtype": devtype,
+                    "opmode": opmode, "src": src.hex(),
+                    "bis": time.time() + NACHTRAG_FENSTER}
             self._pair_busy = False
-            self.pair_last = (f"Geraet hat das Angebot nicht angenommen — "
-                              f"stimmt der Schluessel? Fenster bleibt offen")
-            self._log("##", "ANLERNEN keine Bestaetigung — nichts eingetragen")
+            self.pair_last = (f"Bestätigung blieb aus — {newa.hex()} wird "
+                              f"noch {int(NACHTRAG_FENSTER)} s lang "
+                              f"angenommen, falls das Gerät sich meldet")
+            self._log("##", f"ANLERNEN keine Bestaetigung — {newa.hex()} "
+                            f"bleibt {int(NACHTRAG_FENSTER)} s offen")
             if self.verbose:
-                print("  ! Anlernen: keine Bestaetigung, nichts eingetragen")
+                print(f"  ! Anlernen: keine Bestätigung. Meldet sich "
+                      f"{newa.hex()} trotzdem, wird nachgetragen.")
             return
 
-        # ZUERST das Geraet eintragen und die Funkadresse binden — vor allem
-        # anderen. Die erste Anfrage des Geraets (Zeit, Zustand) kommt rund
-        # eine Sekunde nach der Bestaetigung; wer sie als „fremden Absender"
-        # verwirft, treibt das Geraet in die Router-Suche (E00002), und aus
-        # der kommt es ohne Werksreset nicht mehr heraus — es wiederholt dann
-        # JEDE Sendung dreifach. Am Geraet gemessen, 17.08.2026.
-        ccu_addr = sgtin.hex()[-14:].upper()
-        self.qccu.add_device(ccu_addr, devtype, neu_angelernt=True)
-        self.bind(newa.hex(), ccu_addr)
+        self._anlernen_eintragen(newa.hex(), ccu_addr, devtype)
+        self._anlernen_rest(newa.hex(), ccu_addr, devtype, opmode, src.hex())
 
-        # Wegemeldung wie die echte Zentrale: rund 185 ms nach ihrer Quittung
-        # (fester Takt, in allen Referenzzyklen gleich). Nicht 2,5 s — in der
-        # Luecke suchte das Geraet bereits einen Router.
+    # -- Abschluss des Anlernens, aus zwei Wegen erreichbar ---------------
+    #
+    # Weg 1: die Bestaetigung kam (`_pair_do`).
+    # Weg 2: sie kam nicht, aber das Geraet funkt trotzdem unter der
+    #        angebotenen Adresse (`_nachtrag_einloesen`).
+
+    def _anlernen_eintragen(self, hmid, ccu_addr, devtype):
+        """Geraet fuehren und Funkadresse binden — das MUSS zuerst geschehen.
+
+        Die erste Anfrage des Geraets (Zeit, Zustand) kommt rund eine Sekunde
+        nach der Bestaetigung; wer sie als „fremden Absender" verwirft, treibt
+        das Geraet in die Router-Suche (E00002), und aus der kommt es ohne
+        Werksreset nicht mehr heraus — es wiederholt dann JEDE Sendung
+        dreifach. Am Geraet gemessen, 17.08.2026.
+        """
+        self.qccu.add_device(ccu_addr, devtype, neu_angelernt=True)
+        self.bind(hmid, ccu_addr)
+        # Der Vorgang ist erledigt — eine noch offene Vormerkung waere von
+        # jetzt an nur noch eine Fussangel.
+        with self.lock:
+            self._nachtrag.pop(hmid, None)
+
+    def _anlernen_rest(self, hmid, ccu_addr, devtype, opmode, src):
+        """Wegemeldung, Verdrahtung, Aufraeumen — alles nach dem Eintrag."""
+        # Wegemeldung wie die echte Zentrale: rund 185 ms nach ihrer Quittung.
+        # ⚠️ Diese Zahl steht NICHT im Jar — dort ist die Wegemeldung schlicht
+        # die naechste serialisierte Transaktion nach der Bestaetigung. Sie
+        # stammt aus den Referenzmitschnitten (184/186/186 ms in drei
+        # goldenen Zyklen). Nicht 2,5 s — in der Luecke suchte das Geraet
+        # bereits einen Router.
         # ⚠️ Der Betriebsmodus im ROUTE_RESPONSE ist DER DES GERAETS, nicht der
         # der Zentrale: `RouteResponse.setOperationMode()` zerlegt genau dieses
         # Byte in `acessController` (0x80), `router` (0x40), `portableDevice`
@@ -2420,41 +2554,160 @@ class Radio:
             print(f"  Anlernen: Betriebsmodus 0x{opmode:02x} "
                   f"(Router={'ja' if opmode & 0x40 else 'nein'}, "
                   f"ListenerMode={opmode & 0x0F})")
-        self._submit("mT31f00002" + "01" + newa.hex() + "000000"
+        self._submit("mT31f00002" + "01" + hmid + "000000"
                      + f"{opmode:02x}" + "17", "cmd")
 
         # Die Verknuepfungen erst spaeter — zu frueh gesendet nimmt das Geraet
         # sie nicht an (am echten Geraet gemessen).
-        self._verdrahten(newa, devtype)
+        self._verdrahten(bytes.fromhex(hmid), devtype, opmode)
 
-        self.spuren_raeumen(src.hex(), ccu_addr)
+        self.spuren_raeumen(src, ccu_addr)
 
-        self.pair_last = f"{ccu_addr} angelernt als {newa.hex()} (Typ {devtype})"
-        self._log("##", f"ANLERNEN fertig {ccu_addr} -> {newa.hex()}")
+        self.pair_last = f"{ccu_addr} angelernt als {hmid} (Typ {devtype})"
+        self._log("##", f"ANLERNEN fertig {ccu_addr} -> {hmid}")
         if self.verbose:
-            print(f"  Anlernen abgeschlossen: {ccu_addr} -> {newa.hex()}")
+            print(f"  Anlernen abgeschlossen: {ccu_addr} -> {hmid}")
         merke = getattr(self.qccu, "merke_ereignis", None)
         if merke:
-            merke("ok", f"{ccu_addr} angelernt (Funkadresse {newa.hex()})")
+            merke("ok", f"{ccu_addr} angelernt (Funkadresse {hmid})")
         frisch = getattr(self.qccu, "merke_frisch_angelernt", None)
         if frisch:
             frisch(ccu_addr)
 
-        nxt = (int(self.pair_next_addr, 16) + 1) & 0xFFFFFF
-        self.pair_next_addr = f"{nxt:06x}"
-        if hasattr(self.qccu, "pair_next_addr"):
-            self.qccu.pair_next_addr = self.pair_next_addr
-            self.qccu.save_store()
-        self.pair_key = None
-        self.pair_until = 0.0
+        # ⚠️ Nur weiterzaehlen, wenn dieses Angebot noch das offene ist. Beim
+        # Nachtrag kann inzwischen ein anderes Geraet drangewesen sein.
+        if self.pair_next_addr == hmid:
+            nxt = (int(hmid, 16) + 1) & 0xFFFFFF
+            self.pair_next_addr = f"{nxt:06x}"
+            if hasattr(self.qccu, "pair_next_addr"):
+                self.qccu.pair_next_addr = self.pair_next_addr
+                self.qccu.save_store()
+            self.pair_key = None
+            self.pair_until = 0.0
         self._pair_busy = False
 
-    def _verdrahten(self, newa, devtype):
+    def _nachtrag_einloesen(self, hmid):
+        """Ein Geraet nachtragen, das sich ohne Bestaetigung gemeldet hat."""
+        with self.lock:
+            e = self._nachtrag.pop(hmid, None)
+        if not e:
+            return
+        if time.time() > e["bis"]:
+            self._log("##", f"NACHTRAG {hmid} verfallen")
+            return
+        self._log("##", f"NACHTRAG {hmid} eingeloest — das Geraet funkt "
+                        f"gesichert unter der angebotenen Adresse")
+        if self.verbose:
+            print(f"  Anlernen nachgetragen: {e['ccu_addr']} meldet sich als "
+                  f"{hmid} — die Bestätigung war verlorengegangen.")
+        # Eintragen SOFORT, damit der gerade laufende Frame nicht doch noch
+        # als fremd durchfaellt; der Rest im eigenen Faden, weil er wartet.
+        self._anlernen_eintragen(hmid, e["ccu_addr"], e["devtype"])
+        threading.Thread(
+            target=self._anlernen_rest,
+            args=(hmid, e["ccu_addr"], e["devtype"], e["opmode"], e["src"]),
+            daemon=True).start()
+
+    def _app_quittung(self, hmid, appseq, ergebnis):
+        """Eine ANSWER des Geraets einer gesendeten appSeq zuordnen.
+
+        Eine appSeq, auf die niemand wartet, wird stillschweigend verworfen —
+        so haelt es auch `ApplicationTask.evaluateTaskResponse`.
+        """
+        with self.lock:
+            eintrag = self._app_ack.get((hmid, appseq))
+            offen = self._wartend.get(hmid) or []
+            self._wartend[hmid] = [e for e in offen if e["appseq"] != appseq]
+            if not self._wartend[hmid]:
+                self._wartend.pop(hmid, None)
+        if eintrag is not None:
+            eintrag["ergebnis"] = ergebnis
+            eintrag["ev"].set()
+
+    def _nachreichen(self, hmid):
+        """Was auf ein Lebenszeichen gewartet hat, jetzt senden.
+
+        ⚠️ Die Eintraege bleiben stehen, bis ihre ANSWER kommt. Ein Geraet,
+        das nur kurz aufwacht, bekommt seinen Befehl damit beim naechsten
+        Aufwachen erneut — das ist der Ersatz fuer den Wiederholungstakt, den
+        die Zentrale bei staendigen Hoerern faehrt. Nach `LINK_VERSUCHE`
+        vergeblichen Anlaeufen wird aufgegeben, statt ein Geraet endlos
+        anzusprechen.
+        """
+        with self.lock:
+            offen = list(self._wartend.get(hmid) or [])
+            uebrig = []
+            senden = []
+            for e in offen:
+                if e["versuche"] >= LINK_VERSUCHE:
+                    continue
+                e["versuche"] += 1
+                senden.append(e)
+                uebrig.append(e)
+            aufgegeben = len(offen) - len(uebrig)
+            if uebrig:
+                self._wartend[hmid] = uebrig
+            else:
+                self._wartend.pop(hmid, None)
+        if aufgegeben:
+            self._log("##", f"WARTEND {aufgegeben} Befehl(e) an {hmid} "
+                            f"aufgegeben (nach {LINK_VERSUCHE} Anlaeufen)")
+        for e in senden:
+            self._submit(e["cmd"], "cmd")
+        if senden:
+            self._log("##", f"WARTEND {len(senden)} Befehl(e) an {hmid} "
+                            f"nachgereicht (Geraet ist wach)")
+
+    def _link_senden(self, hmid, appseq, cmd):
+        """Einen Konfigurationsrahmen senden und auf die ANSWER warten.
+
+        Das Jar wertet die ANSWER aus und wiederholt bei Ausbleiben
+        (`SendFrameTask.getRetryTaskActionIfPossible`, Takt 220 ms). QCCU hat
+        bisher einmal gesendet und `Pm tx ok` fuer Erfolg gehalten — das
+        belegt aber nur, dass der Stick gesendet hat, nicht dass das Geraet
+        es angenommen hat. Auf verlustreicher Strecke blieb das Geraet dann
+        unverdrahtet und meldete sich kurz darauf wieder ab.
+        """
+        eintrag = {"ev": threading.Event(), "ergebnis": None}
+        with self.lock:
+            self._app_ack[(hmid, appseq)] = eintrag
+        try:
+            for versuch in range(1, LINK_VERSUCHE + 1):
+                eintrag["ev"].clear()
+                self._submit(cmd, "cmd")
+                if eintrag["ev"].wait(LINK_ANTWORT_ZEIT):
+                    if eintrag["ergebnis"]:
+                        self._log("##", f"VERDRAHTUNG appSeq=0x{appseq:02X} "
+                                        f"abgelehnt (0x{eintrag['ergebnis']:02X})")
+                        return False
+                    if versuch > 1:
+                        self._log("##", f"VERDRAHTUNG appSeq=0x{appseq:02X} "
+                                        f"angenommen im Anlauf {versuch}")
+                    return True
+                if versuch < LINK_VERSUCHE:
+                    time.sleep(LINK_WIEDERHOLUNG)
+        finally:
+            with self.lock:
+                self._app_ack.pop((hmid, appseq), None)
+        self._log("##", f"VERDRAHTUNG appSeq=0x{appseq:02X} ohne Antwort nach "
+                        f"{LINK_VERSUCHE} Anlaeufen")
+        return None
+
+    def _verdrahten(self, newa, devtype, opmode=0):
         """Die interne Verdrahtung des Geraets einrichten — beide Richtungen.
 
         Quelle ist die Geraetebeschreibung des Herstellers, nicht eine Liste
         im Code. Ein Typ ohne Eintrag bekommt nichts; das ist eine Aussage der
         Beschreibung und keine Luecke.
+
+        ⚠️ WANN gesendet wird, haengt am Hoerertyp im Betriebsmodus. Ein
+        Geraet, das dauernd hoert, bekommt die Rahmen sofort — mit
+        Auswertung der ANSWER und Wiederholung. Ein Geraet, das nur kurz
+        aufwacht (EVENT/CYCLIC), bekaeme davon nichts mit: es schlaeft
+        waehrend unserer Pause. Fuer das wandern sie in die Warteliste und
+        gehen hinaus, sobald es sich meldet — genau der
+        `PendingDeviceCommandsHolder` der Zentrale, und unsere Quittung traegt
+        bis dahin das Wach-Bit.
         """
         links = []
         try:
@@ -2482,29 +2735,61 @@ class Radio:
                 self._log("##", f"ANLERNEN Typ {devtype} ohne interne Verdrahtung")
             return
 
+        hmid = newa.hex()
         appseq = LINK_APPSEQ_START
-        erste = True
+        rahmen = []
         for quelle, ziel in links:
             for a, b in ((quelle, ziel), (ziel, quelle)):
-                time.sleep(LINK_ERSTE_PAUSE if erste else LINK_PAUSE)
-                erste = False
-                self._submit(f"ms{newa.hex().upper()}C1{appseq:02X}"
-                             f"{a:02X}01{newa.hex().upper()}"
-                             f"{b:02X}0000", "cmd")
+                rahmen.append((appseq,
+                               f"ms{hmid.upper()}C1{appseq:02X}"
+                               f"{a:02X}01{hmid.upper()}"
+                               f"{b:02X}0000"))
                 appseq = (appseq + LINK_APPSEQ_SCHRITT) & 0xFF
+
         # ⚠️ Den eigenen Zaehler nachziehen. Die Verknuepfungen laufen an
         # `_next_seq` vorbei (5, 7, 9 …), und `_handle` uebernimmt die appSeq
         # AUCH aus den Quittungen des Geraets — das ist das Echo unserer
         # eigenen Nummer. Ohne das hier koennte der naechste Befehl dieselbe
         # Nummer noch einmal vergeben.
         with self.lock:
-            self.appseq[newa.hex()] = (appseq - LINK_APPSEQ_SCHRITT) & 0xFF
+            self.appseq[hmid] = (appseq - LINK_APPSEQ_SCHRITT) & 0xFF
         self._save_state()
+
+        hoerer = opmode & 0x0F
+        if hoerer in LM_NICHT_STAENDIG:
+            with self.lock:
+                self._wartend[hmid] = [
+                    {"cmd": cmd, "appseq": seq, "versuche": 0}
+                    for seq, cmd in rahmen]
+            self._log("##", f"ANLERNEN Hoerertyp {hoerer} — {len(rahmen)} "
+                            f"Verknuepfungsrahmen warten auf ein Lebenszeichen")
+            if self.verbose:
+                print(f"  Anlernen: Gerät hört nicht ständig (Hörertyp "
+                      f"{hoerer}) — die Verdrahtung geht hinaus, sobald es "
+                      f"sich meldet.")
+            return
+
+        erste = True
+        angenommen = 0
+        for seq, cmd in rahmen:
+            time.sleep(LINK_ERSTE_PAUSE if erste else LINK_PAUSE)
+            erste = False
+            if self._link_senden(hmid, seq, cmd):
+                angenommen += 1
+
         self._log("##", "ANLERNEN verdrahtet: "
-                        + ", ".join(f"{q}<->{z}" for q, z in links))
+                        + ", ".join(f"{q}<->{z}" for q, z in links)
+                        + f" ({angenommen}/{len(rahmen)} quittiert)")
         if self.verbose:
             print("  Anlernen: interne Verdrahtung "
-                  + ", ".join(f"Kanal {q} <-> {z}" for q, z in links))
+                  + ", ".join(f"Kanal {q} <-> {z}" for q, z in links)
+                  + f" — {angenommen} von {len(rahmen)} quittiert")
+        if angenommen < len(rahmen):
+            merke = getattr(self.qccu, "merke_ereignis", None)
+            if merke:
+                merke("warn", f"Verdrahtung nur teilweise quittiert "
+                              f"({angenommen}/{len(rahmen)}) — das Gerät kann "
+                              f"sich wieder abmelden.")
 
     # -- Anlernwuensche: gehoerte, aber unbekannte Geraete ----------------
     #
