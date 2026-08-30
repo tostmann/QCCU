@@ -33,7 +33,7 @@ except Exception:
 # Unerwartetes in die Umgebung schiebt.
 for name in ("SERIAL", "OWN_ADDR", "RPC_PORT", "REGA_PORT",
              "WEB_PORT", "JSON_PORT", "CUL_PORT", "ADVERTISE",
-             "SOFORT_MELDEN"):
+             "SOFORT_MELDEN", "ALT_PORTS", "LOCALHOST_ONLY"):
     wert = o.get(name.lower())
     if wert is None or wert == "":
         continue
@@ -82,6 +82,10 @@ CUL_PORT=${CUL_PORT:-0}
 # fremder Zentralen im selben Funknetz, damit sie nicht als eigene gewuerfelt
 # und ihr Verkehr nicht quittiert wird.
 BIDCOS_PORT=${BIDCOS_PORT:-0}
+# Ausweichports, wenn auf derselben Maschine schon eine OCCU laeuft.
+ALT_PORTS=${ALT_PORTS:-0}
+# Dienste nur ueber 127.0.0.1 — fuer FHEM/HA auf derselben Maschine.
+LOCALHOST_ONLY=${LOCALHOST_ONLY:-0}
 BIDCOS_SENDEN=${BIDCOS_SENDEN:-0}
 BIDCOS_FREMD=${BIDCOS_FREMD:-}
 ADVERTISE=${ADVERTISE:-}
@@ -288,6 +292,8 @@ serve() {
         --json-port "$JSON_PORT" \
         --cul-port "$CUL_PORT" \
         --bidcos-port "$BIDCOS_PORT"
+    [ "$ALT_PORTS" = "1" ] && set -- "$@" --alt-ports
+    [ "$LOCALHOST_ONLY" = "1" ] && set -- "$@" --localhost
     [ "$BIDCOS_SENDEN" = "1" ] && set -- "$@" --bidcos-senden
     [ -n "$BIDCOS_FREMD" ] && set -- "$@" --bidcos-fremd "$BIDCOS_FREMD"
     [ -n "$ADVERTISE" ] && set -- "$@" --advertise "$ADVERTISE"

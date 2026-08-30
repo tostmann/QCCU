@@ -42,12 +42,27 @@ ports:
   8181/tcp: 8181
   8082/tcp: 8082
   2000/tcp: 2000
+  2001/tcp: 2001
+  # Dieselben Dienste auf den Ausweichports (alt_ports).
+  18080/tcp: 18080
+  12010/tcp: 12010
+  18181/tcp: 18181
+  18082/tcp: 18082
+  12000/tcp: 12000
+  12001/tcp: 12001
 ports_description:
   8080/tcp: Weboberfläche — hier wird angelernt
   2010/tcp: XML-RPC — Home Assistant und FHEM/HMCCU
   8181/tcp: ReGa — FHEM/HMCCU
   8082/tcp: JSON-RPC — Home Assistant (Homematic(IP) Local)
   2000/tcp: TCP-Zugang im culfw-Stil für BidCoS/AskSin (0 = aus)
+  2001/tcp: XML-RPC — Schnittstelle BidCos-RF
+  18080/tcp: Weboberfläche (Ausweichport)
+  12010/tcp: XML-RPC HmIP-RF (Ausweichport)
+  18181/tcp: ReGa (Ausweichport)
+  18082/tcp: JSON-RPC (Ausweichport)
+  12000/tcp: CUL-Zugang (Ausweichport)
+  12001/tcp: XML-RPC BidCos-RF (Ausweichport)
 
 # ── Zugang aus dem Menue von Home Assistant ────────────────────────────────
 # Mit Ingress laeuft die QCCU-Oberflaeche INNERHALB von Home Assistant: kein
@@ -77,7 +92,10 @@ options:
   advertise: ""
   cul_port: 2000
   json_port: 8082
+  bidcos_port: 2001
   sofort_melden: false
+  alt_ports: false
+  localhost_only: false
 schema:
   # Leer lassen: QCCU sucht den Stick selbst. Nur nötig, wenn mehrere
   # busware-Sticks stecken.
@@ -90,8 +108,18 @@ schema:
   advertise: "str?"
   cul_port: "port?"
   json_port: "port?"
+  # XML-RPC-Port der Schnittstelle BidCos-RF. 0 = aus.
+  bidcos_port: "port?"
   # Frisch angelernte Geräte sofort melden, statt sie im Posteingang warten
   # zu lassen. ⚠️ Nur einschalten, wenn die Gegenstelle keinen Posteingang
   # hat (FHEM/HMCCU) — Home Assistant verlangt sonst zusätzlich eine
   # Bestätigung unter „Einstellungen → System → Reparaturen".
   sofort_melden: "bool?"
+  # Alle Ports um 10000 verschieben (2010 → 12010). Nötig, wenn auf dieser
+  # Maschine schon eine OCCU/RaspberryMatic läuft — die belegt 2000, 2001,
+  # 2010 und 8181.
+  alt_ports: "bool?"
+  # Dienste (XML-RPC, ReGa, JSON-RPC, CUL-Zugang) nur über 127.0.0.1 — für
+  # FHEM oder Home Assistant auf derselben Maschine. Die Oberfläche bleibt
+  # erreichbar.
+  localhost_only: "bool?"

@@ -6,6 +6,7 @@ import json
 import os
 import queue
 import re
+import socket
 import sys
 import threading
 import time
@@ -303,6 +304,10 @@ class QCCU:
         self.rf = {}
         self.pair_next_addr = None
         self.stick_serial = None
+        # Was der Anwender in der Oberflaeche umstellen kann und was den
+        # Neustart ueberleben muss. ⚠️ Beides wirkt erst beim naechsten
+        # Start — Ports werden einmal gebunden.
+        self.einstellungen = {}
         # Vom Anwender vergebene Namen, je Geraet und je Kanal.
         self.names = {}
         # Frisch angelernte Geraete, die in der Haussteuerung noch bestaetigt
@@ -595,6 +600,7 @@ class QCCU:
                 n += 1
             except Exception as ex:
                 print(f"  ! Geraet {addr} nicht ladbar: {ex}")
+        self.einstellungen.update(data.get("einstellungen") or {})
         subs = data.get("subscribers") or {}
         if subs:
             self.subscribers.update(subs)
@@ -636,6 +642,8 @@ class QCCU:
             data["own_addr"] = self.own_addr
         if self.subscribers:
             data["subscribers"] = dict(self.subscribers)
+        if self.einstellungen:
+            data["einstellungen"] = dict(self.einstellungen)
         with self._store_lock:
             try:
                 tmp = self.store + ".tmp"
@@ -1348,6 +1356,71 @@ class RegaHandler(BaseHTTPRequestHandler):
         return out
 
 
+PORTFELDER = (("cul_port", "CUL-Zugang"), ("rpc_port", "XML-RPC HmIP-RF"),
+              ("bidcos_port", "XML-RPC BidCos-RF"), ("rega_port", "ReGa"),
+              ("json_port", "JSON-RPC"), ("web_port", "Weboberflaeche"))
+PORT_VERSATZ = 10000
+
+
+def port_frei(bind, port):
+    """Laesst sich dieser Port oeffnen?
+
+    ⚠️ Mit SO_REUSEADDR pruefen — genau so binden die Dienste selbst. Ohne
+    das meldet ein Port, auf dem eben noch etwas lief, faelschlich „belegt"
+    (TIME_WAIT), und wir wichen ohne Grund aus.
+    """
+    if not port:
+        return True
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        s.bind((bind, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
+def ports_waehlen(g):
+    """Ports pruefen und noetigenfalls ausweichen. Gibt Meldezeilen zurueck.
+
+    Laeuft auf derselben Maschine schon eine OCCU, sind 2000, 2001, 2010 und
+    8181 belegt. Statt beim Binden abzustuerzen, wird um `PORT_VERSATZ`
+    verschoben — die Endziffern bleiben dabei erhalten (2010 -> 12010).
+    `0` heisst „Dienst aus" und bleibt aus.
+    """
+    def belegte():
+        return [(name, getattr(g, feld))
+                for feld, name in PORTFELDER
+                if not port_frei(g.bind, getattr(g, feld, 0))]
+
+    def verschieben():
+        for feld, _ in PORTFELDER:
+            wert = getattr(g, feld, 0)
+            if wert:
+                setattr(g, feld, wert + PORT_VERSATZ)
+
+    zeilen = []
+    if g.alt_ports:
+        verschieben()
+        zeilen.append(f"  Ausweichports: alle Dienste um {PORT_VERSATZ} verschoben")
+    else:
+        weg = belegte()
+        if weg:
+            zeilen.append("  ! Belegt: " + ", ".join(f"{n} {p}" for n, p in weg))
+            verschieben()
+            g.alt_ports = True
+            zeilen.append(f"  Ausweichports: alle Dienste um {PORT_VERSATZ} "
+                          f"verschoben (laeuft hier schon eine OCCU?)")
+    noch = belegte()
+    if noch:
+        zeilen.append("  ! Auch belegt: "
+                      + ", ".join(f"{n} {p}" for n, p in noch)
+                      + " — diese Dienste werden nicht starten.")
+    return zeilen
+
+
 def main():
     a = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1387,6 +1460,18 @@ def main():
     a.add_argument("--web-port", type=int, default=8080,
                    help="Weboberflaeche (Anlernen, Geraete, Sendezeit). 0 = aus.")
     a.add_argument("--bind", default="0.0.0.0")
+    # Ausweichports fuer den Fall, dass auf derselben Maschine schon eine
+    # OCCU/RaspberryMatic laeuft: die belegt 2000, 2001, 2010 und 8181, und
+    # zwei Dienste auf demselben Port gibt es nicht. Der Schalter verschiebt
+    # ALLE eingeschalteten Ports gleichmaessig um 10000 — die Endziffern
+    # bleiben dabei erhalten (2010 -> 12010, 8082 -> 18082), die Zuordnung
+    # ist also ablesbar. Ausgeschaltete Dienste (0) bleiben aus.
+    a.add_argument("--localhost", action="store_true",
+                   help="nur auf 127.0.0.1 lauschen — von aussen nicht "
+                        "erreichbar")
+    a.add_argument("--alt-ports", action="store_true",
+                   help="alle Ports um 10000 verschieben (2010 -> 12010), "
+                        "wenn auf derselben Maschine schon eine OCCU laeuft")
     a.add_argument("--advertise", default=None,
                    help="Adresse, unter der uns die Gegenstelle erreicht "
                         "(geht in die Schnittstellen-Zeile)")
@@ -1444,9 +1529,26 @@ def main():
     lc.zurueckhalten = not g.sofort_melden
     lc.rega_log = g.rega_log
     lc.rpc_port = g.rpc_port
-    lc.own_host = g.advertise or g.bind if g.bind != "0.0.0.0" else (g.advertise or "127.0.0.1")
     if g.devices:
         lc.set_store(g.devices)
+
+    # ⚠️ ERST jetzt: die in der Oberflaeche gesetzten Schalter stehen im
+    # Speicher und muessen vor der Portwahl bekannt sein. Ein Schalter auf
+    # der Kommandozeile hat Vorrang — wer ihn setzt, meint ihn.
+    for feld in ("alt_ports", "localhost"):
+        if not getattr(g, feld) and lc.einstellungen.get(f"wunsch_{feld}"):
+            setattr(g, feld, True)
+    for zeile in ports_waehlen(g):
+        print(zeile)
+    lc.einstellungen.setdefault("wunsch_alt_ports", bool(g.alt_ports))
+    lc.einstellungen.setdefault("wunsch_localhost", bool(g.localhost))
+
+    # Die Dienste, die eine Gegenstelle auf DERSELBEN Maschine anspricht
+    # (FHEM, Home Assistant), koennen auf 127.0.0.1 bleiben. Die Oberflaeche
+    # NICHT — sonst sperrt man sich mit dem Haekchen selbst aus.
+    dienst_bind = "127.0.0.1" if g.localhost else g.bind
+    lc.own_host = (g.advertise or dienst_bind if dienst_bind != "0.0.0.0"
+                   else (g.advertise or "127.0.0.1"))
     try:
         from qccu_firmware import stick_suchen, stick_serial
         from qccu_radio import zufaellige_adresse
@@ -1508,11 +1610,11 @@ def main():
         except ImportError:
             sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
             from qccu_cul import CulDienst
-        cul = CulDienst(r, version=NAME_UND_FASSUNG, bind=g.bind,
+        cul = CulDienst(r, version=NAME_UND_FASSUNG, bind=dienst_bind,
                         port=g.cul_port, verbose=lc.verbose).start()
         r.cul = cul
         lc.cul = cul
-        print(f"  CUL-Zugang auf {g.bind}:{g.cul_port}  "
+        print(f"  CUL-Zugang auf {dienst_bind}:{g.cul_port}  "
               f"(FHEM: define cul CUL <rechner>:{g.cul_port} 1234)")
         return cul
 
@@ -1737,13 +1839,13 @@ def main():
         print(f"  Kein Stick an {g.serial} — die Oberflaeche fuehrt durch das "
               f"Einspielen der Firmware.")
 
-    rpc = SimpleXMLRPCServer((g.bind, g.rpc_port), requestHandler=RpcHandler,
+    rpc = SimpleXMLRPCServer((dienst_bind, g.rpc_port), requestHandler=RpcHandler,
                              allow_none=True, logRequests=False)
     rpc.register_instance(lc, allow_dotted_names=False)
     rpc.register_introspection_functions()
     rpc.register_multicall_functions()
     threading.Thread(target=rpc.serve_forever, daemon=True).start()
-    print(f"  XML-RPC auf {g.bind}:{g.rpc_port}")
+    print(f"  XML-RPC auf {dienst_bind}:{g.rpc_port}")
 
     # --- Schnittstelle BidCos-RF (zweiter Dienst, siehe qccu_bidcos_rpc) ---
     # ⚠️ Sie ist eine ZUGABE und darf die Zentrale nicht mitreissen: faellt
@@ -1769,7 +1871,7 @@ def main():
                 bt, radio=radio, state_file=zustand, verbose=lc.verbose,
                 version=NAME_UND_FASSUNG, fremde_zentralen=fremd,
                 senden_erlaubt=bool(g.bidcos_senden))
-            brpc = SimpleXMLRPCServer((g.bind, g.bidcos_port),
+            brpc = SimpleXMLRPCServer((dienst_bind, g.bidcos_port),
                                       requestHandler=RpcHandler,
                                       allow_none=True, logRequests=False)
             brpc.register_instance(bidcos, allow_dotted_names=False)
@@ -1778,7 +1880,7 @@ def main():
             threading.Thread(target=brpc.serve_forever, daemon=True).start()
             if radio is not None:
                 radio.bidcos = bidcos
-            print(f"  XML-RPC auf {g.bind}:{g.bidcos_port}  "
+            print(f"  XML-RPC auf {dienst_bind}:{g.bidcos_port}  "
                   f"(Schnittstelle BidCos-RF, Adresse "
                   f"{bidcos.zentrale.eigene_id}, {len(bidcos.devices)} Geraete)")
             if bt.fehlend:
@@ -1792,15 +1894,15 @@ def main():
                 print(f"    Sendet NICHT — die Schnittstelle liest nur mit "
                       f"(--bidcos-senden schaltet es frei).")
         except OSError as ex:
-            print(f"  ! BidCos-RF auf {g.bind}:{g.bidcos_port} nicht moeglich: {ex}")
+            print(f"  ! BidCos-RF auf {dienst_bind}:{g.bidcos_port} nicht moeglich: {ex}")
             print(f"    Alles Uebrige laeuft weiter.")
         except Exception as ex:                      # noqa: BLE001
             print(f"  ! BidCos-RF nicht gestartet: {ex}")
 
     RegaHandler.qccu = lc
-    rega = HTTPServer((g.bind, g.rega_port), RegaHandler)
+    rega = HTTPServer((dienst_bind, g.rega_port), RegaHandler)
     threading.Thread(target=rega.serve_forever, daemon=True).start()
-    print(f"  ReGa    auf {g.bind}:{g.rega_port}")
+    print(f"  ReGa    auf {dienst_bind}:{g.rega_port}")
 
     if g.json_port:
         # ⚠️ Die Auskunft fuer Home Assistant ist eine ZUGABE. Wenn ihr Port
@@ -1815,19 +1917,19 @@ def main():
             except ImportError:
                 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
                 import qccu_jsonrpc
-            qccu_jsonrpc.serve(lc, g.bind, g.json_port, verbose=lc.verbose,
+            qccu_jsonrpc.serve(lc, dienst_bind, g.json_port, verbose=lc.verbose,
                                rpc_port=g.rpc_port, hostname=g.advertise or None,
                                laut=bool(getattr(g, "json_log", False)),
                                bidcos=bidcos, bidcos_port=g.bidcos_port)
         except OSError as ex:
-            print(f"  ! JSON-RPC auf {g.bind}:{g.json_port} nicht moeglich: {ex}")
+            print(f"  ! JSON-RPC auf {dienst_bind}:{g.json_port} nicht moeglich: {ex}")
             print(f"    Home Assistant findet die Zentrale so NICHT. Anderen "
                   f"Port setzen (--json-port) oder abschalten (0).")
             print(f"    Alles Uebrige laeuft weiter.")
         except Exception as ex:                      # noqa: BLE001
             print(f"  ! JSON-RPC nicht gestartet: {ex}")
         else:
-            print(f"  JSON-RPC auf {g.bind}:{g.json_port}{qccu_jsonrpc.API_PATH}  "
+            print(f"  JSON-RPC auf {dienst_bind}:{g.json_port}{qccu_jsonrpc.API_PATH}  "
                   f"(Home Assistant, Schnittstelle {lc.interface_name})")
 
     if g.web_port:
@@ -1840,7 +1942,21 @@ def main():
                   anbindung={"host": g.advertise or None,
                              "interface": lc.interface_name,
                              "rpc_port": g.rpc_port,
-                             "json_port": g.json_port},
+                             "json_port": g.json_port,
+                             "bidcos_port": g.bidcos_port,
+                             "rega_port": g.rega_port,
+                             "cul_port": g.cul_port,
+                             "web_port": g.web_port,
+                             # Was LAEUFT — und was gewuenscht ist. Weichen
+                             # sie ab, fehlt ein Neustart.
+                             "alt_ports": bool(g.alt_ports),
+                             "localhost": bool(g.localhost),
+                             "wunsch_alt_ports": bool(
+                                 lc.einstellungen.get("wunsch_alt_ports",
+                                                      g.alt_ports)),
+                             "wunsch_localhost": bool(
+                                 lc.einstellungen.get("wunsch_localhost",
+                                                      g.localhost))},
                   bidcos=bidcos)
         host = g.advertise or ("127.0.0.1" if g.bind == "0.0.0.0" else g.bind)
         print(f"  Weboberflaeche auf http://{host}:{g.web_port}/  "
