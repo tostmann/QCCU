@@ -1970,6 +1970,40 @@ def main():
     # ueber XML-RPC (FHEM/HMCCU). Frueher hing er am Web-Zweig — wer die
     # Oberflaeche abschaltete, hatte auch keine Wiederanbindung.
     threading.Thread(target=stick_waechter, daemon=True).start()
+    def fenster_waechter(pause=2.0):
+        """Meldet, wenn ein Anlernfenster von selbst ablaeuft.
+
+        ⚠️ Oeffnen und Schliessen von Hand melden die jeweiligen Wege selbst;
+        das ABLAUFEN meldete niemand. Gerade das ist aber die Erklaerung fuer
+        „ich habe gedrueckt und nichts passierte" — beide Familien deshalb
+        gleich behandeln.
+        """
+        # Je Familie das zuletzt gesehene Ende. Damit lassen sich die beiden
+        # Faelle trennen: verschwindet das Fenster VOR seinem Ende, hat es
+        # jemand von Hand geschlossen — das meldet der jeweilige Weg bereits.
+        # Erst wenn das Ende erreicht war, ist es abgelaufen.
+        bis = {"HmIP": 0.0, "BidCoS": 0.0}
+        while True:
+            time.sleep(pause)
+            r = getattr(lc, "radio", None)
+            jetzt = time.time()
+            enden = {
+                "HmIP": float(getattr(r, "pair_until", 0.0) or 0.0),
+                "BidCoS": (jetzt + bidcos.zentrale.anlernen_offen()
+                           if bidcos and bidcos.zentrale.anlernen_offen() > 0
+                           else 0.0),
+            }
+            for name, ende in enden.items():
+                if ende > jetzt:
+                    bis[name] = ende
+                elif bis[name]:
+                    abgelaufen = jetzt >= bis[name] - pause
+                    bis[name] = 0.0
+                    if abgelaufen:
+                        lc.merke_ereignis(
+                            "warn", f"{name} Anlernfenster abgelaufen — es "
+                                    f"wurde nichts angelernt.")
+
     def bestand_nachmelden():
         """Uebernommenen Rueckrufen den Bestand von sich aus schicken.
 
@@ -2002,6 +2036,7 @@ def main():
 
     bestand_nachmelden()
     threading.Thread(target=stille_waechter, daemon=True).start()
+    threading.Thread(target=fenster_waechter, daemon=True).start()
     print("  bereit — mit Strg-C beenden")
 
     def beenden(grund):

@@ -67,11 +67,19 @@ button.primary:hover{filter:brightness(1.08)}
 button.quiet{border-color:transparent;background:transparent;color:var(--mut);padding:.35rem .5rem}
 button.quiet:hover{color:var(--fg);background:var(--bg)}
 button[disabled]{opacity:.5;cursor:default}
+.an{display:flex;gap:.45rem;align-items:center;margin:.5rem 0}
+.ports{width:auto}.ports td{padding:.15rem .6rem .15rem 0;border:0}
 .bar{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center}
 
-input{font:inherit;padding:.55rem .7rem;border:1px solid var(--line);border-radius:7px;
+/* ⚠️ Ausdruecklich NUR Textfelder. Ohne den Ausschluss bekommt auch eine
+   Checkbox padding, width:100% und den Fokusrahmen — und sitzt dann als
+   handtellergrosses blaues Feld in der Zeile. */
+input:not([type=checkbox]):not([type=radio]){
+  font:inherit;padding:.55rem .7rem;border:1px solid var(--line);border-radius:7px;
   background:var(--bg);color:var(--fg);width:100%}
-input:focus{outline:2px solid var(--acc);outline-offset:-1px;border-color:transparent}
+input:not([type=checkbox]):not([type=radio]):focus{
+  outline:2px solid var(--acc);outline-offset:-1px;border-color:transparent}
+input[type=checkbox]{width:auto;margin:0;accent-color:var(--acc)}
 label{display:block;font-size:.82rem;color:var(--mut);margin:0 0 .3rem}
 .field{margin-bottom:.9rem}
 .hint{font-size:.82rem;color:var(--mut);margin:.35rem 0 0}
@@ -83,8 +91,16 @@ a{color:var(--acc)}
   background:var(--mut);margin-right:.4rem;vertical-align:.05rem}
 .dot.on{background:var(--ok)} .dot.off{background:var(--bad)}
 
-.meter{height:5px;background:var(--line);border-radius:3px;overflow:hidden;margin-top:.4rem}
+.meter{height:5px;background:var(--line);border-radius:3px;overflow:hidden;margin-top:.4rem;position:relative}
 .meter>i{display:block;height:100%;background:var(--acc);transition:width .3s}
+.meter>i.ok{background:var(--ok)}.meter>i.warn{background:var(--warn)}
+.meter>i.bad{background:var(--bad)}
+/* Der Spitzenwert als Marke auf derselben Leiste — er gehoert daneben,
+   nicht in eine zweite Zeile: sonst verliert man den Bezug zum Boden. */
+.meter>b{position:absolute;top:-2px;width:2px;height:9px;background:var(--fg);
+  opacity:.55;border-radius:1px;transition:left .3s}
+.skala{display:flex;justify-content:space-between;font-size:.7rem;
+  color:var(--mut);margin-top:.15rem}
 .kv{display:grid;grid-template-columns:auto 1fr;gap:.3rem 1rem;font-size:.9rem}
 .kv dt{color:var(--mut)} .kv dd{margin:0}
 
@@ -113,6 +129,7 @@ pre.log{background:var(--bg);border:1px solid var(--line);border-radius:8px;
 footer{margin-top:2rem;padding-top:1rem;border-top:1px solid var(--line);
   color:var(--mut);font-size:.82rem;text-align:center}
 footer a{color:var(--mut)} footer a:hover{color:var(--acc)}
+.kacheln{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}.kacheln>.card{margin:0}
 </style></head><body><div class="wrap">
 
 <header>
@@ -129,8 +146,9 @@ footer a{color:var(--mut)} footer a:hover{color:var(--acc)}
 
 <div class="card">
   <div class="body bar">
-    <button class="primary" onclick="oeffneAnlernen()">Gerät anlernen</button>
-    <button onclick="oeffneFirmware()">Stick-Firmware</button>
+    <button class="primary" onclick="oeffneAnlernen()">HmIP anlernen</button>
+    <button class="primary" id="btn_bidcos" style="display:none"
+            onclick="oeffneBidcos()">BidCoS anlernen</button>
   </div>
 </div>
 
@@ -190,16 +208,35 @@ footer a{color:var(--mut)} footer a:hover{color:var(--acc)}
       <tr><td>Host</td><td><code id="ha_host">—</code></td></tr>
       <tr><td>Benutzer / Kennwort</td><td><code>beliebig</code>
         <span class="hint">— die QCCU prüft keine Zugangsdaten</span></td></tr>
-      <tr><td>Schnittstellen</td><td>nur <code id="ha_if">HmIP-RF</code> anhaken</td></tr>
-      <tr><td>Eigene Ports setzen</td><td>JSON <code id="ha_json">—</code>,
-        <code id="ha_if2">HmIP-RF</code> <code id="ha_rpc">—</code></td></tr>
+      <tr><td>Schnittstellen</td><td>nur <code id="ha_if">HmIP-RF</code> anhaken
+        <p class="hint" id="ha_ifhint"></p></td></tr>
+      <tr><td>Eigene Ports setzen</td><td><table class="ports"><tbody id="ha_ports">
+        </tbody></table></td></tr>
     </tbody></table>
     <p class="hint" id="ha_warn"></p>
+    <label class="an"><input type="checkbox" id="sw_alt"
+      onchange="setzePorts()"> Ausweichports <code>+10000</code> — wenn auf
+      dieser Maschine schon eine OCCU läuft</label>
+    <p class="hint" id="ports_msg"></p>
+  </div>
+</div>
+
+<div class="kacheln">
+<div class="card" id="karte_hmip">
+  <h2>HmIP-RF</h2>
+  <div class="body">
+    <table><tbody>
+      <tr><td>Schnittstelle</td><td><code id="hm_if">HmIP-RF</code></td></tr>
+      <tr><td>Adresse der Zentrale</td><td><code id="hm_addr">—</code></td></tr>
+      <tr><td>Geräte</td><td><span id="hm_dev">—</span></td></tr>
+      <tr><td>Anlernfenster</td><td><span id="hm_pair">—</span></td></tr>
+    </tbody></table>
+    <p class="hint" id="hm_hint"></p>
   </div>
 </div>
 
 <div class="card" id="karte_bidcos" style="display:none">
-  <h2>BidCoS</h2>
+  <h2>BidCos-RF</h2>
   <div class="body">
     <table><tbody>
       <tr><td>Schnittstelle</td><td><code id="bc_if">BidCos-RF</code>
@@ -211,9 +248,13 @@ footer a{color:var(--mut)} footer a:hover{color:var(--acc)}
     <p class="hint" id="bc_hint"></p>
   </div>
 </div>
+</div>
 
 <div class="card">
-  <h2>Funk</h2><div class="body" id="radio"></div>
+  <h2 class="mitknopf">Funk
+    <button class="quiet" onclick="oeffneFirmware()">Stick-Firmware</button>
+  </h2>
+  <div class="body" id="radio"></div>
 </div>
 
 <div class="card" id="karte_ereignisse" style="display:none">
@@ -232,7 +273,8 @@ footer a{color:var(--mut)} footer a:hover{color:var(--acc)}
       Schlüssel vom Aufkleber aufnehmen; ohne ihn bleibt es beim Zusehen.
       Wer aufhört zu rufen, verschwindet hier wieder von selbst.</p>
     <div class="body flush"><table id="post"><thead><tr>
-      <th>Adresse</th><th>Typ</th><th>Zuletzt gerufen</th><th></th>
+      <th>Adresse</th><th>Typ</th><th>Zuletzt gerufen</th>
+      <th>Schnittstelle</th><th></th>
     </tr></thead><tbody></tbody></table></div>
   </div>
 </div>
@@ -254,8 +296,8 @@ footer a{color:var(--mut)} footer a:hover{color:var(--acc)}
 <div class="card">
   <h2>Geräte</h2>
   <div class="body flush"><table id="devs"><thead><tr>
-    <th>Name</th><th>Adresse</th><th>Typ</th><th>Zuletzt gehört</th>
-    <th class="right">Pegel</th><th></th>
+    <th>Name</th><th>Adresse</th><th>Schnittstelle</th><th>Typ</th>
+    <th>Zuletzt gehört</th><th class="right">Pegel</th><th></th>
   </tr></thead><tbody></tbody></table></div>
 </div>
 
@@ -271,12 +313,6 @@ footer a{color:var(--mut)} footer a:hover{color:var(--acc)}
          hat, kann ihn ebenso eingeben. Die Zeichen <b>D, I, O und V</b> gibt
          es dort nicht; was danach aussieht, ist 0, 1, 0 bzw. U.</p>
     </div>
-    <div class="field">
-      <label for="secs">Anlernfenster</label>
-      <input id="secs" type="number" value="60" min="10" max="600">
-      <p class="hint">So lange nimmt die Zentrale ein Gerät an. Danach schließt
-         sie von selbst. Die Funkadresse vergibt sie dabei selbst.</p>
-    </div>
     <p class="hint" id="pairinfo"></p>
     <div class="hint" id="nachher" style="display:none">
       <b>Und jetzt in Home Assistant:</b> das Gerät erscheint dort nicht von
@@ -291,6 +327,24 @@ footer a{color:var(--mut)} footer a:hover{color:var(--acc)}
   <div class="dfoot">
     <button onclick="dlgPair.close()">Schließen</button>
     <button class="primary" id="pairgo" onclick="pair()">Fenster öffnen</button>
+  </div>
+</dialog>
+
+<dialog id="dlgBidcos">
+  <h3>BidCoS-Gerät anlernen</h3>
+  <div class="dbody">
+    <p>Fenster öffnen, dann am Gerät den Anlernknopf drücken.</p>
+    <p class="hint">Ohne Adresse wird jedes Gerät angenommen, das jetzt
+      ruft — auch ein fremdes.</p>
+    <label class="an"><input type="checkbox" id="bc_mitziel"
+      onchange="bidcosZiel()"> Adresse vorgeben</label>
+    <input id="bc_ziel" placeholder="z.B. 1A2B3C" maxlength="6"
+           style="text-transform:uppercase;display:none">
+    <p class="hint" id="bc_pairmsg"></p>
+  </div>
+  <div class="dfoot">
+    <button class="quiet" onclick="$('#dlgBidcos').close()">Abbrechen</button>
+    <button class="primary" onclick="bidcosAnlernen()">Fenster öffnen</button>
   </div>
 </dialog>
 
@@ -392,6 +446,40 @@ function melde(text,art){
 }
 
 function oeffneAnlernen(){ $('#dlgPair').showModal(); }
+function oeffneBidcos(){
+  const m=$('#bc_pairmsg'); if(m) m.textContent='';
+  $('#dlgBidcos').showModal();
+}
+
+function bidcosZiel(){
+  const an=$('#bc_mitziel').checked, f=$('#bc_ziel');
+  f.style.display = an ? '' : 'none';
+  // Beim Abwählen leeren: ein unsichtbares, aber gefülltes Feld würde das
+  // Fenster stillschweigend eingrenzen.
+  if(an) f.focus(); else f.value='';
+}
+
+// ⚠️ Beim Laden ist JEDER Dialog zu. Ein Dialog, der nach einem Neuladen
+// offen stehen bliebe, verdeckt die Seite und sieht aus wie ein Hänger.
+function dialogeSchliessen(){
+  document.querySelectorAll('dialog[open]').forEach(d=>d.close());
+}
+
+async function bidcosAnlernen(){
+  const el=$('#bc_ziel'), m=$('#bc_pairmsg');
+  const ziel=($('#bc_mitziel').checked && el ? el.value : '').trim().toUpperCase();
+  if(m) m.textContent='';
+  const r=await fetch('api/bidcos/pair',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({seconds:ANLERNDAUER, address:ziel||null})});
+  let d={}; try{ d=await r.json(); }catch(e){}
+  // ⚠️ Die Antwort auswerten, nicht bloss neu laden: ein abgewiesener
+  // Aufruf (kein Senden erlaubt, krumme Adresse) saehe sonst genauso aus
+  // wie ein erfolgreicher, nur dass nichts passiert.
+  if(r.ok){ $('#dlgBidcos').close(); }
+  else if(m){ m.textContent = d.error || 'Das Anlernfenster ließ sich nicht öffnen.'; }
+  laden();
+}
 function oeffneFirmware(){ fwOffen=true; zeichneFirmware(); $('#dlgFw').showModal(); }
 $('#dlgFw')?.addEventListener('close',()=>{fwOffen=false;});
 
@@ -404,15 +492,54 @@ function pair(){
   if(!plain){ $('#pairinfo').innerHTML='<span class="bad">Bitte Aufkleber oder Schlüssel eingeben.</span>'; return; }
   const istHex=/^[0-9a-fA-F]{32}$/.test(plain);
   post('api/pair',{sticker:istHex?null:v, local_key:istHex?plain:null,
-                    seconds:+$('#secs').value});
+                    seconds:ANLERNDAUER})
+    // ⚠️ Nur bei Erfolg schliessen. Eine abgewiesene Eingabe (unbrauchbarer
+    // Aufkleber) muss im Dialog stehen bleiben, sonst verschwindet die
+    // Begruendung mit dem Fenster. Die Restzeit steht danach oben.
+    .then(j => { if(j && !j.error) $('#dlgPair').close(); });
 }
 
+// ⚠️ Die Geräteliste führt beide Familien. Prüfen und Entfernen müssen
+// deshalb wissen, welche gemeint ist — sonst landet ein BidCoS-Gerät in der
+// HmIP-Zentrale, die seine Adresse gar nicht kennt: die Antwort ist „ok",
+// passiert ist nichts.
+// Wie lange ein Anlernfenster offen bleibt — dieselbe Dauer fuer beide
+// Familien. 254 s ist der Vorgabewert von Zigbee2MQTT und zugleich der
+// groesste Wert, den die Zigbee-Spezifikation fuer ein befristetes Fenster
+// zulaesst (255 hiesse dauerhaft). Ein Eingabefeld gab es dafuer; abbrechen
+// laesst sich das Fenster ohnehin jederzeit oben.
+const ANLERNDAUER = 254;
+
+async function setzePorts(){
+  const j = await post('api/ports', {alt_ports: $('#sw_alt').checked});
+  const pm=$('#ports_msg');
+  if(j && j.error && pm) pm.innerHTML='<b class="bad">'+esc(j.error)+'</b>';
+}
+
+function bidcosIf(){ return (ZUSTAND.bidcos||{}).interface; }
+
+// Eine Funkadresse, wie sie in beiden Kacheln steht.
+function adr(a){ return a ? String(a).toUpperCase() : '—'; }
+function anzahlText(n){ return n ? String(n) : 'noch keines angelernt'; }
+
 // Aktiv nachsehen, ob ein Geraet noch da ist. Kostet EINE Sendung.
-async function pruefe(addr){
-  const j = await post('api/device/ping', {address: addr});
+async function pruefe(addr, iface){
+  const weg = (iface && iface===bidcosIf()) ? 'api/bidcos/ping' : 'api/device/ping';
+  const j = await post(weg, {address: addr});
   if(j && j.ok) melde(j.antwortet ? 'Das Gerät antwortet.'
                                   : 'Keine Antwort — das Gerät meldet sich nicht.',
                       j.antwortet ? '' : 'warn');
+}
+
+async function entferne(addr, iface, name){
+  const bc = iface && iface===bidcosIf();
+  const nachsatz = bc
+    ? '\n\nEs bleibt auf unsere Zentrale angelernt, bis es neu angelernt '
+      +'oder zurückgesetzt wird.'
+    : '\n\nEs bekommt dabei einen Funk-Ausschluss und lässt sich danach '
+      +'ohne Werksreset neu anlernen.';
+  if(!confirm('Gerät '+name+' entfernen?'+nachsatz)) return;
+  await post('api/device/delete', {address: addr, interface: iface||null});
 }
 
 // Der zweite der beiden Wege aus der Warnkarte — als Knopf. Zweimal fragen,
@@ -490,8 +617,17 @@ function zeichneHinweise(){
     '<b>Neuere Stick-Firmware verfügbar</b>'+esc(f.hinweis),'Ansehen','oeffneFirmware()']);
   else if(f.zustand==='kein_stick'||f.zustand==='kein_zugang') n.push(['','',
     '<b>Kein Funk</b>'+esc(f.hinweis),'Ansehen','oeffneFirmware()']);
-  if(p.open) n.push(['act','','<b>Anlernfenster offen</b>Noch '+p.seconds_left
+  if(p.open) n.push(['act','','<b>HmIP: Anlernfenster offen</b>Noch '+p.seconds_left
     +' s. '+esc(p.last||''),'Abbrechen',"post('api/pair/stop')"]);
+  // Der zweite Timer. Beide gehoeren nach oben: wer ein Fenster geoeffnet
+  // hat, steht mit dem Geraet in der Hand davor und will die Restzeit sehen,
+  // ohne zur Kachel zu scrollen.
+  const bcz=ZUSTAND.bidcos||{};
+  if(bcz.anlernen_offen>0) n.push(['act','',
+    '<b>BidCoS: Anlernfenster offen</b>Noch '+Math.round(bcz.anlernen_offen)+' s'
+    +(bcz.anlern_ziel?(' — nur für '+esc(bcz.anlern_ziel)):' — für jedes Gerät')
+    +'. Jetzt am Gerät den Knopf drücken.',
+    'Abbrechen',"post('api/bidcos/pair/stop')"]);
   $('#notices').innerHTML=n.map(x=>
     '<div class="notice '+x[0]+'">'+x[1]+'<div class="txt">'+x[2]+'</div>'
     +'<button onclick="'+x[4]+'">'+x[3]+'</button></div>').join('');
@@ -554,18 +690,87 @@ async function laden(){
   // sonst sieht die Haussteuerung die klassischen Geraete nicht.
   const bc = s.bidcos;
   setz('ha_if', bc ? ((ab.interface||'HmIP-RF')+' und '+bc.interface) : (ab.interface||'HmIP-RF'));
-  setz('ha_if2', ab.interface||'HmIP-RF');
+  // Alle Dienste mit ihren laufenden Ports. Was aus ist, steht als „aus"
+  // da — sonst sucht man einen Dienst, den niemand eingeschaltet hat.
+  const dienste=[
+    ['JSON-RPC', ab.json_port, 'Home Assistant'],
+    [ab.interface||'HmIP-RF', ab.rpc_port, 'XML-RPC'],
+    [bc?bc.interface:null, ab.bidcos_port, 'XML-RPC'],
+    ['ReGa', ab.rega_port, 'FHEM/HMCCU'],
+    ['CUL-Zugang', ab.cul_port, 'culfw-Stil'],
+    ['Weboberfläche', ab.web_port, 'diese Seite'],
+  ];
+  const pt=$('#ha_ports');
+  if(pt) pt.innerHTML=dienste.filter(d=>d[0]).map(d=>
+    '<tr><td>'+esc(d[0])+' <span class="mut">'+esc(d[2])+'</span></td>'
+   +'<td><code>'+(d[1]?d[1]:'aus')+'</code></td></tr>').join('');
+  // Die Haekchen zeigen den GESPEICHERTEN Wunsch. Weicht er vom laufenden
+  // Zustand ab, steht darunter, dass ein Neustart fehlt.
+  const sa=$('#sw_alt'), pm=$('#ports_msg');
+  if(sa && document.activeElement!==sa) sa.checked = !!ab.wunsch_alt_ports;
+  if(pm){
+    const offen = (!!ab.wunsch_alt_ports !== !!ab.alt_ports);
+    if(!offen){ pm.innerHTML=''; }
+    else {
+      // ⚠️ Die Oberfläche wandert MIT. Nach dem Neustart ist diese Seite
+      // unter der alten Adresse tot — wer das nicht liest, hält die
+      // Zentrale für kaputt. Deshalb die neue Adresse ausrechnen und
+      // hinschreiben.
+      const d = ab.wunsch_alt_ports ? 10000 : -10000;
+      const neuWeb = (ab.web_port||0) + d;
+      const host = location.hostname || 'localhost';
+      pm.innerHTML='<b class="warn">Wirkt erst nach einem Neustart der '
+        +'Zentrale</b> — Ports werden einmal gebunden. <b>Auch diese Seite '
+        +'wandert mit:</b> danach erreichbar unter <code>http://'
+        +esc(host)+':'+neuWeb+'/</code>. Die Ports in Home Assistant und '
+        +'FHEM müssen ebenfalls nachgezogen werden.'
+        // ⚠️ Im Behälter reicht das Verschieben allein nicht: was nicht
+        // veröffentlicht ist, ist von außen nicht erreichbar. Genau so
+        // haben wir uns beim Erproben selbst ausgesperrt (20.08.2026).
+        +((s.netz||{}).behaelter
+          ? ' <b>Im Container außerdem die veröffentlichten Ports '
+           +'(<code>-p</code>) mitziehen</b> — sonst ist danach nichts '
+           +'erreichbar.'
+          : '');
+    }
+  }
+  // ⚠️ „nur" ist hier keine Floskel. Home Assistant bietet vier weitere
+  // Schnittstellen an, die QCCU nicht bedient — und BidCos-Wired liegt auf
+  // Port 2000, also genau auf dem CUL-Zugang. Ein Haken dort schickt die
+  // Haussteuerung nicht ins Leere, sondern auf einen Dienst, der antwortet
+  // und etwas völlig anderes ist.
+  const ih=$('#ha_ifhint');
+  if(ih) ih.innerHTML='<code>BidCos-Wired</code>, <code>VirtualDevices</code>, '
+    +'<code>CCU-Jack</code>, <code>CUxD</code> gibt es hier nicht. '
+    +'<b><code>BidCos-Wired</code> nicht anhaken</b> — Port 2000 ist der '
+    +'CUL-Zugang.';
   setz('ha_json', ab.json_port ? String(ab.json_port) : 'aus');
   setz('ha_rpc', ab.rpc_port ? String(ab.rpc_port) : '—');
+  const rr=s.radio||{};
+  setz('hm_if', (s.anbindung||{}).interface || 'HmIP-RF');
+  // ⚠️ Beide Kacheln beschriften dasselbe gleich — sonst liest man einen
+  // Unterschied, wo keiner ist. Adressen durchgehend in Großbuchstaben,
+  // Gerätezahl durchgehend als Zahl bzw. „noch keines".
+  const bcIf = bc ? bc.interface : null;
+  setz('hm_addr', adr(rr.own_addr));
+  setz('hm_dev', anzahlText((s.devices||[]).filter(x=>x.interface!==bcIf).length));
+  const hp=s.pairing||{};
+  setz('hm_pair', hp.open ? ('offen, noch '+hp.seconds_left+' s') : 'zu');
+
   const kb=$('#karte_bidcos');
   if(bc){
     kb.style.display='';
     setz('bc_if', bc.interface);
-    setz('bc_addr', bc.eigene_id||'—');
-    setz('bc_dev', bc.geraete===0 ? 'noch keines angelernt' : String(bc.geraete));
-    setz('bc_pair', bc.anlernen_offen>0 ? ('offen, noch '+bc.anlernen_offen+' s') : 'zu');
+    setz('bc_addr', adr(bc.eigene_id));
+    setz('bc_dev', anzahlText(bc.geraete));
+    setz('bc_pair', bc.anlernen_offen>0
+      ? ('offen, noch '+Math.round(bc.anlernen_offen)+' s'
+         +(bc.anlern_ziel?(' — nur '+bc.anlern_ziel):''))
+      : 'zu');
     const se=$('#bc_send');
     if(se) se.textContent = bc.senden_erlaubt ? '' : '— liest nur mit, sendet nicht';
+    const bb=$('#btn_bidcos');
+    if(bb) bb.style.display = bc.senden_erlaubt ? '' : 'none';
     const bh=$('#bc_hint');
     if(bh){
       let t='';
@@ -600,6 +805,7 @@ async function laden(){
      +'in der Haussteuerung im Posteingang aufnehmen (dabei benennen)</div>':'')+'</td>'
    +'<td><code>'+esc(d.address)+'</code>'
    +'<span class="mut" style="font-size:.85em"> · '+esc(d.rf||'—')+'</span></td>'
+   +'<td class="mut">'+esc(d.interface||'—')+'</td>'
    +'<td class="mut">'+esc(d.label)+' · '+d.channels+' Kan.</td>'
    +'<td class="mut">'+alterText(d.vor_sek)+'</td>'
    +'<td class="right mut">'+(d.rssi==null?'—':(d.rssi+' dBm'))+'</td>'
@@ -608,14 +814,13 @@ async function laden(){
      +'Haussteuerung — nötig nur, wenn diese keinen Posteingang hat (FHEM)" '
      +'onclick="post(\'api/device/aufnehmen\',{address:\''+esc(d.address)+'\'})">'
      +'melden</button> ':'')
-   +'<button class="quiet" title="sendet die Uhrzeit und '
-   +'wartet auf die Quittung" onclick="pruefe(\''+esc(d.address)+'\')">prüfen</button> '
-   +'<button class="quiet" onclick="if(confirm(\'Gerät '
-   +esc(d.name||d.address)+' entfernen?\\n\\nEs bekommt dabei einen '
-   +'Funk-Ausschluss und lässt sich danach ohne Werksreset neu anlernen.\'))'
-   +'post(\'api/device/delete\',{address:\''
-   +esc(d.address)+'\'})">entfernen</button></td></tr>').join('')
-   : '<tr><td colspan="6" class="empty">Noch kein Gerät angelernt.<br>'
+   +'<button class="quiet" title="fragt das Gerät und wartet auf die Antwort" '
+   +'onclick="pruefe(\''+esc(d.address)+'\',\''+esc(d.interface||'')+'\')">'
+   +'prüfen</button> '
+   +'<button class="quiet" onclick="entferne(\''+esc(d.address)+'\',\''
+   +esc(d.interface||'')+'\',\''+esc(d.name||d.address)+'\')">'
+   +'entfernen</button></td></tr>').join('')
+   : '<tr><td colspan="7" class="empty">Noch kein Gerät angelernt.<br>'
     +'<span style="font-size:.9em">Über „Gerät anlernen" beginnen.</span></td></tr>';
 
   // Anlernwünsche: nur zeigen, wenn wirklich jemand ruft. Wer verstummt,
@@ -629,8 +834,10 @@ async function laden(){
      +'<div class="mut" style="font-size:.85em">'+esc(e.hinweis||'')+'</div></td>'
      +'<td class="mut" style="white-space:nowrap">'+rufAlter(e.vor_sek)
      +(e.anzahl>1?' <span style="font-size:.85em">('+e.anzahl+'×)</span>':'')+'</td>'
-     +'<td class="right"><button class="quiet" onclick="oeffneAnlernen()">'
-     +'anlernen</button></td></tr>').join('');
+     +'<td class="mut">'+esc(e.interface||'—')+'</td>'
+     +'<td class="right"><button class="quiet" onclick="'
+     +(e.interface==='BidCos-RF'?'oeffneBidcos()':'oeffneAnlernen()')
+     +'">anlernen</button></td></tr>').join('');
   }
 
   // Geräte aus unserem Netz, die nicht (mehr) dazugehören.
@@ -659,23 +866,77 @@ async function laden(){
   $('#hdrstat').innerHTML='<span class="dot '+(anJa?'on':'off')+'"></span>'
     +(anJa?'Funk bereit':'kein Funk')+' · '+dv.length+' Gerät'+(dv.length==1?'':'e');
 
-  let h='<dl class="kv"><dt>Eigene Adresse</dt><dd><code>'+esc(r.own_addr||'—')+'</code></dd>';
+  // ⚠️ Die eigene Adresse steht in der Kachel der Schnittstelle, nicht hier.
+  // Diese Karte beschreibt den STICK — was an ihm hängt, gilt für beide
+  // Familien gemeinsam.
+  let h='<dl class="kv">';
+  if(r.v_banner) h+='<dt>Stick meldet</dt><dd><code>'+esc(r.v_banner)+'</code></dd>';
+  if(r.pfad) h+='<dt>Angeschlossen</dt><dd><code class="mut">'+esc(r.pfad)+'</code></dd>';
   const c=r.counters;
-  if(c) h+='<dt>Empfangen</dt><dd>'+c.rx+' · entschlüsselt '+c.ok
-        +' · Quittungen '+c.acks+' · gesendet '+c.tx
-        +(c.txerr?' · <span class="bad">Fehler '+c.txerr+'</span>':'')+'</dd>';
+  if(c){
+    // ⚠️ Der Stick zählt VOR der Familienbestimmung: jeder gehörte Rahmen
+    // erhöht `rx`, gleich ob HmIP oder BidCoS. Was sich nicht entschlüsseln
+    // lässt, landet in `mic` — bei einem Stick, der beide Familien sieht,
+    // ist das überwiegend der BidCoS-Verkehr und KEIN Fehler. Ohne diesen
+    // Satz liest man den Zähler als Störungsanzeige.
+    h+='<dt>Empfangen</dt><dd>'+c.rx+' <span class="mut">beide Familien</span>'
+      +' · entschlüsselt '+c.ok
+      +' · Quittungen '+c.acks+' · gesendet '+c.tx
+      +(c.txerr?' · <span class="bad">Fehler '+c.txerr+'</span>':'')+'</dd>';
+    if(c.mic) h+='<dt>Nicht für uns</dt><dd>'+c.mic
+      +' <span class="mut">— meist BidCoS, kein Fehler</span></dd>';
+  }
+  // Rauschboden: die einzige Zahl, die einen einziehenden Störer meldet,
+  // BEVOR schwache Batteriegeräte ausfallen. Fehlt sie, ist der Stick älter
+  // als q-culfw 2.0.71 — dann steht hier nichts, statt einer Null zu lügen.
+  const fg=r.funkgute;
+  if(fg && (fg.pll_fail||fg.pll_lost)){
+    h+='<dt>Oszillator</dt><dd class="'+(fg.pll_fail?'bad':'warn')+'">'
+      +'Lock verloren '+fg.pll_lost+' · nachgeregelt '+fg.pll_relock
+      +' · aufgegeben '+fg.pll_fail+'</dd>';
+  }
   const ic=r.icmp||{}, ik=Object.keys(ic);
   if(ik.length) h+='<dt>Netz-Haushalt</dt><dd class="mut">'
     +ik.map(k=>esc(k.toLowerCase().replace(/_/g,' '))+' '+ic[k]).join(' · ')+'</dd>';
   h+='</dl>';
   const b=r.budget;
   if(b){ const pct=Math.round(100*b.credit/b.max);
+    // Viel Guthaben ist gut, wenig ist schlecht — die Farbe sagt das, statt
+    // den Anwender zwei Zahlen ins Verhältnis setzen zu lassen.
+    const kl = pct>40 ? 'ok' : (pct>15 ? 'warn' : 'bad');
     h+='<div style="margin-top:.9rem"><div class="bar" style="justify-content:space-between">'
       +'<span class="mut" style="font-size:.85rem">Sendezeit</span>'
       +'<span style="font-size:.85rem">'+b.credit+' / '+b.max
       +(b.lovf?' <span class="warn">· LOVF '+b.lovf+'</span>':'')
       +(b.on?'':' <span class="warn">· Bremse aus</span>')+'</span></div>'
-      +'<div class="meter"><i style="width:'+pct+'%"></i></div></div>'; }
+      +'<div class="meter"><i class="'+kl+'" style="width:'+pct+'%"></i></div></div>'; }
+
+  // Rauschboden auf derselben Art Leiste. Die Skala geht von −110 dBm
+  // (still) bis −70 dBm (zu). Gefüllt wird, was das Rauschen vom Kanal
+  // wegnimmt: je voller, desto weniger Luft bleibt für schwache Geräte.
+  // Der Spitzenwert steht als Marke DARAUF — wer nur den Boden zeigt,
+  // verliert den kurzen lauten Störer, den der Mittelwert nicht mitnimmt.
+  if(fg && fg.noise!=null){
+    const LEISE=-110, LAUT=-70;
+    const anteil = v => Math.max(0, Math.min(100,
+      Math.round(100*(v-LEISE)/(LAUT-LEISE))));
+    const pn=anteil(fg.noise);
+    const kl = fg.noise<=-100 ? 'ok' : (fg.noise<=-90 ? 'warn' : 'bad');
+    let rechts='<b>'+fg.noise+' dBm</b>';
+    if(fg.npk!=null) rechts+=' <span class="mut">· Spitze '+fg.npk+' dBm</span>';
+    h+='<div style="margin-top:.9rem"><div class="bar" style="justify-content:space-between">'
+      +'<span class="mut" style="font-size:.85rem">Rauschboden</span>'
+      +'<span style="font-size:.85rem">'+rechts+'</span></div>'
+      +'<div class="meter"><i class="'+kl+'" style="width:'+pn+'%"></i>'
+      +(fg.npk!=null?'<b title="lautester Ausschlag im Leerlauf" style="left:'
+        +anteil(fg.npk)+'%"></b>':'')
+      +'</div>'
+      +'<div class="skala"><span>−110 still</span><span>−90</span>'
+      +'<span>−70 zu</span></div>';
+    if(fg.noise > -90) h+='<p class="hint warn" style="margin:.35rem 0 0">Sehr '
+      +'laut — wenig Luft für schwache Geräte.</p>';
+    h+='</div>';
+  }
   $('#radio').innerHTML=h;
 
   const p=s.pairing||{};
@@ -695,13 +956,52 @@ async function laden(){
   if(fwOffen) zeichneFirmware();
   zeichneHinweise();
 }
-laden(); setInterval(laden,2000);
+dialogeSchliessen(); laden(); setInterval(laden,2000);
 </script></body></html>
 """
 
 
 FLASH_LOCK = threading.Lock()
 FLASH_STATE = {"laeuft": False, "protokoll": []}
+
+
+def netz_lage():
+    """Wo laufen wir, und taugt „nur 127.0.0.1" hier ueberhaupt?
+
+    ⚠️ In einem Behaelter mit eigenem Netz (Docker-Standard, `-p 2010:2010`)
+    macht ein Bind auf 127.0.0.1 den Dienst UNERREICHBAR — auch von derselben
+    Maschine. Der docker-proxy nimmt die Verbindung zwar an, leitet sie aber
+    an die Behaelter-Adresse, wo niemand lauscht. Am Aufbau geprueft
+    (20.08.2026): `bind 0.0.0.0` -> Antwort, `bind 127.0.0.1` -> verbunden,
+    aber keine Daten. Eine Portpruefung meldet dabei „offen" — der Fehler
+    sieht also nicht wie einer aus.
+
+    Mit `--network host` teilt der Behaelter das Netz der Maschine; dann
+    wirkt der Bind wie ausserhalb.
+
+    Erkennung ohne Werkzeuge: `/.dockerenv` sagt „im Behaelter",
+    `/sys/class/net` zeigt im eigenen Netz nur `lo` und `eth0`, im Netz der
+    Maschine dagegen auch `docker0`.
+    """
+    import os as _os
+    behaelter = _os.path.exists("/.dockerenv")
+    try:
+        netze = set(_os.listdir("/sys/class/net"))
+    except OSError:
+        netze = set()
+    hostnetz = "docker0" in netze
+    return {"behaelter": behaelter, "hostnetz": hostnetz,
+            "localhost_moeglich": (not behaelter) or hostnetz}
+
+
+def _ist_lokal(adresse):
+    """Kommt der Zugriff von der Maschine selbst?"""
+    return str(adresse or "").split("%")[0] in ("127.0.0.1", "::1", "localhost")
+
+
+def _IST_BIDCOS_ADRESSE(text):
+    """Sechs Hexziffern — die Funkadresse eines BidCoS-Geraets."""
+    return len(text) == 6 and all(c in "0123456789ABCDEF" for c in text)
 
 
 class WebHandler(BaseHTTPRequestHandler):
@@ -803,6 +1103,7 @@ class WebHandler(BaseHTTPRequestHandler):
                        or getattr(lc, "_wert_zeit", {}).get(addr))
             benannt = getattr(lc, "name_of", None)
             devs.append({"address": addr, "rf": rf.get(addr),
+                         "interface": getattr(lc, "interface_name", "HmIP-RF"),
                          "label": d.label,
                          "name": benannt(addr, d.label) if benannt else d.label,
                          "channels": len(d.channel_list()),
@@ -823,7 +1124,18 @@ class WebHandler(BaseHTTPRequestHandler):
         if self.radio:
             out["radio"] = self.radio.radio_state()
         out["firmware"] = self._firmware_state()
+        out["netz"] = netz_lage()
         out["anbindung"] = dict(self.anbindung)
+        # ⚠️ `anbindung` ist eine Momentaufnahme vom Start — die Ports stehen
+        # dort fest, und das ist richtig so. Was der Anwender seither
+        # UMGESTELLT hat, liegt aber in den Einstellungen und muss von dort
+        # kommen; sonst springt jedes Haekchen beim naechsten Abruf zurueck
+        # und sieht aus, als bewirke es nichts (Dirk 20.08.2026).
+        e = getattr(lc, "einstellungen", None)
+        if isinstance(e, dict):
+            for feld in ("wunsch_alt_ports", "wunsch_localhost"):
+                if feld in e:
+                    out["anbindung"][feld] = bool(e[feld])
         # ⚠️ Nur wenn die Schnittstelle wirklich laeuft. Eine Karte fuer einen
         # Dienst, den es nicht gibt, ist schlimmer als keine — sie laesst den
         # Anwender nach einem Schalter suchen, den niemand umlegen kann.
@@ -838,6 +1150,23 @@ class WebHandler(BaseHTTPRequestHandler):
                      "channels": len(g.channel_list())}
                     for a, g in bidcos.devices.items()]
             out["bidcos"] = b
+            # ⚠️ Eine Liste fuer beide Familien. Zwei getrennte Tabellen
+            # zwingen den Anwender, sich zu merken, wo er nachsehen muss —
+            # und die Schnittstelle steht ohnehin in jeder Zeile.
+            jetzt_bc = time.time()
+            with bidcos.lock:
+                bc_devs = list(bidcos.devices.items())
+            for a, g in bc_devs:
+                zuletzt = bidcos.zuletzt_gehoert(a)
+                devs.append({
+                    "address": a, "rf": a, "interface": b.get("interface"),
+                    "label": g.typname, "name": g.typname + " " + a[-4:],
+                    "channels": len(g.channel_list()),
+                    "rssi": bidcos.pegel(a), "unreach": False, "wartet": False,
+                    "vor_sek": int(jetzt_bc - zuletzt) if zuletzt else None})
+            bc_wuensche = getattr(bidcos, "anlernwuensche_liste", None)
+            if bc_wuensche:
+                out["anlernwuensche"] = (out.get("anlernwuensche") or []) + bc_wuensche()
         t = getattr(lc, "t", None)
         if t is not None and hasattr(t, "zustand"):
             out["tabellen"] = t.zustand()
@@ -890,6 +1219,62 @@ class WebHandler(BaseHTTPRequestHandler):
                 self.radio.stop_pairing()
             return self._json({"ok": True})
 
+        if self.path == "/api/ports":
+            e = getattr(self.qccu, "einstellungen", None)
+            if e is None:
+                return self._json({"error": "nicht verfuegbar"}, 409)
+            lokal = bool(body.get("localhost"))
+            lage = netz_lage()
+            if lokal and not lage["localhost_moeglich"]:
+                return self._json({"error": "In diesem Behaelter wuerde das "
+                                            "die Dienste unerreichbar machen "
+                                            "— auch von dieser Maschine. Nur "
+                                            "sinnvoll mit --network host."},
+                                  409)
+            # ⚠️ Wer von aussen zugreift und „nur 127.0.0.1" einschaltet,
+            # sperrt beim naechsten Start seine eigene Gegenstelle aus. Die
+            # Oberflaeche bleibt zwar erreichbar, die Dienste nicht — und
+            # genau die benutzt er gerade.
+            von = (self.client_address or ("",))[0]
+            if lokal and not e.get("localhost") and not _ist_lokal(von):
+                return self._json({"error": "Nicht von aussen einschaltbar: "
+                                            f"dieser Zugriff kommt von {von}. "
+                                            "Danach waeren die Dienste nur "
+                                            "noch auf der Zentrale selbst "
+                                            "erreichbar."}, 409)
+            e["wunsch_alt_ports"] = bool(body.get("alt_ports"))
+            e["wunsch_localhost"] = lokal
+            sichern = getattr(self.qccu, "save_store", None)
+            if sichern:
+                sichern()
+            return self._json({"ok": True, **e})
+
+        if self.path in ("/api/bidcos/pair", "/api/bidcos/pair/stop"):
+            bidcos = getattr(self, "bidcos", None)
+            if bidcos is None:
+                return self._json({"error": "Die Schnittstelle BidCos-RF ist "
+                                            "nicht eingeschaltet."}, 409)
+            if self.path.endswith("/stop"):
+                bidcos.setInstallMode(False)
+                return self._json({"ok": True, "offen": 0})
+            # ⚠️ Ohne Sendeerlaubnis waere das Fenster eine Luege: die
+            # Schnittstelle hoerte den Anlernruf, koennte aber nicht
+            # antworten. Lieber hier abweisen als den Benutzer warten lassen.
+            if not bidcos.zentrale.senden_erlaubt:
+                return self._json({"error": "Die Schnittstelle sendet nicht "
+                                            "und kann nicht anlernen."}, 409)
+            ziel = str(body.get("address") or "").strip().upper() or None
+            if ziel and not _IST_BIDCOS_ADRESSE(ziel):
+                return self._json({"error": "Die Geraeteadresse besteht aus "
+                                            "sechs Hexziffern, z.B. 1A2B3C."}, 400)
+            try:
+                sek = max(1, min(3600, int(body.get("seconds", 60))))
+            except (TypeError, ValueError):
+                return self._json({"error": "Die Dauer ist keine Zahl."}, 400)
+            bidcos.setInstallMode(True, sek, 1, ziel)
+            return self._json({"ok": True, "ziel": ziel,
+                               "offen": bidcos.zentrale.anlernen_offen()})
+
         if self.path == "/api/device/aufnehmen":
             # Der Notausgang fuer Gegenstellen ohne Posteingang (FHEM/HMCCU):
             # was hier freigegeben wird, geht als `newDevices` hinaus.
@@ -913,12 +1298,45 @@ class WebHandler(BaseHTTPRequestHandler):
 
         if self.path == "/api/device/delete":
             addr = (body.get("address") or "").upper()
+            # ⚠️ Seit die Geraeteliste beide Familien fuehrt, muss der
+            # Loeschweg sie auseinanderhalten. Ohne das lief JEDER Aufruf in
+            # die HmIP-Zentrale, die eine BidCoS-Adresse gar nicht kennt: die
+            # Antwort war „ok", geloescht wurde nichts.
+            bidcos = getattr(self, "bidcos", None)
+            if bidcos is not None and body.get("interface") == bidcos.interface_name:
+                with bidcos.lock:
+                    bekannt = addr in bidcos.devices
+                if not bekannt:
+                    return self._json({"error": f"{addr} steht nicht im "
+                                                f"BidCoS-Bestand."}, 409)
+                bidcos.deleteDevices(None, [addr])
+                return self._json({"ok": True})
             self.qccu.deleteDevices(addr)
             return self._json({"ok": True})
 
         # Der Ausweg aus „Stick ohne Schluessel, aber Geraete eingetragen":
         # alles verwerfen und neu beginnen. Mit Sicherung — der Aufruf
         # verlangt `bestaetigt`, damit ihn kein Fehlgriff ausloest.
+        if self.path == "/api/bidcos/ping":
+            bidcos = getattr(self, "bidcos", None)
+            if bidcos is None:
+                return self._json({"error": "BidCos-RF ist nicht "
+                                            "eingeschaltet."}, 409)
+            if not bidcos.zentrale.senden_erlaubt:
+                return self._json({"error": "Die Schnittstelle sendet nicht."},
+                                  409)
+            adresse = str(body.get("address") or "").upper()
+            antwortet = bidcos.erreichbar(adresse)
+            if antwortet is None:
+                return self._json({"error": f"{adresse} steht nicht im "
+                                            f"BidCoS-Bestand."}, 409)
+            merke = getattr(self.qccu, "merke_ereignis", None)
+            if merke:
+                merke("ok" if antwortet else "warn",
+                      f"BidCoS {adresse} "
+                      + ("antwortet" if antwortet else "antwortet nicht"))
+            return self._json({"ok": True, "antwortet": bool(antwortet)})
+
         if self.path == "/api/device/ping":
             # Aktiv nachsehen, ob ein Geraet noch antwortet. Gesendet wird die
             # Uhrzeit; die Antwort ist die Kurzquittung des Geraets.
@@ -1004,12 +1422,24 @@ class WebHandler(BaseHTTPRequestHandler):
                     lc.stick_serial = None
                 rb = getattr(lc, "rebind_radio", None)
                 neu = rb() if rb else None
+                # ⚠️ Der Verlust wird in „Zuletzt geschehen" vermerkt
+                # (qccu_radio), die Rueckkehr stand bisher NUR im
+                # Einspiel-Protokoll. Damit blieb „Funkzugang zum Stick
+                # verloren" als juengster Eintrag stehen, waehrend der Funk
+                # laengst wieder lief und der Punkt oben gruen zeigte — ein
+                # Widerspruch, den niemand aufloesen kann (Dirk 20.08.2026).
+                merke = getattr(lc, "merke_ereignis", None)
                 if neu:
                     klasse.radio = neu
                     sag("Funk wieder angebunden.")
+                    if merke:
+                        merke("ok", "Stick wieder angebunden")
                 else:
                     sag("Firmware eingespielt. Der Stick meldet sich noch "
                         "nicht — bitte kurz warten.")
+                    if merke:
+                        merke("warn", "Firmware eingespielt, aber der Stick "
+                                      "meldet sich noch nicht.")
             except Exception as ex:
                 sag(f"Fehler: {ex}")
             finally:

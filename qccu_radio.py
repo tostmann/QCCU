@@ -1545,15 +1545,26 @@ class Radio:
         self.pair_last = (f"Fenster offen ({int(seconds)} s), {src}, "
                           f"Adresse {self.pair_next_addr}")
         self._log("##", f"ANLERNEN offen {seconds}s -> {self.pair_next_addr}")
+        # Dieselbe Liste wie bei BidCoS: wer den Knopf drueckt, soll die
+        # Wirkung sehen, ohne ins Protokoll zu steigen.
+        merke = getattr(self.qccu, "merke_ereignis", None)
+        if merke:
+            merke("ok", f"HmIP Anlernfenster offen ({int(seconds)} s)")
         if self.verbose:
             print(f"  Anlernen: Fenster {int(seconds)} s offen, "
                   f"neue Adresse {self.pair_next_addr}")
         return None
 
     def stop_pairing(self):
+        # Nur melden, wenn wirklich eines offen war — sonst erzeugt jeder
+        # routinemaessige Aufruf einen Eintrag.
+        war_offen = self.pair_until > time.time()
         self.pair_until = 0.0
         self.pair_key = None
         self.pair_last = "Fenster zu"
+        merke = getattr(self.qccu, "merke_ereignis", None)
+        if war_offen and merke:
+            merke("ok", "HmIP Anlernfenster geschlossen")
 
     def pair_state(self):
         rest = self.pair_until - time.time()
