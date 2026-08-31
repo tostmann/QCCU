@@ -477,6 +477,10 @@ SDT_REGELN = {
 #                          DoubleToInteger(2.0, 0.0), MIN -10.0
 #   ACTIVE_PROFILE         createActiveProfileParameter → -128, 0, 5
 #                          IntegerToInteger(1.0, -1.0) → Profil 1 ist 0
+#   PARTY_TIME_START       createPartyTimeParameter    → -128, 0, 3
+#   PARTY_TIME_END         createPartyTimeParameter    → -128, 1, 3
+#                          DateStringToInteger → VIER Byte je Zeitpunkt;
+#                          Datentyp 3 PERIOD ist SIEBEN Byte und traegt BEIDE
 #
 # ⚠️ Bei CONTROL_MODE heisst der Datentyp 4 im Jar `DIFFERENTIAL_TEMPERATURE`
 # — der Name passt nicht zum Parameter, die Zahl steht aber genau so in der
@@ -491,6 +495,7 @@ AKTION_THERMOSTAT = 0x80
 # Die Datentypen aus `DirectExecutionDataType` (Wert, Laenge in Byte).
 DT_LOGIC = 0x00                    # 1
 DT_TEMPERATURE_SET_POINT = 0x02    # 1
+DT_PERIOD = 0x03                   # 7
 DT_DIFFERENTIAL_TEMPERATURE = 0x04  # 1
 DT_UNSIGNED_INTEGER_16BIT = 0x05   # 2
 
@@ -527,6 +532,8 @@ STELLBEFEHLE = {
     "CONTROL_DIFFERENTIAL_TEMPERATURE":
                              (AKTION_THERMOSTAT, DT_DIFFERENTIAL_TEMPERATURE, 1, 1),
     "ACTIVE_PROFILE":        (AKTION_THERMOSTAT, DT_UNSIGNED_INTEGER_16BIT, 0, 1),
+    "PARTY_TIME_START":      (AKTION_THERMOSTAT, DT_PERIOD, 0, 1),
+    "PARTY_TIME_END":        (AKTION_THERMOSTAT, DT_PERIOD, 1, 1),
 }
 
 # ⚠️ Die Betriebsart wird NIE allein geschrieben. Am 30.08.2026 am HmIP-BWTH-A
@@ -545,14 +552,32 @@ STELLBEFEHLE = {
 #
 # `None` heisst „den heutigen Wert des Geraets nehmen" — genau das meint
 # `{"type": "STATE_PARAMETER_VALUE"}` in der Regel.
-# ⚠️ Was hier steht, darf NUR im Satz hinaus. Faellt ein Wert durch die
-# Satz-Tabelle, ist das KEIN Grund, ihn als Einzelfeld zu schicken — beim
+# ⚠️ Was hier steht, darf NUR gemeinsam hinaus. Faellt ein Wert durch die
+# Satz-Tabellen, ist das KEIN Grund, ihn als Einzelfeld zu schicken — beim
 # Modus waere das genau der Rahmen, der am Geraet den Sollwert zerreisst
-# (`80 01 02 80` fuer AWAY). `aiohomematic` schickt fuer den
-# Abwesenheitsmodus SET_POINT_MODE=2 zusammen mit PARTY_TIME_START/END
-# (`model/custom/climate.py`, `enable_away_mode_by_calendar`); solange fuer
-# diesen Fall kein Satz belegt ist, geht gar nichts hinaus.
-NUR_IM_SATZ = frozenset({"SET_POINT_MODE"})
+# (`80 01 02 80` fuer AWAY).
+#
+# Den DRITTEN Satz — den Abwesenheitsmodus — kennt `stateRules.json` NICHT;
+# dort stehen nur 0 und 1. Ihn stellt die Gegenstelle selbst zusammen:
+# `aiohomematic` schickt SET_POINT_MODE=2 zusammen mit PARTY_TIME_START und
+# PARTY_TIME_END als EIN putParamset, beim Einschalten zusaetzlich mit
+# SET_POINT_TEMPERATURE (`model/custom/climate.py`,
+# `enable_away_mode_by_calendar` / `disable_away_mode`; AWAY = 2). Daraus
+# baut die Zentrale EINEN Rahmen: Datentyp 2 traegt Modus (Bit 7..6) und
+# Sollwert, Datentyp 3 die beiden Zeitpunkte. Kommt der Modus 2 ohne sie,
+# bleibt es beim Korb.
+#
+# ⚠️ Die beiden Zeitpunkte teilen sich ebenfalls EIN Feld — sieben Byte, der
+# Monat in Nibbles. Einer allein setzt den anderen auf den 0. Tag des
+# 0. Monats; darum verlangen sie einander.
+#
+# Aufbau: Parameter -> {Wert: was mitgeschickt sein MUSS}. `None` als
+# Schluessel gilt fuer jeden Wert.
+NUR_IM_SATZ = {
+    "SET_POINT_MODE":   {2: ("PARTY_TIME_START", "PARTY_TIME_END")},
+    "PARTY_TIME_START": {None: ("PARTY_TIME_END",)},
+    "PARTY_TIME_END":   {None: ("PARTY_TIME_START",)},
+}
 
 KOMPOSITE = {
     ("SET_POINT_MODE", 1): (("CONTROL_MODE", 1),
@@ -563,6 +588,55 @@ KOMPOSITE = {
                             ("CONTROL_DIFFERENTIAL_TEMPERATURE", 0.0),
                             ("ACTIVE_PROFILE", None)),
 }
+
+# Die Form, in der ein Zeitpunkt hereinkommt und wieder hinausgeht — dieselbe
+# Zeichenkette, die `DateStringToInteger.DATE_TIME_PATTERN` im Jar fuehrt
+# ("yyyy_MM_dd HH:mm") und die `aiohomematic` schreibt.
+DATUM_FORM = "%Y_%m_%d %H:%M"
+
+
+def satz_wert(value):
+    """Der Wert, unter dem ein Satz in `KOMPOSITE`/`NUR_IM_SATZ` steht.
+
+    Ueber XML-RPC kommt die Betriebsart als Zahl herein, aus FHEM/HMCCU aber
+    auch als Zeichenkette. Ohne diese Angleichung faende `KOMPOSITE` den Satz
+    zu "1" nicht — und der Modus ginge als Einzelfeld hinaus, also genau als
+    der Rahmen, der am Geraet den Sollwert zerreisst.
+    """
+    try:
+        zahl = float(value)
+    except (TypeError, ValueError):
+        return value
+    return int(zahl) if zahl == int(zahl) else zahl
+
+
+def datum_roh(text):
+    """Einen Zeitpunkt in seine VIER Rohbytes bringen.
+
+    Abgeschrieben aus `DateStringToInteger.convertLogicalToPhysical`
+    (HMIPServer-Jar, `devicedescription/typeconversion/converter`):
+
+        zeit    = Stunde * 12 + Minute / 5, aufgerundet ab Rest 3
+                  (also FUENF-Minuten-Schritte, 0..288)
+        data[0] = zeit >> 1
+        data[1] = (zeit & 1) << 7 | Tag
+        data[2] = Monat (1..12)
+        data[3] = Jahr - 2000
+
+    Rueckgabe: vier Byte, oder None, wenn der Text kein Zeitpunkt dieser Form
+    ist oder das Jahr nicht in ein Byte passt.
+    """
+    try:
+        t = time.strptime(str(text), DATUM_FORM)
+    except (TypeError, ValueError):
+        return None
+    zeit = t.tm_hour * 12 + t.tm_min // 5
+    if t.tm_min % 5 > 2:
+        zeit += 1
+    jahr = t.tm_year - 2000
+    if not 0 <= jahr <= 0xFF:
+        return None
+    return bytes((zeit >> 1, ((zeit & 1) << 7) | t.tm_mday, t.tm_mon, jahr))
 
 
 def daten_bytes(datentyp, dataindex, roh):
@@ -589,6 +663,22 @@ def daten_bytes(datentyp, dataindex, roh):
         # waere CONTROL_DIFFERENTIAL_TEMPERATURE (MIN -10,0 -> roh -20) nicht
         # zu senden.
         return f"{roh & 0x3F:02X}" if -0x20 <= roh <= 0x3F else None
+    if datentyp == DT_PERIOD:
+        # ⚠️ Hier ist `roh` KEINE Zahl, sondern die vier Byte aus `datum_roh`.
+        # Zwei Zeitpunkte teilen sich SIEBEN Byte; `dataIndex` sagt, welcher.
+        # Aus `TransactionTaskFactory`, Zweig PERIOD:
+        #     Lage 0 (Start)  [d0, d1,  0,  0, d2<<4, d3,  0]
+        #     Lage 1 (Ende)   [ 0,  0, d0, d1, d2&0xF,  0, d3]
+        # Der Monat liegt also in NIBBLES, Uhrzeit/Tag und Jahr in ganzen
+        # Byte — verodert ergeben beide zusammen ein Feld.
+        if not isinstance(roh, (bytes, bytearray)) or len(roh) != 4:
+            return None
+        d0, d1, d2, d3 = roh
+        if dataindex == 0:
+            feld = bytes((d0, d1, 0, 0, (d2 << 4) & 0xFF, d3, 0))
+        else:
+            feld = bytes((0, 0, d0, d1, d2 & 0x0F, 0, d3))
+        return feld.hex().upper()
     if datentyp == DT_UNSIGNED_INTEGER_16BIT:
         return f"{roh:04X}" if 0 <= roh <= 0xFFFF else None
     return None
@@ -2304,6 +2394,20 @@ class Radio:
                 print(f"  ! {ccu_address}:{channel} fuehrt {param} nicht")
             return None
 
+        # Ein Zeitpunkt ist keine Zahl: PARTY_TIME_START/_END kommen als
+        # Zeichenkette "2026_09_01 18:00" herein (LogicalType STRING mit
+        # DateStringToInteger) und werden nicht umgerechnet, sondern zerlegt.
+        if datentyp == DT_PERIOD:
+            roh = datum_roh(value)
+            daten = None if roh is None else daten_bytes(datentyp, dataindex, roh)
+            if daten is None:
+                if self.verbose:
+                    print(f"  ! {param}={value!r} ist kein Zeitpunkt der Form "
+                          f"'{DATUM_FORM}' — nicht gesendet")
+                return None
+            return (aktion, datentyp, daten,
+                    f"{param}={value!r} (Feld 0x{daten})")
+
         # BOOL kommt als Wahrheitswert herein, ENUM als Zeichenkette aus der
         # Werteliste — beides erst in eine Zahl bringen, dann umrechnen.
         typ = desc.get("TYPE")
@@ -2370,14 +2474,25 @@ class Radio:
         dazwischen sah das Geraet „manuell mit dem alten Sollwert".
         """
         satz = []
+        mitgeschickt = {str(p) for p, _ in paare}
         for param, value in paare:
-            teil = KOMPOSITE.get((param, value))
+            wert = satz_wert(value)
+            teil = KOMPOSITE.get((param, wert))
             if teil is None and param in NUR_IM_SATZ:
+                # Kein eigener Satz — dann muss der Aufrufer die Partner
+                # selbst mitgeschickt haben (Abwesenheitsmodus).
+                regeln = NUR_IM_SATZ[param]
+                noetig = regeln.get(wert, regeln.get(None))
+                if noetig is None or not mitgeschickt.issuperset(noetig):
+                    if self.verbose:
+                        print(f"  ! {param}={value!r} kennt keinen belegten "
+                              f"Satz — einzeln geschickt wuerde dieser "
+                              f"Parameter am Geraet Schaden anrichten, es "
+                              f"geht nichts hinaus")
+                    return None
                 if self.verbose:
-                    print(f"  ! {param}={value!r} kennt keinen belegten Satz "
-                          f"— einzeln geschickt wuerde dieser Parameter am "
-                          f"Geraet Schaden anrichten, es geht nichts hinaus")
-                return None
+                    print(f"  {param}={value!r} geht zusammen mit "
+                          f"{', '.join(noetig)} in EINEM Rahmen hinaus")
             if teil is None:
                 satz.append((param, value))
             else:
