@@ -521,6 +521,22 @@ DT_UNSIGNED_INTEGER_16BIT = 0x05   # 2
 # genau `Modus 0 | 44`. Fuer BOOST_MODE ging es NICHT: 0x01 statt 0x30 traf
 # das Feld nicht, und das Geraet antwortete mit NAK (am HmIP-BWTH-A gemessen).
 #
+# ⚠️ HIER FEHLT DIE OCCURRENCE — und das geht nur gut, solange sie 0 ist.
+# Der StateParameter-Konstruktor hat vier Laengen; die drei letzten Argumente
+# sind `(directExecutionCode, dataIndex, dataType)`, die vierstellige Form
+# haengt `dataTypeOccurrence` an (die fuenfstellige noch
+# `dataTypeCharacteristic`). Die Occurrence sagt, das WIEVIELTE Feld dieses
+# Datentyps im Rahmen gemeint ist: `TransactionTaskFactory` schluesselt seine
+# TreeMap mit `code<<16 | dataType<<8 | occurrence`, und im LOGIC-Zweig legt
+# sie fuer jede kleinere Occurrence ein LEERES Byte an — ein Parameter mit
+# Occurrence 2 macht aus einem Feld also drei.
+#
+# Alle zehn Eintraege unten stehen auf der DREIstelligen Form, Occurrence
+# also 0; `_rumpf` darf deshalb allein nach (Aktion, Datentyp) verodern. Wer
+# hier einen Parameter aus der vierstelligen Form nachtraegt (z.B.
+# COLOR_TEMPERATURE), muss beides nachziehen — sonst landet der Wert im
+# falschen Feld, und das faellt nicht auf: der Rahmen bleibt wohlgeformt.
+#
 # Aufbau: (Aktion, Datentyp, dataIndex, Wert-fuer-WAHR)
 STELLBEFEHLE = {
     "STATE":                 (AKTION_START, None, 0, 0xC8),
