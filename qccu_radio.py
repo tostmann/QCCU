@@ -538,6 +538,24 @@ DT_UNSIGNED_INTEGER_16BIT = 0x05   # 2
 # falschen Feld, und das faellt nicht auf: der Rahmen bleibt wohlgeformt.
 #
 # Aufbau: (Aktion, Datentyp, dataIndex, Wert-fuer-WAHR)
+# ⚠️ UND DIE TABELLE KENNT KEINE UNTERART. Sie ist allein nach dem
+# Parameternamen geschluesselt — die Fabrik im Jar fuehrt denselben Namen aber
+# mehrfach, je Kanal-Unterart, mit VERSCHIEDENER Aktion und verschiedenem
+# Datentyp. Bei LEVEL sind es sechs Formen (aus der Kanaltyp-Tabelle des
+# H2M-Projekts gegengeprueft, 31.08.2026):
+#
+#     LEVEL@default / @VENTILATION   Aktion 2,   Pegelbyte      <- das hier
+#     LEVEL@blind                    Aktion 134, Datentyp 8
+#     LEVEL@withColor                Aktion 141, Datentyp 8
+#     LEVEL@shade                    Aktion 142, Datentyp 15
+#     LEVEL@uniLight                 Aktion 144, Datentyp 8
+#     LEVEL@withRoom                 Aktion 145, Datentyp 8
+#
+# Belegt ist unten NUR die Pegelbyte-Form (Schalt- und Dimmkanal). An einem
+# HmIP-Rollladen oder Jalousieaktor baut QCCU damit den FALSCHEN Rahmen — er
+# ist wohlgeformt und geht hinaus, deshalb faellt es nicht auf. Wer diese
+# Geraete bedienen will, braucht erst die Unterart in der Tabelle; bis dahin
+# gilt fuer sie dasselbe wie fuer alles Unbelegte: lieber nichts senden.
 STELLBEFEHLE = {
     "STATE":                 (AKTION_START, None, 0, 0xC8),
     "LEVEL":                 (AKTION_START, None, 0, 0xC8),
