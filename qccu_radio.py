@@ -2428,6 +2428,31 @@ class Radio:
                 print(f"  ! {ccu_address}:{channel} fuehrt {param} nicht")
             return None
 
+        # ⚠️ Was die Geraetebeschreibung nicht als SCHREIBBAR ausweist, geht
+        # nicht hinaus — `OPERATIONS` Bit 1 (Wert 2) ist WRITE. Ohne diese
+        # Pruefung baut QCCU einen wohlgeformten Rahmen fuer einen Wert, den
+        # das Geraet nur MELDET, und der Fehler faellt nicht auf.
+        #
+        # Es trifft echte Faelle, nicht nur gedachte: STATE steht am
+        # HmIP-BWTH-A auf den Schaltkanaelen 8..12 als OPERATIONS 5
+        # (SWITCH_VIRTUAL_RECEIVER **v3**), waehrend dieselbe Kanalgattung in
+        # v1/v2/v4/v5/v6 die 7 traegt. Das ist kein Tabellenfehler: die
+        # Referenz einer echten Zentrale meldet fuer die Relaiskanaele der
+        # HmIP-PS-2 ebenfalls 7, und der BWTH-A schaltet sein Relais ueber die
+        # interne Verdrahtung 8->10 selbst — die Zentrale hat da nichts zu
+        # suchen. Neun Kanaltypen fuehren aus demselben Grund LEVEL als reinen
+        # Messwert (BLIND_/DIMMER_/SHUTTER_/SERVO_TRANSMITTER …).
+        #
+        # Eine echte Zentrale weist so einen Schreibversuch schon an der
+        # XML-RPC-Grenze ab; QCCU meldet ihn hier als „kein belegter Weg",
+        # womit `putParamset` einen Fault gibt und nichts eingetragen wird.
+        ops = desc.get("OPERATIONS")
+        if isinstance(ops, int) and not ops & 2:
+            if self.verbose:
+                print(f"  ! {param} ist auf {ccu_address}:{channel} nicht "
+                      f"schreibbar (OPERATIONS {ops}) — nicht gesendet")
+            return None
+
         # Ein Zeitpunkt ist keine Zahl: PARTY_TIME_START/_END kommen als
         # Zeichenkette "2026_09_01 18:00" herein (LogicalType STRING mit
         # DateStringToInteger) und werden nicht umgerechnet, sondern zerlegt.
