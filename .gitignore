@@ -32,3 +32,7 @@ tables/sdt_table.json
 # Geraeten und Ports des jeweiligen Aufbaus.
 test/
 scripts/
+
+# NFS-Reste: Waisen von Dateien, die noch offen waren, als sie ersetzt
+# wurden. Sie gehoeren keinem Prozess mehr und keinem Commit.
+.nfs*

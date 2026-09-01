@@ -22,6 +22,42 @@ VERSION = "2026.8.44"
 PRODUKT = "QCCU"
 NAME_UND_FASSUNG = f"{PRODUKT} {VERSION}"
 
+# Hoerertypen — die unteren vier Bit des Betriebsmodus, den ein Geraet in
+# seinem Anlernruf ansagt.
+#
+# ⚠️ Die Aufzaehlung ist LUECKENHAFT: 2, 6, 7, 10 und 13 gibt es nicht.
+# Woertlich aus `ListenerMode.java:8-17` des HMIPServer-Jars; ein unbekannter
+# Wert wirft dort `InvalidEnumValueException`, und `RouteResponse` faengt das
+# ab und faellt still auf PERMANENT_LISTENER zurueck.
+#
+# Warum das hier steht: der Hoerertyp entscheidet, ob ein Geraet einen Befehl
+# sofort hoert oder ihn verschlaeft. Er ist eine dauerhafte Eigenschaft des
+# Geraets — die echte Zentrale fuehrt ihn neben SGTIN, Adresse und Typ
+# (`HMIPDevice.java:251-254`, `@Property(order=4, name="listenerMode")`).
+# QCCU hat ihn bis 2026.8.44 nur als Aufrufparameter durchgereicht und nach
+# dem Anlernen weggeworfen.
+LM_NAMEN = {
+    0:  "permanent",
+    1:  "Einfach-Burst",
+    3:  "Dreifach-Burst",
+    4:  "Ereignis",
+    5:  "Ereignis mit Stromsparen",
+    8:  "zyklisch",
+    9:  "zyklisch + Einfach-Burst",
+    11: "zyklisch + Dreifach-Burst",
+    12: "permanent am Draht",
+    14: "permanent am Backbone",
+}
+LM_GUELTIG = tuple(sorted(LM_NAMEN))
+
+# Woher der Wert stammt — dieselbe Ehrlichkeit wie bei den Belegstufen der
+# Geraetetabellen. „anlernruf" heisst: das Geraet hat ihn selbst angesagt.
+LM_QUELLEN = {
+    "anlernruf":  "aus dem Anlernruf",
+    "mitschnitt": "aus dem Mitschnitt",
+    "hand":       "von Hand eingetragen",
+}
+
 
 class Tables:
     """Die Gerätebeschreibungen. Fehlen sie, laeuft QCCU trotzdem an.
@@ -253,7 +289,7 @@ class Device:
     """Ein angelerntes Geraet, wie es die Gegenstelle sieht."""
 
     def __init__(self, address, devtype, tables, firmware="1.0.0",
-                 fassung=None):
+                 fassung=None, opmode=None, opmode_quelle=None):
         self.address = address.upper()
         self.devtype = int(devtype)
         self.firmware = firmware
@@ -265,6 +301,16 @@ class Device:
         # 2026.8.39 angelernt wurde, hat keine — es bleibt bei der Vorgabe
         # des Katalogs, also bei dem, womit es bisher gelaufen ist.
         self.fassung = fassung
+        # ⚠️ Das GANZE Byte, nicht nur der Hoerertyp: es traegt daneben
+        # `acessController` (0x80), `router` (0x40) und `portableDevice`
+        # (0x20) — `RouteResponse.setOperationMode()` zerlegt genau so.
+        # QCCU meldet das Byte beim Anlernen unveraendert weiter
+        # (`_anlernen_rest`); wer nur die unteren vier Bit sichert, kann diese
+        # Meldung nach einem Neustart nicht mehr wiederholen.
+        # `None` heisst ausdruecklich „unbekannt" und bedeutet ueberall:
+        # behandle das Geraet wie bisher.
+        self.opmode = opmode
+        self.opmode_quelle = opmode_quelle
         try:
             self.eintrag = tables.fuer_geraet(self.devtype, fassung)
         except Exception:                                # noqa: BLE001
@@ -277,6 +323,32 @@ class Device:
     @property
     def label(self):
         return self.tables.label_of(self.devtype)
+
+    @property
+    def hoerer(self):
+        """Der Hoerertyp (untere vier Bit) — oder None, wenn unbekannt."""
+        return None if self.opmode is None else self.opmode & 0x0F
+
+    @property
+    def ist_router(self):
+        """Meldet das Geraet sich als Router? None, wenn unbekannt."""
+        return None if self.opmode is None else bool(self.opmode & 0x40)
+
+    @property
+    def hoerer_text(self):
+        """Der Hoerertyp im Klartext, mit Herkunft — fuer die Oberflaeche.
+
+        ⚠️ Steht hier und nicht in `qccu_web`: das Web-Modul importiert
+        `qccu` nicht (es kennt nur `qccu_firmware`), und `qccu.py` laeuft als
+        Skript — ein Import daraus faende ein zweites Modul mit eigenem
+        Zustand vor. Die Oberflaeche liest die Eigenschaft am Geraet.
+        """
+        h = self.hoerer
+        if h is None:
+            return None
+        name = LM_NAMEN.get(h, "unbekannter Hoerertyp")
+        quelle = LM_QUELLEN.get(self.opmode_quelle or "")
+        return f"{h} — {name}" + (f" ({quelle})" if quelle else "")
 
     @property
     def typname(self):
@@ -581,6 +653,51 @@ class QCCU:
         self.save_store()
         return True
 
+    def set_hoerer(self, address, opmode, quelle="hand"):
+        """Den Betriebsmodus eines Geraets nachtragen.
+
+        ⚠️ Der Weg fuer den BESTAND. Der Hoerertyp steht NUR im Anlernruf —
+        weder in der Geraetebeschreibung des Herstellers (357 XML-Dateien des
+        Jars geprueft: kein `listenerMode`) noch in irgendeiner Meldung des
+        laufenden Betriebs. Ein vor 2026.8.45 angelerntes Geraet hat ihn
+        darum nicht, und ein Geraet neu anzulernen, nur um ihn zu erfahren,
+        ist bei einem Heizungsregler VERBOTEN: der Zentralenwechsel setzt die
+        Ventiladaption zurueck, und waehrend der Adaption lehnt das Geraet
+        jeden Stellbefehl ab.
+
+        Bleibt: aus dem Rohmitschnitt lesen (`scripts/hoerertyp_aus_mitschnitt.py`)
+        oder von Hand eintragen. Beides landet hier.
+
+        `opmode is None` loescht den Eintrag wieder.
+        """
+        key = (address or "").upper()
+        with self.lock:
+            d = self.devices.get(key)
+        if d is None:
+            return False
+        if opmode is None:
+            neu, neue_quelle = None, None
+        else:
+            try:
+                neu = int(opmode)
+            except (TypeError, ValueError):
+                return False
+            if not 0 <= neu <= 0xFF or (neu & 0x0F) not in LM_GUELTIG:
+                return False
+            neue_quelle = quelle if quelle in LM_QUELLEN else "hand"
+        vorher = d.opmode
+        with self.lock:
+            d.opmode = neu
+            d.opmode_quelle = neue_quelle
+        # Ausserhalb des Schlosses — `save_store` nimmt es selbst.
+        self.save_store()
+        if neu != vorher:
+            self.merke_ereignis(
+                "info",
+                f"{key}: Hoerertyp {d.hoerer_text}" if neu is not None
+                else f"{key}: Hoerertyp wieder unbekannt")
+        return True
+
     def name_of(self, address, vorgabe=None):
         """Der gefuehrte Name — oder die Vorgabe, wenn keiner vergeben ist."""
         return self.names.get((address or "").upper()) or vorgabe
@@ -594,8 +711,10 @@ class QCCU:
                 self.names.pop(k, None)
 
     def add_device(self, address, devtype, firmware="1.0.0", announce=True,
-                   neu_angelernt=False, fassung=None):
-        d = Device(address, devtype, self.t, firmware, fassung)
+                   neu_angelernt=False, fassung=None, opmode=None,
+                   opmode_quelle=None):
+        d = Device(address, devtype, self.t, firmware, fassung,
+                   opmode, opmode_quelle)
         with self.lock:
             self.devices[d.address] = d
         if self.verbose:
@@ -791,7 +910,9 @@ class QCCU:
             try:
                 self.add_device(addr, int(e["devtype"]),
                                 e.get("firmware", "1.0.0"), announce=False,
-                                fassung=e.get("fassung"))
+                                fassung=e.get("fassung"),
+                                opmode=e.get("opmode"),
+                                opmode_quelle=e.get("opmode_quelle"))
                 if e.get("rf"):
                     self.rf[addr.upper()] = e["rf"].lower()
                 gd = self.devices.get(addr.upper())
@@ -843,6 +964,15 @@ class QCCU:
                                     "firmware": d.firmware,
                                     **({"fassung": d.fassung}
                                        if d.fassung else {}),
+                                    # ⚠️ `is not None`, NICHT `if d.opmode`:
+                                    # 0 ist ein gueltiger Wert
+                                    # (PERMANENT_LISTENER, und genau den
+                                    # meldet die HmIP-BWTH-A) und wuerde
+                                    # sonst nie geschrieben.
+                                    **({"opmode": d.opmode}
+                                       if d.opmode is not None else {}),
+                                    **({"opmode_quelle": d.opmode_quelle}
+                                       if d.opmode_quelle else {}),
                                     "rf": self.rf.get(a),
                                     # Die zuletzt gemeldeten Werte. Sie sind
                                     # nicht die Wahrheit — die steht im Geraet

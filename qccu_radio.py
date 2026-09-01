@@ -3035,7 +3035,8 @@ class Radio:
                       f"{newa.hex()} trotzdem, wird nachgetragen.")
             return
 
-        self._anlernen_eintragen(newa.hex(), ccu_addr, devtype, fassung)
+        self._anlernen_eintragen(newa.hex(), ccu_addr, devtype, fassung,
+                                 opmode)
         self._anlernen_rest(newa.hex(), ccu_addr, devtype, opmode, src.hex(),
                             fassung)
 
@@ -3045,7 +3046,8 @@ class Radio:
     # Weg 2: sie kam nicht, aber das Geraet funkt trotzdem unter der
     #        angebotenen Adresse (`_nachtrag_einloesen`).
 
-    def _anlernen_eintragen(self, hmid, ccu_addr, devtype, fassung=None):
+    def _anlernen_eintragen(self, hmid, ccu_addr, devtype, fassung=None,
+                            opmode=None):
         """Geraet fuehren und Funkadresse binden — das MUSS zuerst geschehen.
 
         Die erste Anfrage des Geraets (Zeit, Zustand) kommt rund eine Sekunde
@@ -3054,9 +3056,16 @@ class Radio:
         Werksreset nicht mehr heraus — es wiederholt dann JEDE Sendung
         dreifach. Am Geraet gemessen, 17.08.2026.
         """
+        # ⚠️ Der Betriebsmodus gehoert HIER hinein, nicht erst in
+        # `_anlernen_rest`. Der Anlernruf ist die einzige Gelegenheit, bei der
+        # ein Geraet ihn ansagt; wer ihn nur durchreicht, hat ihn nach dem
+        # naechsten Neustart nicht mehr.
         self.qccu.add_device(ccu_addr, devtype, neu_angelernt=True,
                              **({"firmware": fassung, "fassung": fassung}
-                                if fassung else {}))
+                                if fassung else {}),
+                             **({"opmode": opmode,
+                                 "opmode_quelle": "anlernruf"}
+                                if opmode is not None else {}))
         self.bind(hmid, ccu_addr)
         # Der Vorgang ist erledigt — eine noch offene Vormerkung waere von
         # jetzt an nur noch eine Fussangel.
@@ -3134,7 +3143,7 @@ class Radio:
         # Eintragen SOFORT, damit der gerade laufende Frame nicht doch noch
         # als fremd durchfaellt; der Rest im eigenen Faden, weil er wartet.
         self._anlernen_eintragen(hmid, e["ccu_addr"], e["devtype"],
-                                 e.get("fassung"))
+                                 e.get("fassung"), e.get("opmode"))
         threading.Thread(
             target=self._anlernen_rest,
             args=(hmid, e["ccu_addr"], e["devtype"], e["opmode"], e["src"],

@@ -810,7 +810,10 @@ async function laden(){
    +'<td><code>'+esc(d.address)+'</code>'
    +'<span class="mut" style="font-size:.85em"> · '+esc(d.rf||'—')+'</span></td>'
    +'<td class="mut">'+esc(d.interface||'—')+'</td>'
-   +'<td class="mut">'+esc(d.label)+' · '+d.channels+' Kan.</td>'
+   +'<td class="mut">'+esc(d.label)+' · '+d.channels+' Kan.'
+   +(d.hoerer_text?'<div class="mut" style="font-size:.85em" '
+     +'title="wie das Gerät zuhört — ein schlafendes hört einen Befehl erst, '
+     +'wenn es von selbst aufwacht">hört '+esc(d.hoerer_text)+'</div>':'')+'</td>'
    +'<td class="mut">'+alterText(d.vor_sek)+'</td>'
    +'<td class="right mut">'+(d.rssi==null?'—':(d.rssi+' dBm'))+'</td>'
    +'<td class="right">'
@@ -1147,11 +1150,29 @@ class WebHandler(BaseHTTPRequestHandler):
             devs.append({"address": addr, "rf": rf.get(addr),
                          "interface": getattr(lc, "interface_name", "HmIP-RF"),
                          "label": d.label,
+                         # Die Typnummer, nicht nur die Beschriftung: Werkzeuge
+                         # ordnen darueber zu (der Hoerertyp haengt am Typ,
+                         # nicht am einzelnen Geraet), und aus der Beschriftung
+                         # laesst sie sich nicht zurueckrechnen.
+                         # ⚠️ Behutsam wie die Nachbarzeilen: eine fehlende
+                         # Eigenschaft laesst diesen Handler mit AttributeError
+                         # sterben, und der Aufrufer sieht dann nicht etwa
+                         # einen Fehler, sondern eine abgerissene Verbindung.
+                         "devtype": getattr(d, "devtype", None),
                          "name": benannt(addr, d.label) if benannt else d.label,
                          "channels": len(d.channel_list()),
                          "rssi": pegel if isinstance(pegel, (int, float)) else None,
                          "unreach": bool(getattr(d, "unreach", False)),
                          "wartet": bool(wartet(addr)) if wartet else False,
+                         # ⚠️ Nur die HmIP-Schleife fuehrt das Feld. Die
+                         # BidCoS-Geraete kommen weiter unten aus einem
+                         # EIGENEN Wortverzeichnis; dort fehlt es, und die
+                         # Vorlage zeigt es folgerichtig nur, wenn es da ist.
+                         # Ein Hoerertyp ist eine HmIP-Groesse — bei einer
+                         # BidCoS-Zeile waere „unbekannt" keine Auskunft,
+                         # sondern eine falsche Warnung.
+                         "hoerer": getattr(d, "hoerer", None),
+                         "hoerer_text": getattr(d, "hoerer_text", None),
                          "vor_sek": int(jetzt - zuletzt) if zuletzt else None})
         ereignisse = getattr(lc, "ereignis_liste", None)
         wuensche = getattr(self.radio, "anlernwuensche_liste", None) if self.radio else None
@@ -1325,6 +1346,31 @@ class WebHandler(BaseHTTPRequestHandler):
             if aufnehmen is None:
                 return self._json({"error": "nicht verfuegbar"}, 409)
             return self._json({"ok": True, "gemeldet": bool(aufnehmen(adresse))})
+
+        if self.path == "/api/device/hoerer":
+            # Den Hoerertyp eines BESTANDSGERAETS nachtragen. Er steht nur im
+            # Anlernruf; ein Geraet neu anzulernen, nur um ihn zu erfahren,
+            # kostet bei einem Heizungsregler die Ventiladaption. Darum dieser
+            # Weg — bedient von `scripts/hoerertyp_aus_mitschnitt.py`.
+            adresse = str(body.get("address") or "").upper()
+            setzen = getattr(self.qccu, "set_hoerer", None)
+            if setzen is None:
+                return self._json({"error": "nicht verfuegbar"}, 409)
+            roh = body.get("opmode")
+            if roh is None:
+                opmode = None
+            else:
+                try:
+                    opmode = int(roh, 16) if isinstance(roh, str) else int(roh)
+                except (TypeError, ValueError):
+                    return self._json({"error": "Der Betriebsmodus ist "
+                                                "keine Zahl."}, 400)
+            quelle = str(body.get("quelle") or "hand")
+            if not setzen(adresse, opmode, quelle):
+                return self._json({"error": "Gerät unbekannt oder "
+                                            "Betriebsmodus ungültig."}, 400)
+            return self._json({"ok": True, "address": adresse,
+                               "opmode": opmode})
 
         if self.path == "/api/ereignisse/loeschen":
             # „Zuletzt geschehen" ist eine Erinnerungshilfe, kein Protokoll:
