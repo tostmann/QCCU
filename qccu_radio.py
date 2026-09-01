@@ -744,6 +744,55 @@ APP_STAY_AWAKE = 0x40
 # permanent an Draht/Backbone) hoert dauerhaft oder laesst sich mit einem
 # Burst wecken. Nur diese drei muss man abwarten.
 LM_NICHT_STAENDIG = (4, 5, 8)
+
+# Hoerertypen, die einen VORLAUF brauchen, damit sie einen Befehl ueberhaupt
+# hoeren. `HMIPAbstractWriterWorker.class:162-178` bildet ab:
+#     1  SINGLE_BURST_LISTENER              -> BurstMode.Burst        (Byte 1)
+#     9  CYCLIC_AND_SINGLE_BURST_LISTENER   -> BurstMode.Burst        (Byte 1)
+#     3  TRIPLE_BURST_LISTENER              -> BurstMode.TrippleBurst (Byte 3)
+#    11  CYCLIC_AND_TRIPLE_BURST_LISTENER   -> BurstMode.TrippleBurst (Byte 3)
+# alles Uebrige auf BurstMode.Normal. Auf dem Draht zum Coprozessor der echten
+# Zentrale: Opcode 0x03, dann dieses Byte, dann der Rahmen
+# (`HMIPStack.sendProtocolFrame`; dort kommt `LowLevelMacOption` — und damit
+# die Frequenzwahl — ueberhaupt nicht vor).
+#
+# ⚠️ Nicht zu verwechseln mit `LM_NICHT_STAENDIG`: das sind die Hoerer, fuer
+# die die Zentrale einen Befehl ZURUECKLEGT (`isNonPermanentListener()`), das
+# hier sind die, denen sie ihn mit Vorlauf HINTERHERSCHICKT. Kein Wert steht
+# in beiden Listen ausser der 8 in keiner von beiden — ein CYCLIC_LISTENER
+# ohne Burst wird zurueckgelegt, ein zyklischer MIT Burst wird geweckt.
+#
+# ⚠️ `isCyclicListener() = {8,9,11}` ist im ganzen Jar TOTER CODE (kein
+# Aufrufer). Wer daraus eine Wartefach-Menge ableitet, baut etwas nach, das
+# das Original nicht tut.
+#
+# GEMESSEN am HmIP-eTRV-C (Typ 325, Hoerertyp 11), 01.09.2026, an einem
+# eq-3-Dual-Copro: zwei Rahmen, die sich in genau einem Byte unterscheiden,
+# je sechs Versuche abwechselnd, jeweils fruehestens 5 s nach dem letzten
+# Geraeterahmen — Byte 0 null Antworten, Byte 3 sechs von sechs
+# (Fisher exakt, zweiseitig p = 0,0022). Auf der Luft ist der Unterschied ein
+# rund 356 ms laengerer Vorlauf (385,5 ms gegen 29,5 ms Huellkurve) auf
+# DERSELBEN Frequenz — 868,28..868,32 MHz bei beiden Stufen, gegengeprueft
+# durch Verschieben der Aufnahmemitte.
+LM_BURST = (1, 3, 9, 11)
+# Byte 3 fuer die Dreifach-Stufe, Byte 1 fuer die Einfach-Stufe.
+LM_BURST_STUFE = {1: 1, 9: 1, 3: 3, 11: 3}
+
+# Wie lange ein Vorlauf jede Wartezeit verlaengert. Gemessen am
+# eq-3-Coprozessor (HackRF, Huellkurve auf 868,3 MHz): 386 ms mit Vorlauf
+# gegen 29,5 ms ohne, also rund 356 ms mehr. Fuer BEIDE Stufen derselbe Wert —
+# je drei Messungen, auf 0,5 ms gleich (02.09.2026). Ein Unterschied zwischen
+# Stufe 1 und Stufe 3 ist damit auf der Luft nicht nachweisbar; der Name
+# „TrippleBurst" beschreibt also nicht die Dauer.
+# 0,5 s laesst Luft fuer die serielle Uebertragung und den Programmpfad im
+# Stick. Zu wenig zu warten ist der teurere Fehler: es erzeugt ein
+# „kein Urteil" fuer eine Sendung, die noch laeuft.
+BURST_ZUSCHLAG = 0.5
+
+
+def burst_zuschlag(stufe):
+    return BURST_ZUSCHLAG if stufe else 0.0
+
 RXF_FOR_US = 0x01
 
 # Das erste Nutzlastbyte eines STATUS-Frames traegt neben dem Inhaltsformat
@@ -884,11 +933,15 @@ MAC_ROLE_CENTRAL = 3
 class _Job:
     """Ein Schreibauftrag auf der seriellen Leitung."""
     __slots__ = ("cmd", "kind", "verdict", "written", "done", "not_before",
-                 "expect", "reply")
+                 "expect", "reply", "burst")
 
-    def __init__(self, cmd, kind, not_before=0.0, expect=None):
+    def __init__(self, cmd, kind, not_before=0.0, expect=None, burst=0):
         self.cmd = cmd
         self.kind = kind
+        # Burst-Stufe (0/1/3), mit der dieser Auftrag hinausgeht. Steht am
+        # Job, weil der Sender daran seine Wartezeit bemisst: ein Vorlauf
+        # haelt den Stick rund 360 ms zusaetzlich fest.
+        self.burst = burst
         self.verdict = None
         self.not_before = not_before
         self.expect = expect
@@ -1049,6 +1102,10 @@ class Radio:
         self.funkgute = None
         # Die vollstaendige Antwort des Sticks auf `V`.
         self.v_banner = None
+        # Kann der Stick einen Vorlauf fuer HmIP-Rahmen (`mb`)? None = noch
+        # nicht gefragt bzw. keine deutbare Antwort; beides wird wie „nein"
+        # behandelt, aber nur „nein" ist eine Auskunft.
+        self.burst_faehig = None
         self.budget = None
         self._cnt_ev = threading.Event()
 
@@ -1216,6 +1273,7 @@ class Radio:
 
         self._netzschluessel_sicherstellen()
         self._seq_angleichen()
+        self._burst_probe()
 
         self.ser.reset_input_buffer()
         if self.verbose:
@@ -1253,6 +1311,44 @@ class Radio:
             if z.startswith("Pm ein") or z.startswith("Pm aus"):
                 gefunden = z
         return gefunden
+
+    def _burst_probe(self):
+        """Kann dieser Stick einen Vorlauf fuer HmIP-Rahmen? (`mU` fragt.)
+
+        Ein Stick vor q-culfw 2.0.76 antwortet auf `mU` mit `Pm vorlauf=<0|1>`,
+        ein neuerer haengt ` ms=<v1>/<v3>` an — die Vorlaufdauer je Stufe. Das
+        Anhaengsel ist die Auskunft: nur wer sie gibt, kennt auch `mb`.
+
+        ⚠️ Der Unterschied darf nicht stillschweigend bleiben. Ein alter Stick
+        wuerde `mb3s…` mit `?` beantworten und NICHT senden; ohne diese Probe
+        faende der Anwender einen Stellbefehl vor, der spurlos verschwindet,
+        und suchte den Fehler beim Geraet. Mit ihr geht der Befehl wenigstens
+        ohne Vorlauf hinaus — er wirkt bei einem schlafenden Geraet zwar
+        nicht, aber der Grund steht im Protokoll.
+        """
+        self.ser.reset_input_buffer()
+        self.ser.write(b"mU\r\n")
+        self.ser.flush()
+        ende = time.time() + 1.5
+        while time.time() < ende:
+            try:
+                z = self.ser.readline().decode("ascii", "replace").strip()
+            except Exception:                            # noqa: BLE001
+                break
+            if not z:
+                continue
+            if z.startswith("Pm vorlauf="):
+                self.burst_faehig = " ms=" in z
+                self._log("##", f"BURST {'moeglich' if self.burst_faehig else 'NICHT moeglich'}"
+                                f" — Stick meldet: {z}")
+                if self.verbose and not self.burst_faehig:
+                    print("  ! Der Stick kann keinen Vorlauf für HmIP-Rahmen "
+                          "(q-culfw älter als 2.0.76). Ein Batteriegerät, das "
+                          "nur zyklisch hört, ist damit nicht stellbar.")
+                return
+        # Keine deutbare Antwort: NICHT raten. `None` heisst „ungefragt", und
+        # `_submit` behandelt das wie „kann es nicht".
+        self._log("##", "BURST unklar — der Stick antwortet nicht auf mU")
 
     def _kennung_vorhanden(self):
         """Hat der Stick schon eine Kennung? (`mG` zeigt sie.)
@@ -1795,6 +1891,36 @@ class Radio:
             self._app_quittung(src.lower(), pt[1],
                                pt[2] if len(pt) > 2 else 0)
 
+        # ⚠️ Ein Geraet quittiert NICHT immer mit ANSWER. Es kann die Quittung
+        # auch seinem naechsten STATUS aufsatteln — dann traegt dessen
+        # `payload[0]` das Bit `piggybackAppACK` (0x20) und `pt[1]` das Echo
+        # UNSERER appSeq. Die Zentrale wertet beides gleichwertig aus:
+        #
+        #   } else if (frame.getFrameType() == HMIP_APP_ANSWER
+        #           || frame.getFrameType() == HMIP_APP_STATUS
+        #              && ((StatusFrame)frame).isPiggybackAppACK()) {
+        #       deviceCommandsHolder.checkAndRemoveCommand(
+        #               header.getApplicationSequencenumber());
+        #   }
+        #                       (`HMIPApplicationHandler`, Zeile 203-205)
+        #
+        # ⚠️ GEMESSEN, dass das der Regelfall ist und nicht die Ausnahme: an
+        # einem HmIP-eTRV-C (Hoerertyp 11) antwortete das Geraet auf sechs von
+        # sechs Burst-Stellbefehlen mit einem STATUS-Rahmen im Antwortfenster
+        # — mit KEINEM ANSWER (01.09.2026, Nachbarsitzung an einem
+        # eq-3-Dual-Copro). Wer nur auf ANSWER hoert, sieht bei einem
+        # Batteriethermostat also gar keine Quittung und meldet „keine
+        # ANSWER", obwohl der Befehl angekommen und angenommen ist.
+        #
+        # Ein Huckepack-ACK traegt keinen Ablehnungsgrund — es ist ein
+        # blankes Ja. Darum `ergebnis=0` (ACK), wie es `checkAndRemoveCommand`
+        # ohne jede Deutung tut.
+        elif ((pt[0] & 0x3F) == FT_STATUS and len(pt) > 2
+                and (pt[2] & 0x20)):
+            self._log("<<", f"HUCKEPACK-QUITTUNG von {src} "
+                            f"appSeq=0x{pt[1]:02X}")
+            self._app_quittung(src.lower(), pt[1], 0)
+
         # ⚠️ Die Zeitanfrage wird beantwortet, AUCH OHNE respReq-Bit. Sie ist
         # die einzige Ausnahme, und sie ist gemessen: der HmIP-BWTH-A fragt
         # mit `0x23` (TIME_INFO ohne Antwortwunsch) und WIEDERHOLT die Frage
@@ -2140,13 +2266,77 @@ class Radio:
             if job.expect is not None:
                 job.done.wait(self.ask_timeout)
             elif job.expects_verdict and job.verdict is None:
-                job.done.wait(self.verdict_timeout)
+                # ⚠️ Ein Vorlauf haelt den Stick fest, bevor er ueberhaupt
+                # sendet — gemessen 385,5 ms Huellkurve gegen 29,5 ms ohne.
+                # Das Urteil kann also nicht frueher kommen. Der Zuschlag muss
+                # an BEIDEN Wartestellen stehen (hier und in `_do_set`), sonst
+                # kippt die Ordnung, mit der `_do_set` heute sicher nach dem
+                # Sender aufwacht.
+                job.done.wait(self.verdict_timeout + burst_zuschlag(job.burst))
             with self._pending_lock:
                 self._pending = None
             job.done.set()
 
-    def _submit(self, cmd, kind, not_before=0.0, expect=None):
-        job = _Job(cmd, kind, not_before, expect)
+    def _burst_stufe(self, cmd):
+        """Welche Burst-Stufe dieser Stick-Befehl braucht — 0, 1 oder 3.
+
+        Die Entscheidung haengt am ZIEL, nicht am Rahmen: die echte Zentrale
+        baut jedes `SendFrameCommand` mit `device.getListenerMode()`
+        (`TransactionTaskFactory:269-330`). Also Zieladresse aus dem Befehl
+        lesen, Geraet suchen, Hoerertyp fragen.
+
+        ⚠️ Diese Methode laeuft im LESEFADEN (`_handle` -> `_answer`) und darf
+        deshalb unter keinen Umstaenden werfen. Der Pruefstand reicht seit dem
+        14.08. ausdruecklich einen zerhackten Befehl ein (`_submit("mTdefekt",
+        "cmd")`, am echten Stick bei gleichzeitigem Empfang beobachtet) — ein
+        `int(…, 16)` darauf waere eine Ausnahme mitten im Empfang. Darum reine
+        Zeichenkettenpruefung und ein Fangnetz um alles.
+        """
+        try:
+            if cmd.startswith("ms"):
+                ziel = cmd[2:8]
+            elif cmd.startswith("mT"):
+                ziel = cmd[4:10]
+            else:
+                return 0
+            if len(ziel) != 6 or any(c not in "0123456789abcdefABCDEF"
+                                     for c in ziel):
+                return 0
+            # Rundrufe und Sammeladressen hoert ohnehin niemand schlafend.
+            if ziel[:2].lower() in ("00", "e0", "f0", "ff"):
+                return 0
+            ccu = self.by_hmid.get(ziel.lower())
+            if not ccu:
+                return 0
+            d = (getattr(self.qccu, "devices", None) or {}).get(ccu)
+            hoerer = getattr(d, "hoerer", None)
+            return LM_BURST_STUFE.get(hoerer, 0)
+        except Exception:                                # noqa: BLE001
+            return 0
+
+    def _submit(self, cmd, kind, not_before=0.0, expect=None, burst=None):
+        """Einen Befehl an den Stick einreihen.
+
+        `burst=None` heisst „selbst entscheiden" und ist der Normalfall.
+        Ausdruecklich `burst=0` setzt, wer weiss, dass das Geraet gerade WACH
+        ist — eine Quittung oder Zeitauskunft geht an ein Geraet, das eben
+        selbst gesendet hat, und braucht keinen Vorlauf. Das ist keine
+        Sparsamkeit, sondern Genauigkeit: 360 ms Vorlauf sind 360 ms
+        Sendezeit, und das Konto des Sticks ist die knappste Groesse im Haus.
+        """
+        if burst is None:
+            burst = self._burst_stufe(cmd) if kind == "cmd" else 0
+        if burst and not self.burst_faehig:
+            # Ein alter Stick kann es nicht — dann lieber ohne Vorlauf senden
+            # als gar nicht, aber es muss im Protokoll stehen. Sonst sucht
+            # jemand den Fehler beim Geraet.
+            self._log("##", f"BURST NICHT MOEGLICH (Stick kann kein mb) — "
+                            f"{cmd[:10]} geht ohne Vorlauf hinaus")
+            burst = 0
+        if burst:
+            # `ms…`/`mT…` wird zu `mb<stufe>s…`/`mb<stufe>T…`.
+            cmd = f"mb{burst}{cmd[1:]}"
+        job = _Job(cmd, kind, not_before, expect, burst)
         # Antworten auf einen empfangenen Frame gehoeren in die Antwort-Schlange:
         # nur dort wird `not_before` eingehalten. Wer sofort zurueckfunkt, redet
         # womoeglich, bevor das Geraet wieder zuhoert — die echte Zentrale
@@ -2655,8 +2845,16 @@ class Radio:
             self._gate.clear()
             for attempt in range(1, self.tx_tries + 1):
                 ev.clear()
-                job = self._submit(cmd, "cmd")
-                job.done.wait(self.verdict_timeout + 0.5)
+                # ⚠️ NUR der erste Versuch bekommt den Vorlauf. Er ist es, der
+                # das Geraet weckt; ist es wach, hoert es die Wiederholung
+                # ohnehin, und ein zweiter Vorlauf kostete noch einmal 360 ms
+                # Sendezeit — bei drei Versuchen mehr als eine Sekunde reine
+                # Praeambel je Stellbefehl. Das Sendezeit-Konto des Sticks
+                # fuellt sich mit 10 ms je Sekunde; drei Vorlaeufe waeren
+                # ueber zwei Minuten Erholung fuer einen einzigen Befehl.
+                job = self._submit(cmd, "cmd", burst=None if attempt == 1 else 0)
+                job.done.wait(self.verdict_timeout + 0.5
+                              + burst_zuschlag(job.burst))
                 verdict = job.verdict or "kein Urteil"
                 verdicts.append(verdict)
                 if self.verbose:

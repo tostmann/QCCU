@@ -1519,7 +1519,18 @@ class QCCU:
             if b and b.get("max"):
                 duty = int(round((b["max"] - b["credit"]) * 100.0 / b["max"]))
                 duty = max(0, min(100, duty))
-                if b.get("lovf"):
+                # ⚠️ `lovf` ist ein SEIT DEM START LAUFENDER Zaehler, kein
+                # Zustand — der Stick setzt ihn nur bei `mZ` zurueck. Wer
+                # daraus `duty = 100` macht, nagelt die Anzeige nach dem
+                # ersten erschoepften Vorrat fuer immer auf 100 %, auch wenn
+                # das Konto laengst wieder voll ist. Die Haussteuerung liest
+                # daraus eine dauerhaft ueberlastete Zentrale.
+                # Aufgefallen ist es erst, als der Vorlauf gebucht wurde und
+                # LOVF von „nie" zu „gelegentlich" wurde.
+                # Der Zaehler bleibt sichtbar — die Oberflaeche zeigt ihn
+                # neben dem Vorrat —, aber der Auslastungswert kommt jetzt
+                # allein aus dem Vorrat.
+                if b["credit"] <= 0:
                     duty = 100
         return [{
             "ADDRESS": addr,
