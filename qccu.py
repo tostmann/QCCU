@@ -18,7 +18,7 @@ from xmlrpc.server import SimpleXMLRPCServer, SimpleXMLRPCRequestHandler
 # zugleich die Marke des Abbilds auf Docker Hub UND der Wert von `version`
 # in addon/config.yaml — der Supervisor zieht `<image>:<version>`. Wer hier
 # hochzaehlt, muss beides mitziehen, sonst schlaegt die Installation fehl.
-VERSION = "2026.8.44"
+VERSION = "2026.8.45"
 PRODUKT = "QCCU"
 NAME_UND_FASSUNG = f"{PRODUKT} {VERSION}"
 
