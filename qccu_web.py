@@ -1277,6 +1277,16 @@ class WebHandler(BaseHTTPRequestHandler):
             return self._json({"error": err} if err else {"ok": True},
                               409 if err else 200)
 
+        if self.path == "/api/pruefstand":
+            # Nur fuer Messreihen: Sendeparameter zur Laufzeit stellen.
+            # Grenzen und Begruendung stehen in `qccu_radio.Radio`.
+            if not self.radio:
+                return self._json({"error": "kein Funk angebunden"}, 409)
+            gesetzt, err = self.radio.pruefstand_setzen(body)
+            return self._json({"error": err, "gesetzt": gesetzt} if err
+                              else {"ok": True, "gesetzt": gesetzt},
+                              409 if err else 200)
+
         if self.path == "/api/stick/roh":
             # Nur fuer den Pruefstand: ein Kommando aus der weissen Liste an
             # den Stick. Die Liste steht in `qccu_radio.Radio`, damit die

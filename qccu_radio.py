@@ -1323,6 +1323,42 @@ class Radio:
     # Pruefstand zwischen zwei Messreihen umgestellt werden muss.
     ROH_ERLAUBT = ("mU",)
 
+    # Grenzen fuer `pruefstand_setzen`. Eng, damit ein Vertipper nicht den
+    # Normalbetrieb verstellt: tx_timeout unter 20 ms waere kuerzer als die
+    # MAC-Latenz des Geraets (~55 ms gemessen), ueber 5 s laenger als jede
+    # sinnvolle Geduld; tx_tries hoeher als 5 verbrennt nur Sendezeit.
+    PRUEFSTAND_GRENZEN = {"tx_timeout": (0.02, 5.0), "tx_tries": (1, 5)}
+
+    def pruefstand_setzen(self, werte):
+        """Sendeparameter fuer eine MESSREIHE stellen.
+
+        ⚠️ Nur fuer den Pruefstand. `tx_timeout` ist der Abstand, nach dem eine
+        unquittierte Sendung wiederholt wird — und damit, bei einem Burst, der
+        Abstand zwischen Weckruf und dem Rahmen auf dem Empfangskanal. Der
+        eq-3-Coprozessor schickt ihn nach 45-53 ms, QCCU bisher nach rund
+        410 ms. Ob das den Unterschied macht, laesst sich nur messen, wenn man
+        es stellen kann.
+
+        Liefert (gesetzte_werte, fehler_oder_None).
+        """
+        if not isinstance(werte, dict):
+            return {}, "Erwartet ein Objekt {name: wert}"
+        gesetzt = {}
+        for name, wert in werte.items():
+            if name not in self.PRUEFSTAND_GRENZEN:
+                return gesetzt, (f"unbekannt: {name} — stellbar sind "
+                                 f"{', '.join(sorted(self.PRUEFSTAND_GRENZEN))}")
+            lo, hi = self.PRUEFSTAND_GRENZEN[name]
+            if isinstance(wert, bool) or not isinstance(wert, (int, float)):
+                return gesetzt, f"{name}: Zahl erwartet, nicht {type(wert).__name__}"
+            if not (lo <= wert <= hi):
+                return gesetzt, f"{name}={wert} ausserhalb {lo}..{hi}"
+            wert = int(wert) if name == "tx_tries" else float(wert)
+            setattr(self, name, wert)
+            gesetzt[name] = wert
+            self._log("##", f"PRUEFSTAND {name}={wert}")
+        return gesetzt, None
+
     def roh_kommando(self, cmd):
         """Ein Kommando aus der weissen Liste an den Stick geben.
 
@@ -2908,30 +2944,33 @@ class Radio:
             self._gate.clear()
             for attempt in range(1, self.tx_tries + 1):
                 ev.clear()
-                # ⚠️ NUR der erste Versuch bekommt den Vorlauf. Er ist es, der
-                # das Geraet weckt; ist es wach, hoert es die Wiederholung
-                # ohnehin, und ein zweiter Vorlauf kostete noch einmal 360 ms
-                # Sendezeit — bei drei Versuchen mehr als eine Sekunde reine
-                # Praeambel je Stellbefehl. Das Sendezeit-Konto des Sticks
-                # fuellt sich mit 10 ms je Sekunde; drei Vorlaeufe waeren
-                # ueber zwei Minuten Erholung fuer einen einzigen Befehl.
-                # ⚠️ ... ABER nur, wenn der erste Versuch auch WIRKLICH
-                # hinausging. Ein `Pm ERR LOVF` heisst, dass das Sendekonto
-                # erschoepft war und NICHTS gesendet wurde — dann hat nichts
-                # geweckt, und eine vorlauflose Wiederholung erreicht ein
-                # schlafendes Geraet ebenso wenig. Sie wird trotzdem mit
-                # „tx ok" quittiert und sah im Protokoll wie ein Erfolg aus:
-                # `urteile=['err','ok','ok']` bei null Sendungen, die je ein
-                # Geraet erreicht haben. Ein Vorlauf kostet 36 der 900
-                # Konto-Einheiten, das Konto fuellt sich mit einer je Sekunde
-                # — nach rund elf Burst-Befehlen ist es leer, das ist der
-                # Regelfall einer Messreihe und nicht die Ausnahme.
-                nochmal_wecken = (attempt > 1
-                                  and all(v in ("err", "kein Urteil")
-                                          for v in verdicts))
-                job = self._submit(cmd, "cmd",
-                                   burst=None if (attempt == 1 or nochmal_wecken)
-                                   else 0)
+                # ⚠️ JEDER Anlauf weckt. Bis zum 02.09.2026 bekam nur der erste
+                # den Vorlauf — „ist das Geraet wach, hoert es die Wiederholung
+                # ohnehin". Das stimmt nur, wenn der erste Anlauf es geweckt
+                # HAT. Hat er das Wachfenster verfehlt, schlaeft das Geraet
+                # weiter, und eine vorlauflose Wiederholung erreicht es genauso
+                # wenig wie ein Anlauf, der wegen `Pm ERR LOVF` nie hinausging.
+                # Gemessen: Weckrahmen ohne Zustellung 0 von 5, und die
+                # vorlauflosen Wiederholungen der alten Logik trafen an einem
+                # schlafenden eTRV-E-S in 0 von 14 Faellen.
+                #
+                # Der eq-3-Coprozessor wiederholt bei ausbleibender Antwort das
+                # GANZE Paar — Wecken auf 869,52 plus Zustellen auf 868,30 —
+                # 700 ms nach dem ersten Burst-Start (am SPI mitgelesen,
+                # `p2_spi.sr`). Seit q-culfw 2.0.91 IST `mb` dieses Paar; ein
+                # zweites `mb` ist also die Wiederholung des Copro.
+                #
+                # Was es kostet: je Anlauf Vorlauf (36) plus zwei Rahmen (~10)
+                # vom 900er-Konto des Sticks, Nachfuellung eine Einheit je
+                # Sekunde — drei Anlaeufe sind rund 140 Einheiten, also gut
+                # zwei Minuten Erholung. Das ist der Preis, den der Copro
+                # ebenfalls zahlt; ein billigerer Anlauf, der nichts erreicht,
+                # spart nichts.
+                #
+                # `burst=None` heisst „der Stick entscheidet nach dem Hoerertyp"
+                # — fuer ein Geraet ohne Burst-Hoerertyp bleibt jeder Anlauf
+                # vorlauflos, dort aendert sich nichts.
+                job = self._submit(cmd, "cmd", burst=None)
                 job.done.wait(self.verdict_timeout + 0.5
                               + burst_zuschlag(job.burst))
                 verdict = job.verdict or "kein Urteil"
