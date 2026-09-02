@@ -177,9 +177,9 @@ z = zipfile.ZipFile(jar)
 n = 0
 for name in z.namelist():
     b = os.path.basename(name)
-    if b.startswith("device_") and b.endswith(".xml"):
+    if (b.startswith("device_") or b.startswith("channel_type_")) and b.endswith(".xml"):
         open(os.path.join(out, b), "wb").write(z.read(name)); n += 1
-print(f"[qccu] {n} Geraetebeschreibungen entnommen")
+print(f"[qccu] {n} Geraete- und Kanaltypbeschreibungen entnommen")
 if n == 0:
     raise SystemExit("keine device_*.xml im Archiv")
 PY

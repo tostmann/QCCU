@@ -1330,7 +1330,12 @@ class QCCU:
             raise xmlrpc.client.Fault(-2, "Unknown device")
         if not ch:
             return {}
-        return self.t.paramset_of(d.devtype, ch, paramset)
+        # `FASSUNG` (die Form eines Parameters, fuer den Sendepfad) ist kein
+        # Feld der Schnittstelle — ein Klient bekaeme ein Feld, das keine
+        # Zentrale kennt.
+        return {p: ({k: v for k, v in e.items() if k != "FASSUNG"}
+                    if isinstance(e, dict) else e)
+                for p, e in self.t.paramset_of(d.devtype, ch, paramset).items()}
 
     def getParamset(self, address, paramset):
         addr = address.upper()
@@ -1455,8 +1460,14 @@ class QCCU:
                 print(f"  {base}:{ch} {namen}: angekommen, {auftrag.klartext} "
                       f"— Wert kommt mit dem Status des Geraets")
             return
-        # Nicht angekommen oder nie hinaus: die UNREACH-Meldung setzt der
-        # Sendepfad; hier nur die Wahrheit an den Aufrufer.
+        if auftrag.mac is None:
+            # Nie hinausgegangen: keine Funkadresse, keine belegte Form, kein
+            # belegter Satz. Das ist kein Zeitablauf, sondern eine Absage.
+            raise xmlrpc.client.Fault(
+                -5, f"No proven way to set {namen} on this device "
+                    f"({auftrag.klartext})")
+        # Nicht angekommen: die UNREACH-Meldung setzt der Sendepfad; hier nur
+        # die Wahrheit an den Aufrufer.
         raise xmlrpc.client.Fault(-1, "Generic error (TIMEOUT)")
 
     on_set = None

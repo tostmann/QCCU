@@ -205,6 +205,46 @@ def device_channel_params(devdir):
     return out, files
 
 
+def channel_type_fassungen(devdir):
+    """Aus den channel_type_*.xml: (Kanaltyp/vN, Paramset, Parameter) -> Form.
+
+    Die FORM eines Parameters steht als `subtype="…"` am `<parameter>` der
+    Kanaltyp-Beschreibung — so liest es `ChannelTypeReader` im Jar und waehlt
+    damit die Fassung des Parameters in der Fabrik (`ParameterMapKey(name,
+    subtype)`). Fuer einen Stellbefehl entscheidet sie ueber Aktion, Datentyp
+    und Umrechnung: LEVEL ist beim Schaltaktor ein Pegelbyte (Aktion 2), beim
+    Rollladen `blind` (Aktion 134, Datentyp 8), bei der Markise `shade`
+    (Aktion 142, Datentyp 15, Faktor 50000). Ohne die Form baut die Zentrale
+    einen wohlgeformten, FALSCHEN Rahmen. Geliefert werden nur Formen
+    ungleich `default`.
+    """
+    out = {}
+    files = 0
+    for root, _, names in os.walk(devdir):
+        for name in names:
+            if not (name.startswith("channel_type_") and name.endswith(".xml")):
+                continue
+            files += 1
+            try:
+                tree = ET.parse(os.path.join(root, name))
+            except ET.ParseError:
+                continue
+            ch = tree.getroot()
+            if ch.tag != "channel" or not ch.get("type"):
+                continue
+            key = ch.get("type")
+            if ch.get("typeversion"):
+                key = f"{key}/v{ch.get('typeversion')}"
+            for abschnitt, pset in (("configuration", "MASTER"), ("state", "VALUES")):
+                for block in ch.iter(abschnitt):
+                    for p in block.iter("parameter"):
+                        sub = (p.get("subtype") or "default").strip()
+                        pname = (p.text or "").strip()
+                        if pname and sub != "default":
+                            out[(key, pset, pname)] = sub
+    return out, files
+
+
 def main():
     a = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -231,6 +271,17 @@ def main():
         tgt = merged.setdefault(key, {})
         for pset, params in jar[key].items():
             tgt.setdefault(pset, {}).update(params)
+    # Die Form (`FASSUNG`) an den Parameter der Kanaltyp-Fassung haengen —
+    # in eine KOPIE der Beschreibung, weil Ergaenzungen dieselbe Beschreibung
+    # an mehrere Fassungen eines Kanaltyps haengen. Die Form ist fuer den
+    # Sendepfad; `getParamsetDescription` reicht sie nicht an Klienten weiter.
+    fassungen, nct = channel_type_fassungen(g.devicedir)
+    mit_fassung = 0
+    for (key, pset, pname), sub in fassungen.items():
+        params = merged.get(key, {}).get(pset)
+        if params and isinstance(params.get(pname), dict):
+            params[pname] = dict(params[pname], FASSUNG=sub)
+            mit_fassung += 1
 
     # Die Parameter aus den Geraetebeschreibungen kommen NICHT in die
     # Kanaltyp-Tabelle (sie gehoeren einzelnen Geraetetypen). Aufgeloest
@@ -298,6 +349,7 @@ def main():
               f"(z.B. {', '.join(sorted(ohne_typ)[:3])})")
     print(f"  fehlende Grenzen ergaenzt:         {ergaenzt} Felder")
     print(f"  device_*.xml gelesen:              {nfiles}")
+    print(f"  channel_type_*.xml gelesen:        {nct}, Form an {mit_fassung} Parametern")
     print(f"  Kanaltypen gesamt:                 {len(merged)}")
     print(f"  aus den Geraete-XML aufgeloest:    {added} Parameter (Bestand)")
     if unresolved:

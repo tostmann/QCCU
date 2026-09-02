@@ -258,7 +258,22 @@ UMRECHNUNG = {
     #   Fassung `highRes` (DoubleToInteger(100.0), zwei Byte) fuehrt im
     #   Bestand nur der HmIPW-DRAP am Draht; ueber Funk kommt sie nicht vor.
     "OPERATING_VOLTAGE": (10.0, 0.0),
+    # Formen, die anders skalieren als der blanke Name (`umrechnung()`):
+    # GeneralStateParameterFactory.createLevel16Bit: DoubleToInteger(50000.0)
+    "LEVEL@shade": (50000.0, 0.0),
+    # createLevelWindowDrive: StringEnumToInteger {NO_VENTILATION: 0,
+    # VENTILATION: 200} — Platz in der Werteliste mal 200
+    "LEVEL@VENTILATION": (200.0, 0.0),
 }
+
+
+def umrechnung(param, fassung="default"):
+    """(Faktor, Versatz) eines Parameters in seiner Form."""
+    if fassung and fassung != "default":
+        eintrag = UMRECHNUNG.get(f"{param}@{fassung}")
+        if eintrag is not None:
+            return eintrag
+    return UMRECHNUNG.get(param, (1.0, 0.0))
 
 
 class Regel:
@@ -637,6 +652,8 @@ DT_TEMPERATURE_SET_POINT = 0x02    # 1
 DT_PERIOD = 0x03                   # 7
 DT_DIFFERENTIAL_TEMPERATURE = 0x04  # 1
 DT_UNSIGNED_INTEGER_16BIT = 0x05   # 2
+DT_LEVEL = 0x08                    # 1  (DirectExecutionDataType.LEVEL)
+DT_LEVEL_16BIT = 0x0F              # 2  (DirectExecutionDataType.LEVEL_16BIT)
 
 # ⚠️ Ein Datentyp traegt oft MEHRERE Parameter in EINEM Byte, und `dataIndex`
 # sagt, wo einer davon liegt. Das steht nicht im Rahmen — der Rahmen fuehrt
@@ -690,14 +707,29 @@ DT_UNSIGNED_INTEGER_16BIT = 0x05   # 2
 #     LEVEL@uniLight                 Aktion 144, Datentyp 8
 #     LEVEL@withRoom                 Aktion 145, Datentyp 8
 #
-# Belegt ist unten NUR die Pegelbyte-Form (Schalt- und Dimmkanal). An einem
-# HmIP-Rollladen oder Jalousieaktor baut QCCU damit den FALSCHEN Rahmen — er
-# ist wohlgeformt und geht hinaus, deshalb faellt es nicht auf. Wer diese
-# Geraete bedienen will, braucht erst die Unterart in der Tabelle; bis dahin
-# gilt fuer sie dasselbe wie fuer alles Unbelegte: lieber nichts senden.
+# Seit dem 02.09.2026 ist die Tabelle nach `NAME@form` geschluesselt; der
+# blanke Name ist die Form `default`. Welche Form ein Kanal fuehrt, sagt die
+# Kanaltyp-XML des Jars (`<parameter subtype="blind">LEVEL</parameter>`,
+# im Paramset als `FASSUNG`) oder die Geraete-XML (`NAME@form` im Katalog) —
+# beides liest `_variante`. Die Eintraege stammen aus den Fabriken
+# (`createLevel(name, code, occurrence)` -> Datentyp 8, `createLevel16Bit`
+# -> Datentyp 15, `createStateParameter(name, code, occurrence)` -> Datentyp
+# 8 mit 0xC8 fuer wahr); alle mit Occurrence 0 und Index 0. Eine Form, die
+# hier fehlt, wird NICHT auf `default` zurueckgebogen, sondern laut
+# abgelehnt (`_form_unbekannt`) — ein wohlgeformter falscher Rahmen faellt
+# sonst nie auf.
 STELLBEFEHLE = {
     "STATE":                 (AKTION_START, None, 0, 0xC8),
+    "STATE@watering":        (141, DT_LEVEL, 0, 0xC8),
     "LEVEL":                 (AKTION_START, None, 0, 0xC8),
+    # Fensterantrieb: ENUM NO_VENTILATION/VENTILATION als Pegelbyte 0/200
+    # (`createLevelWindowDrive`, StringEnumToInteger {0, 200}).
+    "LEVEL@VENTILATION":     (AKTION_START, None, 0, 0xC8),
+    "LEVEL@blind":           (134, DT_LEVEL, 0, 0xC8),
+    "LEVEL@withColor":       (141, DT_LEVEL, 0, 0xC8),
+    "LEVEL@shade":           (142, DT_LEVEL_16BIT, 0, 0xC8),
+    "LEVEL@uniLight":        (144, DT_LEVEL, 0, 0xC8),
+    "LEVEL@withRoom":        (145, DT_LEVEL, 0, 0xC8),
     "SET_POINT_TEMPERATURE": (AKTION_THERMOSTAT, DT_TEMPERATURE_SET_POINT, 1, 1),
     "SET_POINT_MODE":        (AKTION_THERMOSTAT, DT_TEMPERATURE_SET_POINT, 0, 1),
     "BOOST_MODE":            (AKTION_THERMOSTAT, DT_LOGIC, 1, 1),
@@ -705,6 +737,7 @@ STELLBEFEHLE = {
     "CONTROL_DIFFERENTIAL_TEMPERATURE":
                              (AKTION_THERMOSTAT, DT_DIFFERENTIAL_TEMPERATURE, 1, 1),
     "ACTIVE_PROFILE":        (AKTION_THERMOSTAT, DT_UNSIGNED_INTEGER_16BIT, 0, 1),
+    "ACTIVE_PROFILE@wth2":   (AKTION_THERMOSTAT, DT_UNSIGNED_INTEGER_16BIT, 0, 1),
     "PARTY_TIME_START":      (AKTION_THERMOSTAT, DT_PERIOD, 0, 1),
     "PARTY_TIME_END":        (AKTION_THERMOSTAT, DT_PERIOD, 1, 1),
 }
@@ -836,6 +869,15 @@ def daten_bytes(datentyp, dataindex, roh):
         # waere CONTROL_DIFFERENTIAL_TEMPERATURE (MIN -10,0 -> roh -20) nicht
         # zu senden.
         return f"{roh & 0x3F:02X}" if -0x20 <= roh <= 0x3F else None
+    if datentyp == DT_LEVEL:
+        # LEVEL(8, 1): das Byte selbst, kein Index. Der Wandler liefert vier
+        # Byte big-endian, der Rahmen traegt davon so viele, wie der Datentyp
+        # lang ist (`DirectExecutionCommandFrame.setPayload`: `readBytes(…,
+        # dataType.getLength())`).
+        return f"{roh:02X}" if 0 <= roh <= 0xFF else None
+    if datentyp == DT_LEVEL_16BIT:
+        # LEVEL_16BIT(15, 2): zwei Byte big-endian, 0..50500 bei Faktor 50000.
+        return f"{roh:04X}" if 0 <= roh <= 0xFFFF else None
     if datentyp == DT_PERIOD:
         # ⚠️ Hier ist `roh` KEINE Zahl, sondern die vier Byte aus `datum_roh`.
         # Zwei Zeitpunkte teilen sich SIEBEN Byte; `dataIndex` sagt, welcher.
@@ -2391,7 +2433,31 @@ class Radio:
             name, _, fassung = str(schluessel).partition("@")
             if name == param:
                 return fassung or "default"
+        # Zweite Quelle: die Kanaltyp-XML (`subtype`), im Paramset als FASSUNG.
+        desc = self._beschreibung(addr, channel, param)
+        if isinstance(desc, dict) and desc.get("FASSUNG"):
+            return str(desc["FASSUNG"])
         return "default"
+
+    def _form_unbekannt(self, ccu_address, channel, param, fassung):
+        """LAUT ablehnen: Form ohne belegten Stellbefehl — nichts senden.
+
+        Leise auf `default` zurueckzufallen hiesse, einem Rollladen den
+        Rahmen eines Schaltaktors zu schicken: wohlgeformt, falsch, und es
+        faellt nie auf. Darum steht es im Protokoll UND in der Oberflaeche.
+        """
+        text = (f"{param} auf {ccu_address}:{channel} hat die Form "
+                f"'{fassung}', fuer die QCCU keinen belegten Stellbefehl "
+                f"kennt — nichts gesendet")
+        self._log("##", f"ABGELEHNT {text}")
+        if self.verbose:
+            print(f"  ! {text}")
+        merken = getattr(self.qccu, "merke_ereignis", None)
+        if merken:
+            try:
+                merken("bad", text)
+            except Exception:                                # noqa: BLE001
+                pass
 
     def _beschreibung(self, addr, channel, param):
         """Die Beschreibung eines Parameters am Kanal — oder None.
@@ -2916,9 +2982,16 @@ class Radio:
         Ein Sollwert von 40 °C ist an einem Geraet mit MAX 30.5 kein Befehl,
         sondern ein Byte, das es verwerfen oder missdeuten kann.
         """
-        eintrag = STELLBEFEHLE.get(param)
+        fassung = self._variante(ccu_address, channel, param)
+        eintrag = STELLBEFEHLE.get(f"{param}@{fassung}")
+        if eintrag is None and fassung == "default":
+            eintrag = STELLBEFEHLE.get(param)
         if eintrag is None:
-            if self.verbose:
+            if fassung != "default" and (param in STELLBEFEHLE
+                                         or any(k.startswith(param + "@")
+                                                for k in STELLBEFEHLE)):
+                self._form_unbekannt(ccu_address, channel, param, fassung)
+            elif self.verbose:
                 print(f"  ! {param} wird nicht gesendet — kein belegter "
                       f"Stellbefehl fuer diesen Parameter")
             return None
@@ -2997,7 +3070,7 @@ class Radio:
                           f"{mn}..{mx} — nicht gesendet")
                 return None
 
-        faktor, versatz = UMRECHNUNG.get(param, (1.0, 0.0))
+        faktor, versatz = umrechnung(param, fassung)
         roh = int(round(zahl * faktor + versatz))
         daten = daten_bytes(datentyp, dataindex, roh)
         if daten is None:
