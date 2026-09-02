@@ -114,7 +114,7 @@ class Sonder:
     """Ein reservierter Rohwert: keine Messung, sondern eine Auskunft.
 
     eq-3 belegt die obersten Werte jedes Bereichs mit Zustaenden
-    (`StateParameterStatus`: UNKNOWN, OVERFLOW, UNDERFLOW, ERROR) und meldet
+    (`StateParameterStatus`: UNKNOWN, OVERFLOW, UNDERFLOW, ERROR, EXTERNAL) und meldet
     sie im Nebenparameter `<NAME>_STATUS`. Der Messwert selbst wird dabei
     entweder geloescht (UNKNOWN, ERROR) oder auf einen Ersatzwert gesetzt
     (OVERFLOW, UNDERFLOW).
@@ -166,6 +166,24 @@ def _feuchte(v):
         return Sonder("OVERFLOW", 101)
     if v[0] == 0xFD:
         return Sonder("UNDERFLOW", -1)
+    return v[0]
+
+
+def _spannung(v):
+    """1 Byte (Fall OPERATING_VOLTAGE im Handler).
+
+    Die drei obersten Werte sind Auskuenfte, keine Spannungen: 0xFF unbekannt
+    (Wert geloescht), 0xFE Ueberlauf — das Jar setzt dann 25.3 V fest, hier
+    als Rohwert 253, damit er durch dieselbe Zehntel-Umrechnung laeuft —,
+    0xFD „extern versorgt“ (Wert geloescht, Status EXTERNAL). Alles darunter
+    sind Zehntelvolt, 0 .. 25.2.
+    """
+    if v[0] == 0xFF:
+        return Sonder("UNKNOWN")
+    if v[0] == 0xFE:
+        return Sonder("OVERFLOW", 253)
+    if v[0] == 0xFD:
+        return Sonder("EXTERNAL")
     return v[0]
 
 
@@ -235,6 +253,11 @@ UMRECHNUNG = {
     # ClimateStateParameterFactory.createActiveProfileParameter:
     #   IntegerToInteger(1.0, -1.0) — Profil 1 steht als 0 auf der Luft
     "ACTIVE_PROFILE": (1.0, -1.0),
+    # StateParameterFactory.createOperatingVoltageParameter:
+    #   DoubleToInteger(10.0, 0.0), MAX 25.2 — ein Byte, Zehntelvolt. Die
+    #   Fassung `highRes` (DoubleToInteger(100.0), zwei Byte) fuehrt im
+    #   Bestand nur der HmIPW-DRAP am Draht; ueber Funk kommt sie nicht vor.
+    "OPERATING_VOLTAGE": (10.0, 0.0),
 }
 
 
@@ -263,15 +286,27 @@ class Regel:
     nicht ueberall — `handleLevelStatus` bekommt fuer DUTY_CYCLE_LEVEL
     ausdruecklich einen leeren Statusnamen —, deshalb steht es je Zeile und
     wird nicht aus dem Namen geraten.
+
+    `bits` ist die Bitlage, wenn sie NICHT am Kanaltyp haengt, sondern an der
+    Geraetebeschreibung: ERROR_OVERHEAT liegt beim einen Geraet auf Bit 1,
+    beim naechsten auf Bit 0 oder Bit 4 — bei DEMSELBEN Kanaltyp MAINTENANCE.
+    Das Jar waehlt dafuer je Geraete-XML eine Fassung des Parameters
+    (`subtype="bit4"`) mit dem passenden `BoolToInteger`-Konverter. Hier
+    steht je Fassung das Bit; welche das Geraet fuehrt, sagt sein
+    Katalogeintrag (`_variante`). Eine Fassung, die hier fehlt, wird nicht
+    geraten, sondern nicht gedeutet.
     """
 
     __slots__ = ("param", "bytes_fn", "kanaltypen", "ausser", "braucht",
-                 "vorkommen", "wenn", "status")
+                 "vorkommen", "wenn", "status", "bits")
 
-    def __init__(self, param, bytes_fn, kanaltypen=None, ausser=None,
-                 braucht=None, vorkommen=None, wenn=None, status=False):
+    def __init__(self, param, bytes_fn=None, kanaltypen=None, ausser=None,
+                 braucht=None, vorkommen=None, wenn=None, status=False,
+                 bits=None):
+        assert (bytes_fn is None) != (bits is None), param
         self.param = param
         self.bytes_fn = bytes_fn
+        self.bits = bits
         self.kanaltypen = (kanaltypen,) if isinstance(kanaltypen, str) else kanaltypen
         self.ausser = (ausser,) if isinstance(ausser, str) else ausser
         self.braucht = braucht
@@ -291,6 +326,7 @@ KT_WARTUNG = "MAINTENANCE"
 KT_EINGANG = "GENERIC_INPUT_TRANSMITER"
 KT_BEWEGUNG = ("MOTIONDETECTOR_TRANSCEIVER", "MOTIONDETECTOR_VIRTUAL_TRANSCEIVER")
 KT_ANWESENHEIT = "PRESENCEDETECTOR_TRANSCEIVER"
+KT_UNILIGHT = "UNIVERSAL_LIGHT_RECEIVER"
 
 SDT_REGELN = {
     # 0 TEMPERATURE (2 Byte) — handleActualTemperatureStatus
@@ -318,6 +354,12 @@ SDT_REGELN = {
         Regel("MOTION", lambda v: None if v[0] == 0xFF else v[0], ausser=KT_FLOOR_DIRECT),
         Regel("DUTY_CYCLE_LEVEL", _pegel, vorkommen=0),
         Regel("CARRIER_SENSE_LEVEL", _pegel, vorkommen=1),
+    ),
+    # 3 OPERATING_VOLTAGE (1 Byte) — Zehntelvolt, drei Auskunftswerte oben.
+    # Den Nebenparameter OPERATING_VOLTAGE_STATUS fuehrt das Jar hier
+    # ausdruecklich (NORMAL / UNKNOWN / OVERFLOW / EXTERNAL).
+    3: (
+        Regel("OPERATING_VOLTAGE", _spannung, status=True),
     ),
     # 4 HEATING_CONTROLLER_STATE (3 Byte)
     #
@@ -362,12 +404,85 @@ SDT_REGELN = {
         Regel("BOOST_MODE", _bit(4)),
         Regel("VALVE_STATE", lambda v: v[0] & 0x0F),
     ),
-    # 6 ERROR_CODE (1 Byte). Das Jar faechert dasselbe Byte zusaetzlich auf
-    # rund zwanzig Fehlermerkmale auf (ERROR_OVERHEAT, SABOTAGE, …); welches
-    # Bit welches ist, steht in den Bitmasken der einzelnen Parameter und
-    # nicht hier — die bleiben vorerst ungedeutet.
+    # 6 ERROR_CODE (1 Byte). Das Jar reicht dasselbe Byte an rund sechzig
+    # Fehlermerkmale weiter und laesst jeden Kanal nehmen, was er fuehrt
+    # (`tryConvertParameter` schweigt, wo der Parameter fehlt — hier tut das
+    # `_beschreibung`). Die Bitlage steckt im BoolToInteger-Konverter des
+    # jeweiligen Parameters (GeneralStateParameterFactory,
+    # createReadEventBooleanBit<n>Parameter). Wo ein Parameter mehrere
+    # Fassungen hat, waehlt sie die Geraetebeschreibung, nicht der Kanaltyp —
+    # daher `bits` statt `kanaltypen`.
     6: (
         Regel("ERROR_CODE", lambda v: v[0]),
+        Regel("ERROR_OVERHEAT", bits={"default": 1, "bit0": 0, "bit4": 4}),
+        Regel("ERROR_OVERLOAD", bits={"default": 0, "bit1": 1, "bit2": 2, "bit3": 3}),
+        Regel("ERROR_UPDATE", bits={"default": 2, "bit1": 1}),
+        Regel("SABOTAGE", _bit(0)),
+        Regel("SENSOR_ERROR", bits={"default": 0, "bit1": 1}),
+        Regel("ERROR_COMMUNICATION_SENSOR", bits={"default": 1, "bit0": 0}),
+        Regel("TEMPERATURE_OUT_OF_RANGE", _bit(0)),
+        Regel("ERROR_WIND_NORTH", _bit(6)),
+        Regel("ERROR_WIND_COMMUNICATION", _bit(7)),
+        Regel("ERROR_UNDERVOLTAGE", bits={"default": 1, "bit0": 0}),
+        Regel("ERROR_POWER_FAILURE", bits={"default": 1, "bit0": 0}),
+        Regel("ERROR_NON_FLAT_POSITIONING", _bit(0)),
+        Regel("ERROR_COPROCESSOR", bits={"default": 2, "bit0": 0}),
+        Regel("ERROR_RESTART_NEEDED", _bit(3)),
+        Regel("ERROR_BAD_RECHARGEABLE_BATTERY_HEALTH", _bit(1)),
+        Regel("ERROR_NOT_RECHARGEABLE_BATTERY", _bit(1)),
+        Regel("ERROR_CAN_BUS", _bit(2)),
+        Regel("ERROR_MAX_WATER_FLOW", _bit(4)),
+        Regel("ERROR_MAX_WATER_FLOW_DURATION", _bit(5)),
+        Regel("ERROR_POWER_SHORT_CIRCUIT_BUS_1", _bit(2)),
+        Regel("ERROR_POWER_SHORT_CIRCUIT_BUS_2", _bit(3)),
+        Regel("ERROR_SHORT_CIRCUIT_DATA_LINE_BUS_1", _bit(4)),
+        Regel("ERROR_SHORT_CIRCUIT_DATA_LINE_BUS_2", _bit(5)),
+        Regel("ERROR_BUS_CONFIG_MISMATCH", _bit(6)),
+        # Die vier STATUS_FLAG_* gibt es nur in der Fassung des MP3-Spielers.
+        Regel("STATUS_FLAG_PLAYING_FILE_ACTIVE", bits={"mp3p": 7}),
+        Regel("STATUS_FLAG_PLAYLIST_ACTIVE", bits={"mp3p": 6}),
+        Regel("STATUS_FLAG_ERROR", bits={"mp3p": 5}),
+        Regel("STATUS_FLAG_LOW_BAT", bits={"mp3p": 4}),
+        Regel("ERROR_TEMP_OR_HUMIDITY_MEASUREMENT", _bit(0)),
+        Regel("ERROR_PARTICULATE_MATTER_MEASUREMENT", _bit(1)),
+        Regel("ERROR_COMMUNICATION_PARTICULATE_MATTER_SENSOR", _bit(2)),
+        Regel("ERROR_COMMUNICATION_TEMP_AND_HUMIDITY_SENSOR", _bit(3)),
+        Regel("ERROR_DEGRADED_CHAMBER", _bit(0)),
+        Regel("SABOTAGE_STICKY", _bit(1)),
+        Regel("BLOCKED_PERMANENT", _bit(3)),
+        Regel("BLOCKED_TEMPORARY", _bit(2)),
+        Regel("ERROR_JAMMED", _bit(0)),
+        Regel("SABOTAGE_MAGNETIC_FIELD", _bit(6)),
+        Regel("ERROR_DOOR_OPENED_WHILE_LOCKED", _bit(5)),
+        Regel("ERROR_DOOR_LOCKED_WHILE_OPEN", _bit(4)),
+        Regel("SABOTAGE_ACCELERATION", _bit(3)),
+        Regel("SABOTAGE_VERTICAL", _bit(2)),
+        Regel("SABOTAGE_BATTERY", _bit(1)),
+        Regel("ERROR_LOAD_TOO_LOW", _bit(1)),
+        Regel("ERROR_NO_END_STOP_LOCK", _bit(2)),
+        Regel("ERROR_NO_END_STOP_UNLOCK", _bit(3)),
+        Regel("ERROR_DRIVE", _bit(1)),
+        Regel("ERROR_COMMUNICATION", _bit(2)),
+        Regel("ERROR_DRIVE_MODE", _bit(3)),
+        Regel("ERROR_FROST_PROTECTION", _bit(1)),
+        Regel("ERROR_VALVE_FAILURE", bits={"default": 2, "bit3": 3}),
+        Regel("ERROR_WATER_FAILURE", _bit(3)),
+        Regel("ERROR_MODBUS_FAULT", _bit(2)),
+        Regel("ERROR_FILTER_EXCHANGE", _bit(3)),
+        Regel("ERROR_COMMUNICATION_TEMP_SENSOR", _bit(0)),
+        Regel("ERROR_COMMUNICATION_MOISTURE_SENSOR", _bit(1)),
+        Regel("ERROR_TEMP_SENSOR", _bit(0)),
+        Regel("ERROR_TEMP_SENSOR_2", _bit(1)),
+        # Zwei Aufzaehlungen aus dem unteren Halbbyte bzw. den unteren zwei
+        # Bits; ein Wert jenseits der Werteliste wird nicht gemeldet.
+        Regel("ERROR_CODE_STATUS", lambda v: v[0] & 0x0F),
+        Regel("ERROR_DALI_BUS", lambda v: v[0] & 0x03),
+        # Nur der Universal-Lichtempfaenger: dort ist UNREACH ein Bit im
+        # Fehlerbyte (Fassung `uniLight`), sonst ein eigener Wert.
+        Regel("UNREACH", bits={"uniLight": 0}, kanaltypen=KT_UNILIGHT),
+        Regel("ERROR_CONTROL_GEAR_FAILURE", _bit(1), kanaltypen=KT_UNILIGHT),
+        Regel("ERROR_LAMP_FAILURE", _bit(2), kanaltypen=KT_UNILIGHT),
+        Regel("ERROR_LIMIT", _bit(3), kanaltypen=KT_UNILIGHT),
     ),
     # 8 BINARY_WITH_PROFILE (1 Byte): Bit 7 Vorgang laeuft, Bit 6 Zustand,
     # Bit 3..0 Abschnitt des Wochenprogramms (handleProfileInformation).
@@ -446,6 +561,30 @@ SDT_REGELN = {
         Regel("WEEK_PROGRAM_CHANNEL_LOCKS", lambda v: _ganz(v)),
     ),
 }
+
+# Woher wir wissen, dass die Regeln eines Statusdatentyps stimmen — nach der
+# Leiter: `on-air` (selbst auf der Luft gemessen, Wert am Geraet
+# gegengeprueft) > `mitschnitt` (aufgezeichnete Rahmen, die Handrechnung des
+# Jars als Orakel) > `fhem-zeuge` > `beschreibungstreu` (nur aus dem
+# Dekompilat) > `kein-zeuge`. Gedeutet wird ab `mitschnitt`; was darunter
+# liegt, bleibt RAW_SDT<n>, auch wenn eine Regel dafuer da steht — eine
+# Regel ohne Zeugen ist eine Vermutung, und Vermutungen gehen nicht als
+# Messwert an den Klienten. Der Zeuge steht daneben, damit nachpruefbar
+# bleibt, WAS die Stufe traegt.
+SDT_BELEGSTUFE = {
+    0:  ("mitschnitt", "eTRV-C, 12 Rahmen (Gegenprobe: Handrechnung des Jars, am Geraet belegt)"),
+    1:  ("on-air", "BWTH-A, 317 Rahmen: 23,3 °C / 68 % rF; dazu 85 Rahmen Gegenprobe: Handrechnung des Jars, am Geraet belegt"),
+    2:  ("mitschnitt", "eTRV-C und BWTH-A (Gegenprobe: Handrechnung des Jars, am Geraet belegt)"),
+    3:  ("mitschnitt", "eTRV-C, 11 Rahmen 2,8 .. 3,0 V (Gegenprobe: Handrechnung des Jars, am Geraet belegt)"),
+    4:  ("on-air", "BWTH-A: Soll, Betriebsart, Profil; dazu Gegenprobe: Handrechnung des Jars, am Geraet belegt"),
+    5:  ("on-air", "eTRV-C / eTRV-E-S: Ventilzustand, Boost, Fenster (Bench 31.08.2026)"),
+    6:  ("mitschnitt", "eTRV-C: ERROR_CODE und SABOTAGE (Gegenprobe: Handrechnung des Jars, am Geraet belegt); "
+                       "Bitlagen aus GeneralStateParameterFactory"),
+    8:  ("on-air", "BWTH-A, 317 Rahmen: die vier Schaltkanaele (Fassung 2026.8.10)"),
+    13: ("mitschnitt", "BWTH-A (Gegenprobe: Handrechnung des Jars, am Geraet belegt); Kanaltyp-Zweige ohne Geraet ausgelassen"),
+    22: ("beschreibungstreu", "kein Geraet mit WEEK_PROGRAM_CHANNEL_LOCKS bisher auf der Luft"),
+}
+DEUTEN_AB = ("on-air", "mitschnitt", "fhem-zeuge")
 
 
 # --- Stellbefehle ----------------------------------------------------------
@@ -2197,6 +2336,30 @@ class Radio:
             return None
         return dict(d.channel_list()).get(int(channel))
 
+    def _variante(self, addr, channel, param):
+        """Welche Fassung eines Parameters DIESES Geraet fuehrt.
+
+        Die Geraetebeschreibung nennt sie als `NAME@fassung` unter den
+        geraeteeigenen Parametern des Kanals; nennt sie den Parameter nicht
+        eigens, gilt die Fassung des Kanaltyps — `default`.
+        """
+        d = (getattr(self.qccu, "devices", None) or {}).get(addr.upper())
+        if not d:
+            return "default"
+        tabellen = getattr(d, "tables", None) or self.t
+        holen = getattr(tabellen, "chinfo_of", None)
+        if not holen:
+            return "default"
+        try:
+            info = holen(d.devtype, channel, getattr(d, "eintrag", None)) or {}
+        except Exception:                                # noqa: BLE001
+            return "default"
+        for schluessel in (info.get("extra") or {}).get("VALUES", []):
+            name, _, fassung = str(schluessel).partition("@")
+            if name == param:
+                return fassung or "default"
+        return "default"
+
     def _beschreibung(self, addr, channel, param):
         """Die Beschreibung eines Parameters am Kanal — oder None.
 
@@ -2244,7 +2407,8 @@ class Radio:
 
     def _emit(self, addr, channel, sdt, value, typen=(), vorkommen=0):
         """Einen Statuseintrag melden. Gedeutet wird nur, was belegt ist."""
-        regeln = SDT_REGELN.get(sdt)
+        stufe = SDT_BELEGSTUFE.get(sdt, ("kein-zeuge", ""))[0]
+        regeln = SDT_REGELN.get(sdt) if stufe in DEUTEN_AB else None
         value = bytes(value)
         gemeldet = False
         for regel in regeln or ():
@@ -2266,7 +2430,17 @@ class Radio:
             if desc is None:
                 continue
 
-            roh = regel.bytes_fn(value)
+            if regel.bits is not None:
+                fassung = self._variante(addr, channel, regel.param)
+                bit = regel.bits.get(fassung)
+                if bit is None:
+                    if self.verbose:
+                        print(f"  <- {addr}:{channel} {regel.param}: Fassung "
+                              f"{fassung!r} ohne bekannte Bitlage, nicht gedeutet")
+                    continue
+                roh = 1 if value[0] & (1 << bit) else 0
+            else:
+                roh = regel.bytes_fn(value)
             if roh is None:
                 continue
 
@@ -2320,7 +2494,7 @@ class Radio:
             except Exception:                            # noqa: BLE001
                 pass
             wie = f"SDT{sdt} ({name})" if name else f"SDT{sdt}"
-            print(f"  <- {addr}:{channel} {wie}={raw} (ungedeutet)")
+            print(f"  <- {addr}:{channel} {wie}={raw} (ungedeutet, {stufe})")
 
     def _sender(self):
         """Einziger Schreiber auf der Leitung."""
