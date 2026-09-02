@@ -1334,6 +1334,11 @@ class Radio:
 
         Liefert None bei Erfolg, sonst den Grund als Text.
         """
+        # ⚠️ Erst den Typ. `{"cmd": 5}` liess frueher `.strip()` mit einem
+        # AttributeError durchschlagen — der Client bekam kein JSON, sondern
+        # eine abgebrochene Verbindung.
+        if cmd is not None and not isinstance(cmd, str):
+            return f"cmd muss Text sein, nicht {type(cmd).__name__}"
         cmd = (cmd or "").strip()
         if not cmd:
             return "leeres Kommando"
@@ -1344,6 +1349,23 @@ class Radio:
                     f"{'/'.join(self.ROH_ERLAUBT)}…")
         if self.ser is None:
             return "kein Anschluss"
+        # ⚠️ NICHT dazwischenfunken, solange ein Sendeauftrag auf sein Urteil
+        # wartet. Der Stick beantwortet ein fehlerhaftes `mU…` mit `Pm ERR`,
+        # und diese Zeile passt auf TX_NO — `_handle` schriebe sie dem gerade
+        # anhaengigen Job als „nicht gesendet" zu. Der wiederholte dann einen
+        # Rahmen, der laengst hinausgegangen ist, und das echte `Pm tx ok`
+        # fiele der Wiederholung zu. Ein Auftrag, ein Urteil: hier wird
+        # gewartet, und wenn der Auftrag nicht fertig wird, abgewiesen.
+        ende = time.time() + 3.0
+        while time.time() < ende:
+            with self._pending_lock:
+                frei = self._pending is None
+            if frei:
+                break
+            time.sleep(0.05)
+        else:
+            return ("gerade ist ein Sendeauftrag unterwegs — bitte gleich "
+                    "noch einmal (ein Auftrag, ein Urteil)")
         try:
             with self._pending_lock:
                 self.ser.write(cmd.encode() + b"\r\n")
