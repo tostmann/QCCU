@@ -1351,6 +1351,7 @@ class Radio:
         # nicht gefragt bzw. keine deutbare Antwort; beides wird wie „nein"
         # behandelt, aber nur „nein" ist eine Auskunft.
         self.burst_faehig = None
+        self.weckkanal = None          # gesetzter Weckkanal (q-culfw ab 2.0.92), sonst None
         self.budget = None
         self._cnt_ev = threading.Event()
 
@@ -1689,10 +1690,52 @@ class Radio:
                     print("  ! Der Stick kann keinen Vorlauf für HmIP-Rahmen "
                           "(q-culfw älter als 2.0.76). Ein Batteriegerät, das "
                           "nur zyklisch hört, ist damit nicht stellbar.")
+                if "weckkanal=" in z:
+                    self._weckkanal_setzen()
                 return
         # Keine deutbare Antwort: NICHT raten. `None` heisst „ungefragt", und
         # `_submit` behandelt das wie „kann es nicht".
         self._log("##", "BURST unklar — der Stick antwortet nicht auf mU")
+
+    # Der Weckkanal der Homematic-IP-Zentrale und der Abstand, nach dem der
+    # Befehl auf dem Standardkanal folgt. Beides am eq-3-Coprozessor
+    # mitgelesen (SPI: FREQ2/1/0 = 21 71 7A vor dem Burst = 869,52 MHz, danach
+    # zurueck auf 868,30) und in der Herstellerdokumentation bestaetigt
+    # („Burst auf 869 MHz, Standard auf 868 MHz"); der Abstand ist der
+    # abgenommene Wert (7 von 10 an einem eTRV-E-S, 30 gegen 55 ms ohne
+    # Unterschied).
+    WECKKANAL_HMIP = "21717A"
+    ZUSTELL_ABSTAND_MS = 30
+
+    def _weckkanal_setzen(self):
+        """Weckkanal und Zustellabstand auf dem Stick einstellen (q-culfw
+        ab 2.0.92, erkennbar am `weckkanal=` in der `mU`-Antwort).
+
+        ⚠️ Frisch geflasht steht der Stick auf `weckkanal=000000(aus)`: der
+        Burst ginge dann auf 868,30 hinaus, und ein schlafendes Geraet hoert
+        ihn nicht (gemessen 3 von 7 statt 7 von 10). Bis 2026.8.45 setzte das
+        nur der Pruefstand — auf einer frisch aufgesetzten Zentrale war der
+        Weckkanal damit nie an. Darum hier, bei jedem Anbinden.
+        """
+        for cmd in (f"mUK{self.WECKKANAL_HMIP}", f"mUZ{self.ZUSTELL_ABSTAND_MS}"):
+            self.ser.write((cmd + "\r\n").encode())
+            self.ser.flush()
+            time.sleep(0.1)
+        self.ser.write(b"mU\r\n")
+        self.ser.flush()
+        ende = time.time() + 1.0
+        while time.time() < ende:
+            try:
+                z = self.ser.readline().decode("ascii", "replace").strip()
+            except Exception:                            # noqa: BLE001
+                break
+            if z.startswith("Pm vorlauf="):
+                self._log("##", f"WECKKANAL {self.WECKKANAL_HMIP} und Zustellabstand "
+                                f"{self.ZUSTELL_ABSTAND_MS} ms gesetzt — Stick meldet: {z}")
+                self.weckkanal = self.WECKKANAL_HMIP if f"weckkanal={self.WECKKANAL_HMIP}".lower() in z.lower() else None
+                return
+        self._log("##", f"WECKKANAL {self.WECKKANAL_HMIP} gesetzt — keine Rueckmeldung des Sticks")
+        self.weckkanal = None
 
     def _kennung_vorhanden(self):
         """Hat der Stick schon eine Kennung? (`mG` zeigt sie.)
