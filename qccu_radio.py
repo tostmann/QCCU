@@ -3407,6 +3407,11 @@ class Radio:
                 # meldete derweil „Firmware aktuell", und der Anwender suchte
                 # den Fehler beim Geraet.
                 "netzschluessel_fehlt": bool(self.netzschluessel_fehlt),
+                # Kann der Stick wecken, und auf welchem Kanal? Auf einer
+                # Zentrale ohne Mitschnitt ist das sonst nirgends ablesbar
+                # (03.09.2026 auf dem HAOS-Rechner erlebt).
+                "burst_faehig": self.burst_faehig,
+                "weckkanal": self.weckkanal,
                 # Damit die Oberflaeche den Download nur zeigt, wenn es auch
                 # etwas zu holen gibt.
                 "mitschnitt": sum(os.path.getsize(p) for p in self.raw_dateien()
