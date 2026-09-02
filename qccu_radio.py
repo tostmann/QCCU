@@ -1020,6 +1020,39 @@ def antwort_deuten(roh):
     return art in (0x00, 0x01), name
 
 
+class Stellauftrag:
+    """Ein angenommener Stellbefehl und sein Ausgang.
+
+    `on_set` kehrt sofort zurueck — der Arbeitsfaden sendet. Wer wissen will,
+    was aus dem Befehl wurde, wartet HIER, statt den Wert vorwegzunehmen.
+    Drei Ebenen, getrennt gefuehrt, weil sie Verschiedenes bedeuten:
+
+      mac      True/False — die Kurzquittung („angekommen"); None = nie
+               hinausgegangen (keine Funkadresse, kein belegter Rahmen)
+      antwort  True/False/None — ANSWER bzw. Huckepack-Quittung
+               („angenommen" / „abgelehnt"); None = keine Auskunft auf
+               Anwendungsebene
+      klartext der Grund in Worten (Art der Ablehnung, „keine ANSWER",
+               „nicht stellbar")
+    """
+
+    __slots__ = ("ev", "mac", "antwort", "klartext")
+
+    def __init__(self):
+        self.ev = threading.Event()
+        self.mac = None
+        self.antwort = None
+        self.klartext = "offen"
+
+    def fertig(self, mac, antwort, klartext):
+        self.mac, self.antwort, self.klartext = mac, antwort, klartext
+        self.ev.set()
+
+    def warten(self, sekunden):
+        """True, wenn der Ausgang binnen `sekunden` feststeht."""
+        return self.ev.wait(sekunden)
+
+
 LINK_VERSUCHE = 3
 LINK_WIEDERHOLUNG = 0.22
 # Wie lange auf die ANSWER gewartet wird. Im Mitschnitt antwortete das Geraet
@@ -2810,14 +2843,17 @@ class Radio:
         return s
 
     def on_set(self, ccu_address, channel, param, value):
-        """Befehl ANNEHMEN und sofort zurueckkehren."""
-        self._cmdq.put((ccu_address, channel, ((param, value),)))
-        return None
+        """Befehl ANNEHMEN und sofort zurueckkehren — mit dem Auftrag, an dem
+        sich der Ausgang abwarten laesst (`Stellauftrag`)."""
+        auftrag = Stellauftrag()
+        self._cmdq.put((ccu_address, channel, ((param, value),), auftrag))
+        return auftrag
 
     def on_set_many(self, ccu_address, channel, werte):
         """Einen SATZ annehmen — er geht in EINEM Rahmen hinaus."""
-        self._cmdq.put((ccu_address, channel, tuple(werte)))
-        return None
+        auftrag = Stellauftrag()
+        self._cmdq.put((ccu_address, channel, tuple(werte), auftrag))
+        return auftrag
 
     def kann_stellen(self, ccu_address, channel, werte):
         """Laesst sich fuer diesen Satz ein belegter Rahmen bauen?
@@ -2836,10 +2872,13 @@ class Radio:
                 job = self._cmdq.get(timeout=0.2)
             except queue.Empty:
                 continue
+            auftrag = job[3] if len(job) > 3 else None
             try:
-                acked = self._do_set(*job)
+                acked = self._do_set(job[0], job[1], job[2], auftrag)
             except Exception as ex:
                 print(f"  ! Sendepfad scheiterte: {ex}")
+                if auftrag is not None:
+                    auftrag.fertig(None, None, f"Sendepfad scheiterte: {ex}")
                 continue
             if acked is not None:
                 try:
@@ -3065,8 +3104,12 @@ class Radio:
             rumpf += daten if datentyp is None else f"{datentyp:02X}{daten}"
         return rumpf, ", ".join(klartexte)
 
-    def _do_set(self, ccu_address, channel, paare):
-        """Der eigentliche Sendevorgang — laeuft im Arbeitsfaden."""
+    def _do_set(self, ccu_address, channel, paare, auftrag=None):
+        """Der eigentliche Sendevorgang — laeuft im Arbeitsfaden.
+
+        Rueckgabe wie bisher die Kurzquittung; der volle Ausgang (angekommen /
+        angenommen / Grund) geht an den `auftrag`, falls einer mitkommt.
+        """
         paare = tuple(paare)
         param = "+".join(p for p, _ in paare)
         hmid = None
@@ -3078,10 +3121,14 @@ class Radio:
         if not hmid:
             if self.verbose:
                 print(f"  ! keine Funkadresse zu {ccu_address}")
+            if auftrag is not None:
+                auftrag.fertig(None, None, "keine Funkadresse")
             return
 
         gebaut = self._rumpf(ccu_address, channel, paare)
         if gebaut is None:
+            if auftrag is not None:
+                auftrag.fertig(None, None, "kein belegter Rahmen")
             return
         rumpf, klartext = gebaut
 
@@ -3190,6 +3237,8 @@ class Radio:
             self._log("##", f"ZAEHLWERKE {txt or 'unveraendert'}")
             if self.verbose:
                 print(f"     Zaehlwerke {txt or 'unveraendert'}")
+        if auftrag is not None:
+            auftrag.fertig(acked, angenommen, klartext)
         return acked
 
 

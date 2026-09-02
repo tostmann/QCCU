@@ -1374,24 +1374,90 @@ class QCCU:
             raise xmlrpc.client.Fault(-2, "Unknown parameter")
         return v
 
+    # Wie lange `setValue` auf den Ausgang wartet. Drei Anlaeufe mit Weckpaar,
+    # Urteil und Antwortfenster brauchen bis zu ~6 s; danach gilt der Befehl
+    # als nicht zugestellt. Der XML-RPC-Dienst ist einfaedig — so lange steht
+    # er fuer andere Aufrufe. Die Zentrale von eq-3 haelt es genauso: ihr
+    # `setValue` kehrt erst mit dem Ausgang der Transaktion zurueck.
+    STELL_WARTEN = 8.0
+
     def setValue(self, address, param, value, *rest):
-        """Schaltbefehl von aussen: eintragen, senden, melden."""
+        """Schaltbefehl von aussen: senden, den Ausgang abwarten, DANN melden.
+
+        ⚠️ Bis zum 02.09.2026 stand der Wert in Home Assistant und FHEM,
+        bevor der Rahmen hinaus war — auch wenn das Geraet ihn ablehnte
+        (BOOST_MODE am HmIP-BWTH-A, 30.08.: NAK, die Oberflaeche zeigte
+        „an") oder gar nicht erreichbar war. Die Zentrale von eq-3 wartet die
+        ANSWER ab und meldet eine Ablehnung als XML-RPC-Fehler
+        `Generic error (RESPONSE_NAK)` (31.08.2026 an headlessCCU gemessen).
+        Hier jetzt genauso, nach dem Ausgang des `Stellauftrag`s:
+
+          angenommen (ANSWER ACK / Huckepack)  -> Wert eintragen und melden
+          abgelehnt (NAK)                      -> Fehler, Wert unveraendert
+          angekommen, aber keine Auskunft      -> nichts vorwegnehmen; was das
+                                                  Geraet meldet, kommt ueber
+                                                  seinen STATUS herein
+          nicht angekommen / nicht stellbar    -> Fehler; UNREACH kommt aus
+                                                  dem Sendepfad
+        """
         base, _, ch = address.upper().partition(":")
+        kanal = int(ch) if ch else 0
         if self.verbose:
             print(f"  setValue {address} {param}={value!r}")
+        if not self.on_set:
+            # Ohne Funkpfad gibt es keinen Ausgang abzuwarten.
+            self._wert_uebernehmen(base, ch, param, value)
+            return ""
+        try:
+            auftrag = self.on_set(base, kanal, param, value)
+        except Exception as ex:
+            print(f"  ! Sendepfad scheiterte: {ex}")
+            raise xmlrpc.client.Fault(-1, "Generic error (SEND_FAILED)")
+        if not hasattr(auftrag, "warten"):
+            # Ein Funkpfad, der nur „quittiert ja/nein" zurueckgibt.
+            if auftrag is not None:
+                self.note_reachable(base, bool(auftrag))
+            self._wert_uebernehmen(base, ch, param, value)
+            return ""
+        self._ausgang_abwarten(auftrag, base, ch, ((param, value),))
+        return ""
+
+    def _wert_uebernehmen(self, base, ch, param, value):
+        """Einen gestellten Wert eintragen und den Gegenstellen melden."""
         with self.lock:
             d = self.devices.get(base)
             if d and ch:
                 d.values[(int(ch), param)] = value
-        if self.on_set:
-            try:
-                acked = self.on_set(base, int(ch) if ch else 0, param, value)
-                if acked is not None:
-                    self.note_reachable(base, bool(acked))
-            except Exception as ex:
-                print(f"  ! Sendepfad scheiterte: {ex}")
-        self._notify(address.upper(), param, value)
-        return ""
+        self._notify(f"{base}:{ch}" if ch else base, param, value)
+
+    def _ausgang_abwarten(self, auftrag, base, ch, satz):
+        """Den Ausgang eines Stellauftrags in Wert, Meldung oder Fehler
+        uebersetzen — siehe `setValue`."""
+        name = self.name_of(base, base)
+        namen = "+".join(p for p, _ in satz)
+        if not auftrag.warten(self.STELL_WARTEN):
+            self.merke_ereignis("warn", f"{name}: {namen} — kein Ausgang nach "
+                                        f"{self.STELL_WARTEN:.0f} s")
+            raise xmlrpc.client.Fault(-1, "Generic error (TIMEOUT)")
+        if auftrag.antwort is True:
+            for p, v in satz:
+                self._wert_uebernehmen(base, ch, p, v)
+            return
+        if auftrag.antwort is False:
+            # Dieselbe Meldung, die die Zentrale von eq-3 dem Klienten gibt.
+            self.merke_ereignis("warn", f"{name}: {namen} vom Geraet abgelehnt "
+                                        f"({auftrag.klartext})")
+            raise xmlrpc.client.Fault(-1, "Generic error (RESPONSE_NAK)")
+        if auftrag.mac:
+            # Angekommen, keine Auskunft auf Anwendungsebene: nichts eintragen.
+            # Der naechste STATUS des Geraets sagt, was gilt.
+            if self.verbose:
+                print(f"  {base}:{ch} {namen}: angekommen, {auftrag.klartext} "
+                      f"— Wert kommt mit dem Status des Geraets")
+            return
+        # Nicht angekommen oder nie hinaus: die UNREACH-Meldung setzt der
+        # Sendepfad; hier nur die Wahrheit an den Aufrufer.
+        raise xmlrpc.client.Fault(-1, "Generic error (TIMEOUT)")
 
     on_set = None
     on_set_many = None
@@ -1461,7 +1527,11 @@ class QCCU:
                 -5, f"No proven way to set {namen} on this device")
 
         if self.on_set_many:
-            self.on_set_many(base, ch, satz)
+            auftrag = self.on_set_many(base, ch, satz)
+            if hasattr(auftrag, "warten"):
+                # Wie `setValue`: erst der Ausgang, dann der Wert.
+                self._ausgang_abwarten(auftrag, base, str(ch), satz)
+                return ""
         else:
             for p, v in satz:
                 self.setValue(f"{base}:{ch}", p, v)
