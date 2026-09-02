@@ -1760,6 +1760,12 @@ def chan_name(address, lc=None):
     return address.replace(":", "_")
 
 
+# ValueType der ReGa-Datenpunkte, wie HMCCU_FormatDeviceInfo sie liest
+# (88_HMCCU.pm: 0 n, 2 b, 4 f, 6 a, 8 n, 11 s, 16 i, 20 s, 23 p, 29 e).
+# ACTION wird hier wie ein Schaltwert (2) gefuehrt — ein Tastendruck ist ein
+# Wahrheitswert ohne Zustand; eine eigene Nummer nennt HMCCU dafuer nicht.
+REGA_VALUETYPE = {"BOOL": 2, "ACTION": 2, "FLOAT": 4, "INTEGER": 16,
+                  "STRING": 20, "ENUM": 29}
 RE_DP_SET = re.compile(r'datapoints\.Get\("([^"]+)"\)\)\.State\(\s*([^)]+?)\s*\)')
 RE_DP_GET = re.compile(r'datapoints\.Get\("([^"]+)"\)\)\.(?:State|Value)\(\s*\)')
 
@@ -1809,6 +1815,43 @@ def rega_answer(lc, script):
                    f"xmlrpc_bin://{lc.own_host}:{lc.rpc_port}")
         return "\n".join(out) + "\n", f"Geraeteliste ({len(devs)})"
 
+    # `get ccu deviceinfo` (HMCCU, Skript "GetDeviceInfo" aus HMCCUConf.pm):
+    # je Datenpunkt eine Zeile, die HMCCU_FormatDeviceInfo in sieben Felder
+    # zerlegt — C;Kanaladresse;Kanalname;Datenpunktname;ValueType;Wert;Flags.
+    # Vorher eine D-Zeile mit Schnittstelle, Adresse, Name und HssType.
+    # ⚠️ Erkannt an HssType() UND ValueType(): das Datenpunkt-Skript unten
+    # nennt ebenfalls ID_DEVICES und OPERATION_READ.
+    if "ID_DEVICES" in s and "HssType()" in s and "ValueType()" in s:
+        m = re.search(r'\.Get\("([^"]*)"\)', s)
+        gesucht = (m.group(1) if m else "").strip()
+        with lc.lock:
+            d = lc.devices.get(gesucht.upper())
+            kandidaten = list(lc.devices.items())
+        if d is None:
+            for a, e in kandidaten:
+                if gesucht and lc.name_of(a) == gesucht:
+                    d = e
+                    break
+        if d is None:
+            return "ERROR: Device not found\n", "Geraeteinfo (unbekannt)"
+        out = [f"D;{lc.interface_name};{d.address};"
+               f"{lc.name_of(d.address, d.address)};{d.label}"]
+        for idx, _ctype in d.channel_list():
+            ca = f"{d.address}:{idx}"
+            for dp, desc in sorted(d.paramset(idx, "VALUES").items()):
+                if not isinstance(desc, dict):
+                    continue
+                ops = desc.get("OPERATIONS")
+                ops = ops if isinstance(ops, int) else 0
+                flags = "".join(b for bit, b in ((1, "R"), (2, "W"), (4, "E"))
+                                if ops & bit)
+                with lc.lock:
+                    v = d.values.get((idx, dp))
+                out.append(f"C;{ca};{chan_name(ca, lc)};"
+                           f"{lc.interface_name}.{ca}.{dp};"
+                           f"{REGA_VALUETYPE.get(desc.get('TYPE'), 20)};"
+                           f"{'' if v is None else rega_value_out(v)};{flags}")
+        return "\n".join(out) + "\n", f"Geraeteinfo {d.address} ({len(out) - 1} Datenpunkte)"
     sets = RE_DP_SET.findall(s)
     if sets:
         done = []
