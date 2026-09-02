@@ -6,7 +6,7 @@ name: QCCU
 # genommen. Sie ist dieselbe Fassung wie `VERSION` in qccu.py; wer hochzählt,
 # zieht beide mit und veröffentlicht die Marke — genau
 # daran erkennt der Supervisor auch, dass eine Aktualisierung vorliegt.
-version: "2026.8.45"
+version: "2026.9.1"
 slug: qccu
 description: >-
   Zentrale für Homematic-IP-Geräte am busware-Funkstick — ohne CCU.
