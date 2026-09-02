@@ -187,6 +187,25 @@ def _spannung(v):
     return v[0]
 
 
+def _zeitpunkt(p):
+    """Vier Rohbyte eines Zeitpunkts als Text der Form DATUM_FORM.
+
+    Die Umkehrung von `datum_roh`, abgeschrieben aus
+    `DateStringToInteger.convertPhysicalToLogical`:
+        Minuten des Tages = p0 * 10 (+5, wenn Bit 7 von p1)
+        Tag   = p1 & 0x3F      Monat = p2 (1..12)      Jahr = 2000 + p3
+    Das Jar formatiert mit `yyyy_MM_dd HH:mm`. Ein Monat 0 oder 13, ein
+    Tag 0 oder eine Uhrzeit jenseits 23:55 sind kein Zeitpunkt — das Jar
+    liesse den Kalender darueber hinwegrollen, hier wird nichts gemeldet.
+    """
+    p0, p1, p2, p3 = p
+    minuten = p0 * 10 + (5 if p1 & 0x80 else 0)
+    tag, monat, jahr = p1 & 0x3F, p2, 2000 + p3
+    if not (1 <= monat <= 12 and 1 <= tag <= 31 and minuten < 24 * 60):
+        return None
+    return f"{jahr:04d}_{monat:02d}_{tag:02d} {minuten // 60:02d}:{minuten % 60:02d}"
+
+
 def _pegel(v):
     """1 Byte (handleLevelStatus). Die vier obersten Werte sind Zustaende.
 
@@ -571,6 +590,16 @@ SDT_REGELN = {
         Regel("PRESENCE_DETECTION_STATE", _bit(1), kanaltypen=KT_ANWESENHEIT),
         Regel("PRESENCE_DETECTION_ACTIVE", _bit(0), kanaltypen=KT_ANWESENHEIT),
     ),
+    # 14 PERIOD (7 Byte) — zwei Zeitpunkte, der Monat beider in den Nibbles
+    # von Byte 4 (Handler, Fall PERIOD):
+    #     Start = [b0, b1, b4 >> 4, b5]      Ende = [b2, b3, b4 & 0xF, b6]
+    # Dieselbe Ablage baut `daten_bytes` fuer die Senderichtung.
+    14: (
+        Regel("PARTY_TIME_START",
+              lambda v: _zeitpunkt((v[0], v[1], (v[4] >> 4) & 0x0F, v[5]))),
+        Regel("PARTY_TIME_END",
+              lambda v: _zeitpunkt((v[2], v[3], v[4] & 0x0F, v[6]))),
+    ),
     # 22 FLAG_REGISTER_24 (3 Byte) — INTEGER 0..2^24-1, unveraendert.
     22: (
         Regel("WEEK_PROGRAM_CHANNEL_LOCKS", lambda v: _ganz(v)),
@@ -597,6 +626,8 @@ SDT_BELEGSTUFE = {
                        "Bitlagen aus GeneralStateParameterFactory"),
     8:  ("on-air", "BWTH-A, 317 Rahmen: die vier Schaltkanaele (Fassung 2026.8.10)"),
     13: ("mitschnitt", "BWTH-A (Gegenprobe: Handrechnung des Jars, am Geraet belegt); Kanaltyp-Zweige ohne Geraet ausgelassen"),
+    14: ("mitschnitt", "eTRV-F meldet den Abwesenheitszeitraum zurueck, den QCCU selbst gesetzt hatte "
+                       "(31.08.2026, vier Rahmen; Start 17:09 -> 17:10 wie im Jar gerundet)"),
     22: ("beschreibungstreu", "kein Geraet mit WEEK_PROGRAM_CHANNEL_LOCKS bisher auf der Luft"),
 }
 DEUTEN_AB = ("on-air", "mitschnitt", "fhem-zeuge", "beschreibungstreu")
@@ -2566,8 +2597,13 @@ class Radio:
                     print(f"  <- {addr}:{channel} {regel.param}=— ({status})")
                 continue
 
-            faktor, versatz = UMRECHNUNG.get(regel.param, (1.0, 0.0))
-            wert = self._form(desc, (roh - versatz) / faktor)
+            if isinstance(roh, str):
+                # Ein Zeitpunkt (PERIOD) ist schon der logische Wert — das
+                # Jar liefert ihn als Zeichenkette, ohne Zahl dazwischen.
+                wert = roh
+            else:
+                faktor, versatz = UMRECHNUNG.get(regel.param, (1.0, 0.0))
+                wert = self._form(desc, (roh - versatz) / faktor)
             if wert is None:
                 continue
             self.qccu.set_value_internal(addr, channel, regel.param, wert)
