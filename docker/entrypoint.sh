@@ -261,6 +261,11 @@ need_tables() {
     # Fassung des Geraets — und trifft damit bei Typen mit mehreren
     # Beschreibungen die falsche (HmIP-ASIR: die ohne interne Verdrahtung).
     grep -q '"varianten"' "$TABLES/catalog.json" 2>/dev/null || return 1
+    # Und die Form der Stellparameter (`FASSUNG`, ab 2026.8.45): ohne sie
+    # baut QCCU fuer einen Rollladen oder eine Markise das Pegelbyte des
+    # Schaltaktors — wohlgeformt und falsch. Alte Tabellen tragen das Feld
+    # nicht; sie werden deshalb neu gebaut.
+    grep -q '"FASSUNG"' "$TABLES/paramsets.json" 2>/dev/null || return 1
     if [ "${BIDCOS_PORT:-0}" != "0" ]; then
         [ -f "$TABLES/bidcos_types.json" ] \
             && [ -f "$TABLES/bidcos_layouts.json" ] \
