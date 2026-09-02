@@ -305,6 +305,15 @@ footer a{color:var(--mut)} footer a:hover{color:var(--acc)}
   </tr></thead><tbody></tbody></table></div>
 </div>
 
+<div class="card" id="karte_deutung" style="display:none">
+  <h2>Statuswerte: gedeutet oder roh</h2>
+  <div class="body flush"><table id="deutung"><thead><tr>
+    <th>Datentyp</th><th>Beleg</th><th>Zeuge</th>
+  </tr></thead><tbody></tbody></table>
+  <p class="hint">Was hier nicht steht, meldet QCCU als <code>RAW_SDT&lt;n&gt;</code>:
+    der Rohwert unter dem Namen, den eq-3 dafür führt — keine erfundene Skalierung.</p></div>
+</div>
+
 <dialog id="dlgPair">
   <h3>Gerät anlernen</h3>
   <div class="dbody">
@@ -859,6 +868,15 @@ async function laden(){
 
   // Was zuletzt geschah — die kurze Fassung dessen, was sonst im Protokoll
   // zwischen tausenden Abrufen der Haussteuerung untergeht.
+  // Belegstufe je Statusdatentyp: was gedeutet wird, und woher wir es wissen.
+  const de=s.deutung||[], kd=$('#karte_deutung');
+  if(kd){
+    kd.style.display = de.length ? '' : 'none';
+    if(de.length) $('#deutung').tBodies[0].innerHTML = de.map(d=>
+      '<tr><td>'+esc(d.name)+' <span class="mut">('+d.sdt+')</span></td>'
+      +'<td>'+esc(d.stufe)+(d.gedeutet ? '' : ' <span class="mut">— bleibt roh</span>')+'</td>'
+      +'<td class="mut">'+esc(d.zeuge||'')+'</td></tr>').join('');
+  }
   const ev=s.ereignisse||[], ke=$('#karte_ereignisse');
   if(ke){
     ke.style.display = ev.length ? '' : 'none';
@@ -1240,6 +1258,23 @@ class WebHandler(BaseHTTPRequestHandler):
             out["erweiterung"] = als_erweiterung()
         except Exception:                            # noqa: BLE001
             out["erweiterung"] = False
+        # Welche Statusdatentypen QCCU deutet — und woher es das weiss. Was
+        # nicht hier steht, kommt als RAW_SDT<n> an; das soll der Anwender
+        # sehen, ohne im Protokoll zu suchen (Belegstufe je Datentyp).
+        try:
+            from qccu_radio import SDT_BELEGSTUFE, DEUTEN_AB
+            namen = getattr(t, "sdt_name", None)
+            deutung = []
+            for n, (stufe, zeuge) in sorted(SDT_BELEGSTUFE.items()):
+                try:
+                    name = (namen(n) if namen else None) or f"SDT{n}"
+                except Exception:                    # noqa: BLE001
+                    name = f"SDT{n}"
+                deutung.append({"sdt": n, "name": name, "stufe": stufe,
+                                "zeuge": zeuge, "gedeutet": stufe in DEUTEN_AB})
+            out["deutung"] = deutung
+        except Exception:                            # noqa: BLE001
+            out["deutung"] = []
         return out
 
     def _firmware_state(self):
