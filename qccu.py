@@ -1051,6 +1051,20 @@ class QCCU:
                     f.flush()
                     os.fsync(f.fileno())
                 os.replace(tmp, self.store)
+                # Auch das VERZEICHNIS sichern: `os.replace` ist erst mit dem
+                # Verzeichniseintrag dauerhaft. Auf einem Netzdateisystem
+                # zeigt ein Leser sonst zwischendurch eine halbe Datei (NUL am
+                # Anfang) — auf dem Docker-Volume eine Feinheit, aber der
+                # Weg ist derselbe, und er kostet nichts.
+                try:
+                    dfd = os.open(os.path.dirname(os.path.abspath(self.store))
+                                  or ".", os.O_RDONLY)
+                    try:
+                        os.fsync(dfd)
+                    finally:
+                        os.close(dfd)
+                except OSError:
+                    pass
             except Exception as ex:
                 print(f"  ! Geraetespeicher nicht geschrieben: {ex}")
 
