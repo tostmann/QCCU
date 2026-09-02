@@ -2893,7 +2893,23 @@ class Radio:
                 # Praeambel je Stellbefehl. Das Sendezeit-Konto des Sticks
                 # fuellt sich mit 10 ms je Sekunde; drei Vorlaeufe waeren
                 # ueber zwei Minuten Erholung fuer einen einzigen Befehl.
-                job = self._submit(cmd, "cmd", burst=None if attempt == 1 else 0)
+                # ⚠️ ... ABER nur, wenn der erste Versuch auch WIRKLICH
+                # hinausging. Ein `Pm ERR LOVF` heisst, dass das Sendekonto
+                # erschoepft war und NICHTS gesendet wurde — dann hat nichts
+                # geweckt, und eine vorlauflose Wiederholung erreicht ein
+                # schlafendes Geraet ebenso wenig. Sie wird trotzdem mit
+                # „tx ok" quittiert und sah im Protokoll wie ein Erfolg aus:
+                # `urteile=['err','ok','ok']` bei null Sendungen, die je ein
+                # Geraet erreicht haben. Ein Vorlauf kostet 36 der 900
+                # Konto-Einheiten, das Konto fuellt sich mit einer je Sekunde
+                # — nach rund elf Burst-Befehlen ist es leer, das ist der
+                # Regelfall einer Messreihe und nicht die Ausnahme.
+                nochmal_wecken = (attempt > 1
+                                  and all(v in ("err", "kein Urteil")
+                                          for v in verdicts))
+                job = self._submit(cmd, "cmd",
+                                   burst=None if (attempt == 1 or nochmal_wecken)
+                                   else 0)
                 job.done.wait(self.verdict_timeout + 0.5
                               + burst_zuschlag(job.burst))
                 verdict = job.verdict or "kein Urteil"

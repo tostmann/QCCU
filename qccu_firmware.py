@@ -115,6 +115,40 @@ def stick_version(radio):
     return m.group() if m else ant
 
 
+def _zahlen(text):
+    """`q-culfw 2.0.89` -> (2, 0, 89); None, wenn keine Fassung erkennbar."""
+    if not text:
+        return None
+    letzte = text.split()[-1]
+    teile = letzte.split(".")
+    if not (2 <= len(teile) <= 4):
+        return None
+    try:
+        return tuple(int(t) for t in teile)
+    except ValueError:
+        return None
+
+
+def _ist_neuer(mitgeliefert, installiert):
+    """Ist die mitgelieferte Fassung NEUER als die installierte?
+
+    True / False / None (nicht vergleichbar). Verglichen wird zahlenweise,
+    nicht als Zeichenkette: „2.0.9" ist NEUER als „2.0.10", wenn man Text
+    vergleicht, und aelter, wenn man rechnet. Ausserdem muss der Name vor der
+    Nummer uebereinstimmen — eine a-culfw 1.29.1 ist gegen eine q-culfw 2.0.89
+    nicht „aelter", sondern etwas anderes.
+    """
+    a, b = _zahlen(mitgeliefert), _zahlen(installiert)
+    if a is None or b is None:
+        return None
+    if mitgeliefert.split()[0] != installiert.split()[0]:
+        return None
+    n = max(len(a), len(b))
+    a = a + (0,) * (n - len(a))
+    b = b + (0,) * (n - len(b))
+    return a > b
+
+
 def status(hex_path, radio=None, serial_path=None):
     """Der vollstaendige Zustand fuer die Oberflaeche."""
     out = {
@@ -129,8 +163,24 @@ def status(hex_path, radio=None, serial_path=None):
         out["zustand"] = ST_RUNNING
         mit, ist = out["mitgeliefert"], out["installiert"]
         if mit and ist and mit != ist:
-            out["aktualisierbar"] = True
-            out["hinweis"] = f"Aktualisieren auf {mit.split()[-1]}"
+            # ⚠️ NUR vorwaerts. Bis zum 02.09.2026 stand hier ein blosses
+            # „ungleich" — damit bot die Oberflaeche einem Stick mit
+            # NEUERER Firmware den Rueckschritt auf die mitgelieferte an,
+            # freundlich beschriftet als „Aktualisieren auf 2.0.72". Ein Klick
+            # nahm dem Stick das Kommando `mb`, und danach ging jeder
+            # Stellbefehl an ein Batteriegeraet ohne Vorlauf hinaus.
+            neuer = _ist_neuer(mit, ist)
+            if neuer is True:
+                out["aktualisierbar"] = True
+                out["hinweis"] = f"Aktualisieren auf {mit.split()[-1]}"
+            elif neuer is False:
+                out["hinweis"] = (f"Stick ist neuer ({ist.split()[-1]}) als die "
+                                  f"mitgelieferte {mit.split()[-1]}")
+            else:
+                # Nicht vergleichbar (fremde Firmware, anderes Namensschema):
+                # anbieten, aber ehrlich benennen, dass es ein WECHSEL ist.
+                out["aktualisierbar"] = True
+                out["hinweis"] = f"Wechseln auf {mit.split()[-1]}"
         elif mit and ist:
             out["hinweis"] = "aktuell"
         else:

@@ -479,6 +479,9 @@ class QCCU:
         self.verbose = verbose
         self.rega_log = None
         self.store = None
+        # Gesetzt, wenn der Speicher beim Start unlesbar war — sperrt save_store.
+        self.store_gesperrt = None
+        self._sperre_gemeldet = False
         self.rf = {}
         self.pair_next_addr = None
         self.stick_serial = None
@@ -893,7 +896,30 @@ class QCCU:
             with open(self.store) as f:
                 data = json.load(f)
         except Exception as ex:
+            # ⚠️ „nicht lesbar" ist NICHT „leer". Bis zum 02.09.2026 lief QCCU
+            # hier mit einem leeren Bestand weiter — und schrieb ihn beim
+            # naechsten `save_store` ueber die noch vorhandene Datei. Ein
+            # halb geschriebenes JSON (Neustart mitten im Speichern) oder eine
+            # NUL-praefixierte Datei auf NFS kostete damit ALLE angelernten
+            # Geraete, alle Funkbindungen und jeden gemessenen Hoerertyp —
+            # endgueltig, waehrend die Geraete weiter funkten. Deshalb: die
+            # kaputte Datei beiseitelegen und das Speichern SPERREN, bis ein
+            # Mensch entschieden hat. QCCU laeuft weiter (Empfang und
+            # Protokoll sind ja nuetzlich), aber es zerstoert nichts mehr.
             print(f"  ! Geraetespeicher nicht lesbar: {ex}")
+            self.store_gesperrt = (
+                f"Geraetespeicher {self.store} war beim Start nicht lesbar "
+                f"({ex}). Es wird NICHTS gespeichert, damit der vorhandene "
+                f"Bestand nicht ueberschrieben wird. Die Datei pruefen, "
+                f"reparieren oder beiseiteraeumen und QCCU neu starten.")
+            print(f"  ! {self.store_gesperrt}")
+            try:
+                import shutil
+                sicherung = self.store + ".unlesbar"
+                shutil.copy2(self.store, sicherung)
+                print(f"  ! Kopie der unlesbaren Datei: {sicherung}")
+            except Exception as ex2:                      # noqa: BLE001
+                print(f"  ! Kopie scheiterte: {ex2}")
             return 0
         self.pair_next_addr = data.get("pair_next_addr")
         # ⚠️ VOR dem Laden der Geraete: `add_device` fragt ihn nicht, aber die
@@ -958,6 +984,14 @@ class QCCU:
     def save_store(self):
         """Atomar schreiben."""
         if not self.store:
+            return
+        # ⚠️ Sperre aus `load_store`: war die Datei beim Start unlesbar, wird
+        # NICHT geschrieben. Sonst ueberschriebe ein leerer Bestand einen
+        # vorhandenen — siehe die Begruendung dort.
+        if getattr(self, "store_gesperrt", None):
+            if not getattr(self, "_sperre_gemeldet", False):
+                print(f"  ! Speichern gesperrt: {self.store_gesperrt}")
+                self._sperre_gemeldet = True
             return
         with self.lock:
             data = {"devices": {a: {"devtype": d.devtype,
