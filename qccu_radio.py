@@ -1312,6 +1312,47 @@ class Radio:
                 gefunden = z
         return gefunden
 
+    # Kommandos, die dieser Weg durchlaesst. ENG, und mit Absicht:
+    #
+    # ⚠️ Ein freier Durchgriff auf den Stick waere gefaehrlich — `mKX` verwirft
+    # den Netzwerkschluessel, und danach ist JEDES angelernte Geraet ausgesperrt
+    # und muss neu angelernt werden. Bei einem Heizungsregler kostet das die
+    # Ventiladaption. Deshalb keine schwarze Liste (die vergisst man zu
+    # pflegen), sondern eine weisse: nur die `mU`-Familie, also Vorlaufdauer
+    # und Weckkanal. Die aendern nichts Bleibendes und sind genau das, was am
+    # Pruefstand zwischen zwei Messreihen umgestellt werden muss.
+    ROH_ERLAUBT = ("mU",)
+
+    def roh_kommando(self, cmd):
+        """Ein Kommando aus der weissen Liste an den Stick geben.
+
+        Fuer den Pruefstand: den Weckkanal (`mUK…`) oder die Vorlaufdauer
+        (`mU1…`/`mU3…`) umstellen, OHNE QCCU anzuhalten. Den Anschluss zu
+        oeffnen waere ein Reset des Sticks — und der setzt beides auf die
+        Vorgabe zurueck, womit die Messreihe unbemerkt zweimal denselben Arm
+        fuehre.
+
+        Liefert None bei Erfolg, sonst den Grund als Text.
+        """
+        cmd = (cmd or "").strip()
+        if not cmd:
+            return "leeres Kommando"
+        if any(c in cmd for c in "\r\n"):
+            return "Zeilenumbruch im Kommando"
+        if not cmd.startswith(self.ROH_ERLAUBT):
+            return (f"nicht erlaubt: {cmd!r} — durchgelassen wird nur "
+                    f"{'/'.join(self.ROH_ERLAUBT)}…")
+        if self.ser is None:
+            return "kein Anschluss"
+        try:
+            with self._pending_lock:
+                self.ser.write(cmd.encode() + b"\r\n")
+                self.ser.flush()
+        except Exception as ex:                       # noqa: BLE001
+            return f"Schreiben scheiterte: {ex}"
+        self._log(">>", f"{cmd}  [roh]")
+        return None
+
     def _burst_probe(self):
         """Kann dieser Stick einen Vorlauf fuer HmIP-Rahmen? (`mU` fragt.)
 
