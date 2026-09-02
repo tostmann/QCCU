@@ -566,11 +566,11 @@ SDT_REGELN = {
 # Leiter: `on-air` (selbst auf der Luft gemessen, Wert am Geraet
 # gegengeprueft) > `mitschnitt` (aufgezeichnete Rahmen, die Handrechnung des
 # Jars als Orakel) > `fhem-zeuge` > `beschreibungstreu` (nur aus dem
-# Dekompilat) > `kein-zeuge`. Gedeutet wird ab `mitschnitt`; was darunter
-# liegt, bleibt RAW_SDT<n>, auch wenn eine Regel dafuer da steht — eine
-# Regel ohne Zeugen ist eine Vermutung, und Vermutungen gehen nicht als
-# Messwert an den Klienten. Der Zeuge steht daneben, damit nachpruefbar
-# bleibt, WAS die Stufe traegt.
+# Dekompilat) > `kein-zeuge`. Gedeutet wird, was mindestens dem Dekompilat
+# folgt; nur `kein-zeuge` bleibt RAW_SDT<n>, auch wenn eine Regel dafuer da
+# steht (Dirk, 02.09.2026: eine beschreibungstreue Regel ist kein Ratespiel,
+# das Dekompilat IST die Beschreibung). Der Zeuge steht daneben, damit
+# nachpruefbar bleibt, WAS die Stufe traegt — und wo noch keiner ist.
 SDT_BELEGSTUFE = {
     0:  ("mitschnitt", "eTRV-C, 12 Rahmen (Gegenprobe: Handrechnung des Jars, am Geraet belegt)"),
     1:  ("on-air", "BWTH-A, 317 Rahmen: 23,3 °C / 68 % rF; dazu 85 Rahmen Gegenprobe: Handrechnung des Jars, am Geraet belegt"),
@@ -584,7 +584,7 @@ SDT_BELEGSTUFE = {
     13: ("mitschnitt", "BWTH-A (Gegenprobe: Handrechnung des Jars, am Geraet belegt); Kanaltyp-Zweige ohne Geraet ausgelassen"),
     22: ("beschreibungstreu", "kein Geraet mit WEEK_PROGRAM_CHANNEL_LOCKS bisher auf der Luft"),
 }
-DEUTEN_AB = ("on-air", "mitschnitt", "fhem-zeuge")
+DEUTEN_AB = ("on-air", "mitschnitt", "fhem-zeuge", "beschreibungstreu")
 
 
 # --- Stellbefehle ----------------------------------------------------------
