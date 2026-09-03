@@ -4335,7 +4335,17 @@ class Radio:
                     rolle = self.t.rolle_of(devtype, idx, eintrag)
                     if rolle is None:
                         unbekannt.append(int(idx))
-                    elif rolle == "SENDER":
+                    elif rolle != "NONE":
+                        # ⚠️ JEDE Rolle ausser NONE, nicht nur SENDER. So macht
+                        # es das Jar: `DeviceUtil.createCentralLink` prueft
+                        # allein `getLinkRole() == LinkRole.NONE` und legt die
+                        # Verknuepfung sonst an — also auch fuer Empfaenger.
+                        # (Am HmIP-SMO230-A aufgefallen, 03.09.2026: die
+                        # Schaltkanaele blieben ohne Verknuepfung. Ob das
+                        # Schalten daran haengt, ist NICHT belegt — die
+                        # nachgezogene Verknuepfung allein hat es nicht
+                        # geloest. Angeglichen wird trotzdem, weil das Jar
+                        # es so tut.)
                         kanaele.append(int(idx))
             except Exception as ex:                      # noqa: BLE001
                 self._log("##", f"ZENTRALENVERKNUEPFUNG {addr}: Rollen nicht lesbar: {ex}")
