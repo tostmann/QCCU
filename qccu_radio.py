@@ -2692,7 +2692,8 @@ class Radio:
         for name in ereignisse:
             if self._beschreibung(addr, kanal, name) is None:
                 continue
-            self.qccu.set_value_internal(addr, kanal, name, True)
+            # Ereignis, kein Wert — wie die Zentrale (`event_internal`).
+            self.qccu.event_internal(addr, kanal, name, True)
             gemeldet.append(name)
         self._log("<<", f"TASTE {addr}:{kanal} {art} {'lang' if lang else 'kurz'} "
                         f"Zaehler {zaehler}{' Ende' if lang and resp else ''} -> "

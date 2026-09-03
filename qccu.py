@@ -1108,6 +1108,27 @@ class QCCU:
         self._werte_sichern()
         return True
 
+    def event_internal(self, address, channel, param, value=True):
+        """Ein Ereignis melden, OHNE es als Wert zu fuehren.
+
+        So macht es die Zentrale mit Tastendruecken: die Legacy-Schicht
+        schickt `client.event(kanal, "PRESS_SHORT", TRUE)` und legt nichts im
+        Kanalzustand ab (`LegacyBackendNotificationHandler`, jar 04cb5e4e);
+        ein spaeteres `getValue` auf den Parameter scheitert dort mit
+        „Unknown Parameter value" (`DeviceUtil.getValue`: kein Wert, Parameter
+        bekannt). Wer den Wert speicherte, zeigte Klienten einen Taster als
+        dauerhaft „pressed" (HMCCU beim Anlegen, 03.09.2026 13:08).
+        """
+        key = address.upper()
+        with self.lock:
+            d = self.devices.get(key)
+            if not d:
+                return False
+            self._wert_zeit[key] = int(time.time())
+        self.note_reachable(key, True)
+        self._notify(f"{key}:{channel}", param, value)
+        return True
+
     # Wie oft die Werte hoechstens auf die Platte gehen. Bei jeder Meldung zu
     # schreiben waere teuer und unnoetig: was zaehlt, ist dass nach einem
     # Neustart ein brauchbarer Stand da ist, nicht der allerletzte.
@@ -1404,14 +1425,30 @@ class QCCU:
         return aus_beschreibung
 
     def getValue(self, address, param):
+        """Einen Wert lesen — mit den Fehlern der Zentrale.
+
+        `DeviceUtil.getValue` (jar 04cb5e4e, Legacy-Schicht) unterscheidet:
+        Parameter unbekannt → -5 „Unknown Parameter for value key: X";
+        Parameter bekannt, aber nie ein Wert → -5 „Unknown Parameter value for
+        value key: X" (`NotificationUtil.getUnknownParameterValueRpcRemote-
+        Exception`). Letzteres ist der Normalfall fuer Tasten: PRESS_SHORT
+        wird nur als Ereignis gemeldet, nie abgelegt (`event_internal`).
+        """
         base, _, ch = address.upper().partition(":")
         with self.lock:
             d = self.devices.get(base)
-        if not d or not ch:
-            raise xmlrpc.client.Fault(-2, "Unknown parameter")
+        if not d:
+            raise xmlrpc.client.Fault(-2, "Unknown device")
+        if not ch:
+            raise xmlrpc.client.Fault(-5, f"Unknown Parameter for value key: {param}")
         v = d.values.get((int(ch), param))
         if v is None:
-            raise xmlrpc.client.Fault(-2, "Unknown parameter")
+            try:
+                bekannt = param in self.getParamsetDescription(f"{base}:{ch}", "VALUES")
+            except Exception:                    # noqa: BLE001
+                bekannt = False
+            raise xmlrpc.client.Fault(
+                -5, f"Unknown Parameter {'value ' if bekannt else ''}for value key: {param}")
         return v
 
     # Wie lange `setValue` auf den Ausgang wartet. Drei Anlaeufe mit Weckpaar,
