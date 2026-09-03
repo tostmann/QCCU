@@ -230,6 +230,7 @@ footer a{color:var(--mut)} footer a:hover{color:var(--acc)}
       <tr><td>Adresse der Zentrale</td><td><code id="hm_addr">—</code></td></tr>
       <tr><td>Geräte</td><td><span id="hm_dev">—</span></td></tr>
       <tr><td>Anlernfenster</td><td><span id="hm_pair">—</span></td></tr>
+      <tr><td>Schlafende Geräte wecken</td><td><span id="hm_weck">—</span></td></tr>
     </tbody></table>
     <p class="hint" id="hm_hint"></p>
   </div>
@@ -769,6 +770,11 @@ async function laden(){
   setz('hm_dev', anzahlText((s.devices||[]).filter(x=>x.interface!==bcIf).length));
   const hp=s.pairing||{};
   setz('hm_pair', hp.open ? ('offen, noch '+hp.seconds_left+' s') : 'zu');
+  // Kann der Stick wecken, und steht der Weckkanal? Ohne Mitschnitt war das
+  // nirgends ablesbar — auf dem ersten frisch geflashten Stick stand er auf aus.
+  setz('hm_weck', rr.burst_faehig===true
+        ? ('ja' + (rr.weckkanal ? ', Weckkanal '+rr.weckkanal : ', Weckkanal NICHT gesetzt'))
+        : rr.burst_faehig===false ? 'nein — Stick-Firmware zu alt' : '—');
 
   const kb=$('#karte_bidcos');
   if(bc){
