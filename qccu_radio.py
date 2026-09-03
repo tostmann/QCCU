@@ -1328,7 +1328,16 @@ def zufaellige_adresse(gesperrt=()):
 
 
 class Radio:
-    SEQ_STEP = 64
+    # Wie weit der eigene appSeq-Zaehler nach einem NEUSTART weiterspringt.
+    # Der Zaehler wird vor jedem Senden persistiert; der Sprung ist nur die
+    # Reserve fuer einen Rahmen, der zwischen Zuteilung und Sicherung
+    # verloren ging. ⚠️ Er ist KEIN Schutz vor verworfenen Rahmen: die
+    # Zentrale fuehrt einen Zaehler je Zugangspunkt fuer ALLE Geraete und
+    # beginnt bei jedem Start bei 0 (HMIPAccessPoint
+    # .getApplicationSequenceNumber) — ein Geraet sieht dort staendig
+    # Luecken. Der Befund vom 03.09.2026 („Sprung kostet den ersten Befehl")
+    # hat sich am 04.09. nicht gehalten; siehe Commit-Botschaft.
+    SEQ_STEP = 2
     MAC_SEQ_LEAP = 256
 
     def __init__(self, port, qccu, tables, baud=38400, verbose=True,
