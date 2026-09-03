@@ -712,8 +712,19 @@ SDT_BELEGSTUFE = {
                        "(31.08.2026, vier Rahmen; Start 17:09 -> 17:10 wie im Jar gerundet)"),
     15: ("on-air", "SMI55-A (03.09.2026): 0x39C0 = 1478,4 lx bei Tag, abgedeckt 0x01C3 = 45,1 lx — "
                    "die Skala stimmt am Geraet"),
-    33: ("beschreibungstreu", "BRIGHTNESS: derselbe Handlerzweig wie ILLUMINATION, kein Geraet gesehen"),
-    22: ("beschreibungstreu", "kein Geraet mit WEEK_PROGRAM_CHANNEL_LOCKS bisher auf der Luft"),
+    # ⚠️ Am HmIP-SMO230-A (03.09.2026) zum ersten Mal auf der Luft: zwei
+    # verschiedene Werte, 0x144B = 51,95 lx und 0x11F6 = 45,98 lx, jeweils mit
+    # einer Bewegung, auf allen vier Melderkanaelen gleich. Das belegt die
+    # Bitlage und dass die Deutung mitgeht. Die SKALA ist damit NICHT belegt:
+    # beide Werte liegen im selben Bereich, und die Fassung `slo`
+    # (Hundertstel statt Zehntel) stammt aus der Kanaltyp-Tabelle, nicht aus
+    # der Messung. Waeren es Zehntel, kaeme 519,5 lx heraus — fuer einen
+    # hellen Raum ebenso plausibel. Fuer „on-air" fehlt ein Wert in einer
+    # anderen Groessenordnung (abgedeckt oder Tageslicht).
+    33: ("mitschnitt", "SMO230-A: 51,95 und 45,98 lx an vier Kanaelen; "
+                       "Skala (Fassung slo) noch aus der Tabelle, nicht gemessen"),
+    22: ("beschreibungstreu", "SMO230-A meldete WEEK_PROGRAM_CHANNEL_LOCKS=0 — "
+                              "eine Null belegt weder Bitlage noch Skala"),
 }
 DEUTEN_AB = ("on-air", "mitschnitt", "fhem-zeuge", "beschreibungstreu")
 
