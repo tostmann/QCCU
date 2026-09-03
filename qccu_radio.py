@@ -2293,7 +2293,19 @@ class Radio:
                 air = raw[1:1 + raw[0]]
             except Exception:
                 return
-            if len(air) >= 49 and air[9] == 0x10:
+            # ⚠️ Die Zieladresse entscheidet, nicht nur air[9]. Ein
+            # Anlernruf geht an die Gruppenadresse f00003; ein GERICHTETER
+            # Rahmen mit derselben 0x10 ist die Antwort einer FREMDEN
+            # Zentrale auf den Ruf. Ohne diese Bedingung landet der fremde
+            # Zugangspunkt als Phantom-Geraet im Posteingang, mit
+            # Unsinnswerten, weil seine Nutzlast an den Stellen, an denen
+            # `_merke_anlernwunsch` Kennung und Typ liest, etwas anderes
+            # traegt (03.09.2026: ein fremder AP wurde als „Typ 648981474,
+            # Betriebsmodus 0x67" eingetragen). Am Mitschnitt des Tages
+            # geprueft: 887 Rahmen, davon 49 echte Anlernrufe — alle an
+            # f00003 — und genau ein gerichteter Fehltreffer.
+            if (len(air) >= 49 and air[9] == 0x10
+                    and air[6:9] == b"\xf0\x00\x03"):
                 # ⚠️ Ein Geraet, das angelernt werden WILL — der Knopf wurde
                 # gedrueckt. Das wird IMMER vermerkt, auch bei geschlossenem
                 # Fenster: genau dann ist es die Auskunft, die dem Anwender
