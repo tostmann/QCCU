@@ -1449,6 +1449,7 @@ class Radio:
 
         qccu.on_set = self.on_set
         qccu.on_set_many = self.on_set_many
+        qccu.on_put_master = self.konfig_schreiben
         qccu.kann_stellen = self.kann_stellen
         qccu.on_install = self.on_install
 
@@ -1543,9 +1544,19 @@ class Radio:
         wartend = saved.get("wartend") if isinstance(saved, dict) else None
         if isinstance(wartend, dict):
             for hmid, eintraege in wartend.items():
-                gueltig = [{"cmd": str(e["cmd"]), "appseq": int(e["appseq"]),
-                            "versuche": int(e.get("versuche", 0))}
-                           for e in eintraege if isinstance(e, dict) and "cmd" in e and "appseq" in e]
+                gueltig = []
+                for e in eintraege:
+                    if not (isinstance(e, dict) and "cmd" in e and "appseq" in e):
+                        continue
+                    g = {"cmd": str(e["cmd"]), "appseq": int(e["appseq"]),
+                         "versuche": int(e.get("versuche", 0))}
+                    # Eine Konfigurationskette behaelt ihre Glieder-Eigenschaft
+                    # und den Abschluss (Bestand uebernehmen) ueber den Neustart.
+                    if e.get("kette"):
+                        g["kette"] = True
+                    if isinstance(e.get("danach"), dict):
+                        g["danach"] = e["danach"]
+                    gueltig.append(g)
                 if gueltig:
                     self._wartend[str(hmid).lower()] = gueltig
             if self.verbose and any(self._wartend.values()):
@@ -1565,8 +1576,11 @@ class Radio:
                      # Neustart: ein Ereignismelder, der seine Verknuepfung
                      # nie bekommt, meldet nie etwas (SMI55-A, 03.09.2026 —
                      # vier Rahmen beim Neustart verloren).
-                     "wartend": {h: [{"cmd": e["cmd"], "appseq": e["appseq"],
-                                      "versuche": e.get("versuche", 0)} for e in v]
+                     "wartend": {h: [dict({"cmd": e["cmd"], "appseq": e["appseq"],
+                                           "versuche": e.get("versuche", 0)},
+                                          **({"kette": True} if e.get("kette") else {}),
+                                          **({"danach": e["danach"]} if isinstance(e.get("danach"), dict) else {}))
+                                     for e in v]
                                  for h, v in self._wartend.items() if v}}
         with self._state_lock:
             try:
@@ -3055,8 +3069,12 @@ class Radio:
             self._log("##", f"ANTWORT UNTERDRUECKT appSeq=0x{appseq:02X}")
             return
         kopf = FT_ANSWER | self._wach_bit(hmid)
-        self._submit(f"ms{hmid.upper()}{kopf:02X}{appseq:02X}00", "answer",
-                     time.time() + self.answer_delay)
+        # Nutzlast wie `AnswerFrame.generatePayload`: AnswerType 0 (angenommen)
+        # | 0x40, wenn eine Konfigurationsuebertragung fuer das Geraet aussteht.
+        with self.lock:
+            konfig = any(e.get("kette") for e in (self._wartend.get(hmid.lower()) or []))
+        self._submit(f"ms{hmid.upper()}{kopf:02X}{appseq:02X}{0x40 if konfig else 0:02X}",
+                     "answer", time.time() + self.answer_delay)
 
     @staticmethod
     def zeit_payload(t):
@@ -4104,6 +4122,7 @@ class Radio:
         with self.lock:
             eintrag = self._app_ack.get((hmid, appseq))
             offen = self._wartend.get(hmid) or []
+            erledigt = [e for e in offen if e["appseq"] == appseq]
             self._wartend[hmid] = [e for e in offen if e["appseq"] != appseq]
             if not self._wartend[hmid]:
                 self._wartend.pop(hmid, None)
@@ -4113,6 +4132,26 @@ class Radio:
         if eintrag is not None:
             eintrag["ergebnis"] = ergebnis
             eintrag["ev"].set()
+        # Angenommen (Nutzlast 0) — was an dem Rahmen hing, jetzt tun; auch
+        # dann, wenn die ANSWER erst nach dem Antwortfenster des Senders kam.
+        if ergebnis == 0:
+            for e in erledigt:
+                self._abschluss(hmid, e)
+
+    def _abschluss(self, hmid, e):
+        """Was nach der Annahme eines Warterahmens zu tun ist — genau einmal."""
+        danach = e.pop("danach", None) if isinstance(e, dict) else None
+        if not danach:
+            return
+        if "master" in danach:
+            a, k, w = danach["master"]
+            self.qccu.master_uebernehmen(a, k, w)
+            self._log("##", f"KONFIG {a}:{k} angenommen — Bestand uebernommen "
+                            f"({', '.join(sorted(w))})")
+            with self.lock:
+                offen = any(x.get("kette") for x in (self._wartend.get(hmid) or []))
+            if not offen:
+                self.qccu.set_value_internal(a, 0, "CONFIG_PENDING", False)
 
     # Der „Kanal" der Zentrale in einer Verknuepfung — so fuehrt ihn das Jar
     # (`channel.getLinkPartner("CENTRAL_DEVICE", 63)`).
@@ -4223,6 +4262,73 @@ class Radio:
                         f"{', '.join(map(str, kanaele))}: {angenommen}/{len(rahmen)} quittiert")
         return kanaele
 
+    # ConfigurationRequestType (Jar) fuer das Schreiben einer Liste.
+    KONFIG_START = 5
+    KONFIG_COMMIT = 6
+    KONFIG_SET_INDEX = 8
+    KONFIG_MAX_PAARE = 14           # `maxConfigurationDataLengthPerFrame`
+
+    def _konfig_rahmen(self, hmid, kanal, appseq, art, nutzlast=""):
+        """CONFIGURATION mit Antwortwunsch und Wach-Bit (Kopf C1), wie
+        `createStartParameterSetting`/`createSetParameterByIndex`/
+        `createCommitParameterSetting` (respReq true, stayAwake true)."""
+        return (f"ms{hmid.upper()}C1{appseq:02X}{kanal:02X}{art:02X}{nutzlast}")
+
+    def konfig_schreiben(self, ccu_address, kanal, liste, paare, werte):
+        """Eine Konfigurationsliste an das Geraet schreiben — drei Rahmen als
+        Kette im Wartefach: START (Partner 000000 = Geraetekonfiguration,
+        Partnerkanal 0, Liste, Betriebsart 0), SET_PARAMETER_BY_INDEX in
+        Portionen zu 14 Paaren, COMMIT (`createDeviceConfigurationTransaction`).
+        Nach dem angenommenen COMMIT werden `werte` in den Bestand
+        uebernommen. Schlafende Geraete bekommen die Kette beim naechsten
+        Lebenszeichen, staendige Hoerer sofort."""
+        addr = ccu_address.upper()
+        hmid = None
+        with self.lock:
+            for h, a in self.by_hmid.items():
+                if a == addr:
+                    hmid = h
+                    break
+        if not hmid:
+            self.qccu.merke_ereignis("bad", f"{addr}: kein Funkgeraet fuer das Konfigschreiben")
+            return False
+        d = self.qccu.devices.get(addr)
+        opmode = getattr(d, "opmode", None)
+        with self.lock:
+            appseq = self.appseq.get(hmid, 0)
+            rahmen = []
+            def naechste():
+                nonlocal appseq
+                appseq = (appseq + LINK_APPSEQ_SCHRITT) & 0xFF
+                if not appseq % 2:
+                    appseq = (appseq + 1) & 0xFF
+                if not appseq:
+                    appseq = 1
+                return appseq
+            rahmen.append((naechste(), self._konfig_rahmen(
+                hmid, kanal, appseq, self.KONFIG_START, f"000000{0:02X}{int(liste):02X}00")))
+            paare = list(paare)
+            for i in range(0, len(paare), self.KONFIG_MAX_PAARE):
+                teil = paare[i:i + self.KONFIG_MAX_PAARE]
+                rahmen.append((naechste(), self._konfig_rahmen(
+                    hmid, kanal, appseq, self.KONFIG_SET_INDEX,
+                    "".join(f"{int(ix):02X}{int(b) & 0xFF:02X}" for ix, b in teil))))
+            rahmen.append((naechste(), self._konfig_rahmen(hmid, kanal, appseq, self.KONFIG_COMMIT)))
+            self.appseq[hmid] = appseq
+            eintraege = [{"cmd": cmd, "appseq": seq, "versuche": 0, "kette": True} for seq, cmd in rahmen]
+            eintraege[-1]["danach"] = {"master": [addr, int(kanal), dict(werte)]}
+            self._wartend.setdefault(hmid, []).extend(eintraege)
+        self._save_state()
+        self.qccu.set_value_internal(addr, 0, "CONFIG_PENDING", True)
+        self._log("##", f"KONFIG {addr}:{kanal} Liste {liste}: {len(paare)} Byte(s) in "
+                        f"{len(rahmen)} Rahmen ({', '.join(sorted(werte))})")
+        hoerer = (opmode & 0x0F) if opmode is not None else None
+        if hoerer is None or hoerer in LM_NICHT_STAENDIG:
+            self._log("##", f"KONFIG {addr}:{kanal} wartet auf ein Lebenszeichen (Hoerertyp {hoerer})")
+            return True
+        self._nachreichen(hmid)
+        return True
+
     def _nachreichen(self, hmid):
         """Was auf ein Lebenszeichen gewartet hat, jetzt senden.
 
@@ -4248,7 +4354,8 @@ class Radio:
             for e in offen:
                 if e["versuche"] >= LINK_VERSUCHE:
                     continue
-                e["versuche"] += 1
+                # Der Anlauf zaehlt erst beim Senden (in `lauf`) — ein Glied
+                # hinter einer gerissenen Kette hat keinen Anlauf verbraucht.
                 senden.append(e)
                 uebrig.append(e)
             aufgegeben = len(offen) - len(uebrig)
@@ -4279,6 +4386,10 @@ class Radio:
           try:
             self._antwort_abwarten(hmid)
             for e in senden:
+                with self.lock:
+                    if e not in (self._wartend.get(hmid) or []):
+                        continue            # inzwischen quittiert (ANSWER kam vorab)
+                    e["versuche"] += 1
                 gut = self._link_senden(hmid, e["appseq"], e["cmd"])
                 self._log("##", f"WARTEND appSeq=0x{e['appseq']:02X} an {hmid}: "
                                 + ("quittiert" if gut is True else
@@ -4294,6 +4405,14 @@ class Radio:
                         else:
                             self._wartend.pop(hmid, None)
                     self._save_state()
+                    self._abschluss(hmid, e)      # bei „mac" noch offen, bei ANSWER schon geschehen
+                elif e.get("kette"):
+                    # Eine Kette (START → SET → COMMIT) bricht beim ersten
+                    # Glied ab, das nicht angenommen wurde: die Reihenfolge
+                    # muss stimmen, der Rest kommt beim naechsten Anlauf.
+                    self._log("##", f"WARTEND Kette an {hmid} unterbrochen bei "
+                                    f"appSeq=0x{e['appseq']:02X}")
+                    break
           finally:
             with self.lock:
                 self._zustellung.discard(hmid)
@@ -4323,7 +4442,13 @@ class Radio:
             for versuch in range(1, LINK_VERSUCHE + 1):
                 eintrag["ev"].clear()
                 mac.clear()
-                self._submit(cmd, "cmd")
+                job = self._submit(cmd, "cmd")
+                # Das Antwortfenster beginnt, wenn der Rahmen die Leitung
+                # verlassen hat — nicht beim Einreihen. Steht davor noch ein
+                # Auftrag in der Schlange, liefe es sonst leer, bevor das
+                # Geraet den Rahmen ueberhaupt gesehen hat (Test 03.09.2026:
+                # SET doppelt, COMMIT „ohne Antwort" vor dem Senden).
+                job.written.wait(LINK_ANTWORT_ZEIT * 4)
                 if not eintrag["ev"].wait(LINK_ANTWORT_ZEIT) and mac.is_set():
                     self._log("##", f"VERDRAHTUNG appSeq=0x{appseq:02X} Kurzquittung, "
                                     f"keine ANSWER — gilt als zugestellt")

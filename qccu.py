@@ -21,6 +21,10 @@ from xmlrpc.server import SimpleXMLRPCServer, SimpleXMLRPCRequestHandler
 VERSION = "2026.9.1"
 PRODUKT = "QCCU"
 NAME_UND_FASSUNG = f"{PRODUKT} {VERSION}"
+# Felder der Tabellen, die nur dem Sendepfad dienen und nie an Klienten gehen:
+# die Form eines Parameters, seine Adresse in der Konfigurationsliste und sein
+# Umrechner (aus dem Jar, fuer START/SET_PARAMETER/COMMIT).
+INTERN = ("FASSUNG", "ADRESSE", "UMRECHNER")
 
 # Hoerertypen — die unteren vier Bit des Betriebsmodus, den ein Geraet in
 # seinem Anlernruf ansagt.
@@ -489,6 +493,113 @@ def rpc_proxy(url, timeout=NOTIFY_TIMEOUT):
     """Ausgehende Verbindung mit Zeitgrenze."""
     return xmlrpc.client.ServerProxy(url, allow_none=True,
                                      transport=_TimeoutTransport(timeout))
+
+
+def bytezahl(adr):
+    """Wie viele Bytes ein Parameter in der Liste belegt — `shiftLogicalTo-
+    Physical`: LAENGE_BYTE, +1 bei einem Bitfeld, +1 mehr, wenn das Bitfeld
+    ueber die Bytegrenze reicht (BIT + LAENGE_BIT > 8)."""
+    lb, bit, lbit = int(adr.get("LAENGE_BYTE") or 0), int(adr.get("BIT") or 0), int(adr.get("LAENGE_BIT") or 0)
+    n = lb + (1 if (lbit or bit) else 0) + (1 if bit + lbit > 8 else 0)
+    return max(1, n)
+
+
+def physisch(beschr, wert):
+    """Ein logischer Wert als Bytes, so wie der Umrechner des Jars ihn macht.
+
+    Je Klasse (`typeconversion/converter`): DoubleToInteger rundet
+    `wert*FAKTOR+OFFSET` (kaufmaennisch, ab .5 aufwaerts), IntegerToInteger
+    und LongToInteger ebenso mit ganzen Zahlen, BoolToInteger nimmt die
+    WAHR-/FALSCH-Bytes, StringEnumToInteger den Platz in WERTE (+OFFSET)
+    oder ZAHLEN. Die Bytes sind big-endian in LAENGE_BYTE (mindestens 1).
+    """
+    adr = beschr["ADRESSE"]; u = beschr.get("UMRECHNER") or {}
+    klasse = u.get("KLASSE") or ""
+    n = bytezahl(adr)
+    if klasse == "BoolToInteger":
+        roh = u.get("WAHR") if wert else u.get("FALSCH")
+        if not roh:
+            roh = [1 if wert else 0]
+        return bytes(roh[-n:]).rjust(n, b"\x00")
+    if klasse == "StringEnumToInteger":
+        werte = u.get("WERTE") or beschr.get("VALUE_LIST") or []
+        if wert not in werte:
+            raise ValueError(f"{beschr.get('ID', '?')}: {wert!r} nicht in {werte}")
+        i = werte.index(wert)
+        zahl = (u.get("ZAHLEN") or [None] * len(werte))[i]
+        if zahl is None:
+            zahl = i + int(u.get("OFFSET") or 0)
+    elif klasse in ("DoubleToInteger", "IntegerToInteger", "LongToInteger",
+                    "DoubleToSignedInteger", "IntegerToSignedInteger", ""):
+        if isinstance(wert, bool) or not isinstance(wert, (int, float)):
+            raise ValueError(f"{beschr.get('ID', '?')}: Zahl erwartet, nicht {wert!r}")
+        x = float(wert)
+        if "FAKTOR" in u:
+            x = x * float(u["FAKTOR"]) + float(u.get("OFFSET") or 0.0)
+        zahl = int(x + 0.5) if x >= 0 else -int(-x + 0.5)
+        if klasse.endswith("SignedInteger") and zahl < 0:
+            zahl &= (1 << (8 * n)) - 1
+    else:
+        raise ValueError(f"{beschr.get('ID', '?')}: Umrechner {klasse} nicht belegt")
+    if zahl < 0 or zahl >= (1 << (8 * n)):
+        raise ValueError(f"{beschr.get('ID', '?')}: {wert!r} passt nicht in {n} Byte")
+    return int(zahl).to_bytes(n, "big")
+
+
+def listenbytes(beschr, bestand, neu):
+    """Die Bytes der Konfigurationslisten fuer geaenderte Parameter.
+
+    Liefert {liste: {index: byte}} — genau die Paare fuer SET_PARAMETER_BY_
+    INDEX. Ein geaendertes Bitfeld zieht die Nachbarn in seinem Byte mit
+    (`needMergeWithOld` der Zentrale): deren Wert kommt aus `bestand`
+    (geschrieben) oder der Vorgabe. Lage im Byte wie `shiftLogicalToPhysical`:
+    Wert << BIT, Bytes big-endian ab BYTE.
+    """
+    def stelle(p):
+        a = beschr[p]["ADRESSE"]
+        return int(a["LISTE"]), int(a["BYTE"]), int(a.get("BIT") or 0), \
+            int(a.get("LAENGE_BYTE") or 0), int(a.get("LAENGE_BIT") or 0)
+    # welche Bytes werden beruehrt?
+    beruehrt = set()
+    for p in neu:
+        liste, byte, bit, lb, lbit = stelle(p)
+        n = bytezahl(beschr[p]["ADRESSE"])
+        for i in range(n):
+            beruehrt.add((liste, byte + i))
+    aus = {}
+    def eintragen(p, wert):
+        liste, byte, bit, lb, lbit = stelle(p)
+        n = bytezahl(beschr[p]["ADRESSE"])
+        if lbit and bit + lbit > 8 * n:
+            raise ValueError(f"{p}: Bitfeld {bit}+{lbit} passt nicht in {n} Byte")
+        zahl = int.from_bytes(physisch(beschr[p], wert), "big")
+        if lbit and zahl >= (1 << lbit):
+            raise ValueError(f"{p}: {wert!r} passt nicht in {lbit} Bit")
+        zahl <<= bit
+        for i in range(n):
+            b = (zahl >> (8 * (n - 1 - i))) & 0xFF
+            aus.setdefault(liste, {}).setdefault(byte + i, 0)
+            aus[liste][byte + i] |= b
+    for p in neu:
+        eintragen(p, neu[p])
+    # Nachbarn in denselben Bytes
+    for p, e in beschr.items():
+        if p in neu or not isinstance(e.get("ADRESSE"), dict):
+            continue
+        liste, byte, bit, lb, lbit = stelle(p)
+        n = bytezahl(beschr[p]["ADRESSE"])
+        if not any((liste, byte + i) in beruehrt for i in range(n)):
+            continue
+        wert = bestand.get(p)
+        if wert is None:
+            wert = e.get("DEFAULT")
+        if wert is None:
+            continue
+        try:
+            eintragen(p, wert)
+        except ValueError:
+            continue                    # ein Nachbar, der sich nicht rechnen laesst, bleibt 0
+    return aus
 
 
 class QCCU:
@@ -963,6 +1074,10 @@ class QCCU:
                 if e.get("rf"):
                     self.rf[addr.upper()] = e["rf"].lower()
                 gd = self.devices.get(addr.upper())
+                for k, v in (e.get("master") or {}).items():
+                    kanal, _, name = k.partition(":")
+                    if gd is not None and kanal.isdigit() and name:
+                        gd.master[(int(kanal), name)] = v
                 for k, v in (e.get("values") or {}).items():
                     kanal, _, name = k.partition(":")
                     if gd is not None and kanal.isdigit() and name:
@@ -1044,6 +1159,8 @@ class QCCU:
                                     # und einem leeren Feld.
                                     "values": {f"{c}:{p}": v
                                                for (c, p), v in d.values.items()},
+                                    "master": {f"{c}:{p}": v
+                                               for (c, p), v in d.master.items()},
                                     "values_zeit": self._wert_zeit.get(a)}
                                 for a, d in self.devices.items()}}
         if self.warteraum:
@@ -1393,7 +1510,7 @@ class QCCU:
         # `FASSUNG` (die Form eines Parameters, fuer den Sendepfad) ist kein
         # Feld der Schnittstelle — ein Klient bekaeme ein Feld, das keine
         # Zentrale kennt.
-        return {p: ({k: v for k, v in e.items() if k != "FASSUNG"}
+        return {p: ({k: v for k, v in e.items() if k not in INTERN}
                     if isinstance(e, dict) else e)
                 for p, e in self.t.paramset_of(d.devtype, ch, paramset).items()}
 
@@ -1578,12 +1695,74 @@ class QCCU:
                 raise xmlrpc.client.Fault(-2, "Unknown channel")
             return self._put_values(addr, base, int(ch), d, values)
 
-        if ps.startswith("MASTER") or ps.startswith("LINK"):
+        if ps == "MASTER":
+            if not ch:
+                raise xmlrpc.client.Fault(-2, "Unknown channel")
+            return self._put_master(addr, base, int(ch), d, values)
+        if ps.startswith("LINK"):
             print(f"  ! putParamset {addr} {ps}: kein Schreibweg zum Geraet "
-                  f"(Konfiguration wird nicht uebertragen)")
+                  f"(Verknuepfungs-Konfiguration wird nicht uebertragen)")
             raise xmlrpc.client.Fault(
                 -5, f"Writing paramset {ps} to the device is not implemented")
         raise xmlrpc.client.Fault(-5, f"Unknown paramset {ps}")
+
+    on_put_master = None
+
+    def _put_master(self, addr, base, ch, d, values):
+        """Konfiguration (MASTER) an das Geraet schreiben — wie die Zentrale.
+
+        Die Zentrale baut aus den Parametern die Bytes der Konfigurationsliste
+        (`getConfigurationDataOfParameters`: Umrechner → physischer Wert,
+        `shiftLogicalToPhysical` → Lage im Byte, Bytes desselben Index werden
+        ODER-verknuepft) und schickt START_PARAMETER_SETTING, SET_PARAMETER_BY_
+        INDEX (hoechstens 14 Paare je Rahmen) und COMMIT_PARAMETER_SETTING
+        (`createDeviceConfigurationTransaction`). Ein Bitfeld teilt sich sein
+        Byte mit Nachbarn — die kommen aus dem gefuehrten Bestand (geschrieben
+        oder Vorgabe), sonst wuerden sie auf 0 gesetzt.
+
+        Rueckgabe wie die Zentrale: "" sofort; die Zustellung laeuft ueber das
+        Wartefach (schlafende Geraete beim naechsten Lebenszeichen), der
+        Bestand wird erst nach dem angenommenen COMMIT uebernommen.
+        """
+        beschr = self.t.paramset_of(d.devtype, ch, "MASTER") or {}
+        unbekannt = [p for p in values if p not in beschr]
+        if unbekannt:
+            raise xmlrpc.client.Fault(
+                -5, f"Unknown parameter(s): {', '.join(sorted(unbekannt))}")
+        nicht_schreibbar = [p for p in values if not (beschr[p].get("OPERATIONS", 0) & 2)]
+        if nicht_schreibbar:
+            raise xmlrpc.client.Fault(
+                -5, f"Parameter(s) not writable: {', '.join(sorted(nicht_schreibbar))}")
+        ohne_adresse = [p for p in values if not isinstance(beschr[p].get("ADRESSE"), dict)]
+        if ohne_adresse:
+            self.merke_ereignis("bad", f"{self.name_of(base, base)}:{ch}: kein Schreibweg fuer "
+                                       f"{', '.join(sorted(ohne_adresse))} — Tabellen ohne "
+                                       f"Adresse (Tabellenbau erneuern)")
+            raise xmlrpc.client.Fault(
+                -5, f"No proven way to write: {', '.join(sorted(ohne_adresse))}")
+        with self.lock:
+            bestand = {p: d.master.get((ch, p)) for p in beschr}
+        try:
+            listen = listenbytes(beschr, bestand, values)
+        except ValueError as ex:
+            self.merke_ereignis("bad", f"{self.name_of(base, base)}:{ch}: {ex}")
+            raise xmlrpc.client.Fault(-5, str(ex))
+        if self.on_put_master is None:
+            raise xmlrpc.client.Fault(-5, "No radio")
+        for liste, paare in sorted(listen.items()):
+            self.on_put_master(base, ch, liste, sorted(paare.items()), dict(values))
+        return ""
+
+    def master_uebernehmen(self, address, channel, values):
+        """Nach dem angenommenen COMMIT: die Werte in den Bestand nehmen."""
+        key = address.upper()
+        with self.lock:
+            d = self.devices.get(key)
+            if not d:
+                return
+            for p, v in values.items():
+                d.master[(int(channel), p)] = v
+        self._werte_sichern(sofort=True)
 
     def _put_values(self, addr, base, ch, d, values):
         """Einen SATZ von Werten schreiben — in EINEM Funkrahmen.

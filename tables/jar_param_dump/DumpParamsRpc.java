@@ -190,6 +190,28 @@ public class DumpParamsRpc {
                     if (pd.containsKey("VALUE_LIST")) withList++;
                     out.put(String.valueOf(pe.getKey()), pd);
                 }
+                /* Adresse und Umrechner der Konfigurationsparameter — fuer den
+                 * Schreibweg (START/SET_PARAMETER_BY_INDEX/COMMIT). Die
+                 * Zentrale setzt aus ihnen die Listenbytes zusammen
+                 * (`getConfigurationDataOfParameters`, `shiftLogicalToPhysical`).
+                 * Nie an Klienten: `getParamsetDescription` streicht sie. */
+                for (Object p : se.getValue()) {
+                    String pn = str(field(p, "channelParameter"));
+                    Object ln = field(p, "listNumber");
+                    if (pn == null || ln == null) continue;
+                    Object vorhanden = out.get(pn);
+                    if (!(vorhanden instanceof Map)) continue;
+                    Map<String, Object> pd = cast(vorhanden);
+                    Map<String, Object> adr = new TreeMap<>();
+                    adr.put("LISTE", ln);
+                    adr.put("BYTE", field(p, "indexByte"));
+                    adr.put("BIT", field(p, "indexBit"));
+                    adr.put("LAENGE_BYTE", field(p, "lengthByte"));
+                    adr.put("LAENGE_BIT", field(p, "lengthBit"));
+                    pd.put("ADRESSE", adr);
+                    Object conv = field(p, "typeConverter");
+                    if (conv != null) pd.put("UMRECHNER", umrechner(conv));
+                }
                 result.computeIfAbsent(chType, k -> new TreeMap<>()).put(psName, out);
             }
         }
@@ -265,6 +287,32 @@ public class DumpParamsRpc {
         if (min != null) pd.put("MIN", min);
         if (max != null) pd.put("MAX", max);
         return pd;
+    }
+
+    /** Der Typumwandler eines Parameters als Tabelle: Klasse und die Zahlen,
+     *  die seine Rechnung bestimmen (Faktor/Offset, Wahr/Falsch-Bytes,
+     *  Aufzaehlungswerte, Bitzahl). Was eine Klasse nicht hat, fehlt. */
+    static Map<String, Object> umrechner(Object conv) {
+        Map<String, Object> u = new TreeMap<>();
+        u.put("KLASSE", conv.getClass().getSimpleName());
+        Object ps = field(conv, "paramsSet");
+        if (!(ps instanceof Boolean) || (Boolean) ps) {
+            Object f = field(conv, "factor"); if (f != null) u.put("FAKTOR", f);
+            Object o = field(conv, "offset"); if (o != null) u.put("OFFSET", o);
+        }
+        Object tv = field(conv, "trueValue");  if (tv instanceof byte[]) u.put("WAHR", bytes((byte[]) tv));
+        Object fv = field(conv, "falseValue"); if (fv instanceof byte[]) u.put("FALSCH", bytes((byte[]) fv));
+        Object bm = field(conv, "bitmask");    if (bm instanceof Byte) u.put("MASKE", ((Byte) bm) & 0xFF);
+        Object es = field(conv, "enumStrings"); if (es instanceof String[]) u.put("WERTE", Arrays.asList((String[]) es));
+        Object ev = field(conv, "enumValues");  if (ev instanceof int[]) { List<Object> l = new ArrayList<>(); for (int x : (int[]) ev) l.add(x); u.put("ZAHLEN", l); }
+        Object nb = field(conv, "numberOfBits"); if (nb != null) u.put("BITS", nb);
+        return u;
+    }
+
+    static List<Object> bytes(byte[] b) {
+        List<Object> l = new ArrayList<>();
+        for (byte x : b) l.add(x & 0xFF);
+        return l;
     }
 
     /** IOOperations traegt die Bits READ=1, WRITE=2, EVENT=4. */
@@ -374,9 +422,19 @@ public class DumpParamsRpc {
             for (Object x : (Collection<?>) o) {
                 if (!first) b.append(", ");
                 first = false;
-                b.append(q(String.valueOf(x)));
+                b.append(val(x));             /* Zahlen bleiben Zahlen, Text wird zitiert */
             }
             return b.append("]").toString();
+        }
+        if (o instanceof Map) {               /* verschachtelte Tabellen (ADRESSE, UMRECHNER) */
+            StringBuilder b = new StringBuilder("{");
+            boolean first = true;
+            for (Map.Entry<?, ?> e : ((Map<?, ?>) o).entrySet()) {
+                if (!first) b.append(", ");
+                first = false;
+                b.append(q(String.valueOf(e.getKey()))).append(": ").append(val(e.getValue()));
+            }
+            return b.append("}").toString();
         }
         return q(String.valueOf(o));
     }
