@@ -1526,6 +1526,17 @@ class Radio:
             per_dev = saved
         for hmid, seq in per_dev.items():
             self.appseq[hmid] = (int(seq) + self.SEQ_STEP) & 0xFF
+        wartend = saved.get("wartend") if isinstance(saved, dict) else None
+        if isinstance(wartend, dict):
+            for hmid, eintraege in wartend.items():
+                gueltig = [{"cmd": str(e["cmd"]), "appseq": int(e["appseq"]),
+                            "versuche": int(e.get("versuche", 0))}
+                           for e in eintraege if isinstance(e, dict) and "cmd" in e and "appseq" in e]
+                if gueltig:
+                    self._wartend[str(hmid).lower()] = gueltig
+            if self.verbose and any(self._wartend.values()):
+                print("  Wartende Rahmen geladen: "
+                      + ", ".join(f"{h}: {len(v)}" for h, v in self._wartend.items() if v))
         if self.verbose and per_dev:
             print(f"  Zaehlerstaende geladen: "
                   + ", ".join(f"{h}={self.appseq[h]:#04x}" for h in per_dev)
@@ -1535,7 +1546,14 @@ class Radio:
         if not self.state_file:
             return
         with self.lock:
-            daten = {"appseq": dict(self.appseq), "mac_seq": self.mac_seq}
+            daten = {"appseq": dict(self.appseq), "mac_seq": self.mac_seq,
+                     # Was auf ein Lebenszeichen wartet, ueberlebt einen
+                     # Neustart: ein Ereignismelder, der seine Verknuepfung
+                     # nie bekommt, meldet nie etwas (SMI55-A, 03.09.2026 —
+                     # vier Rahmen beim Neustart verloren).
+                     "wartend": {h: [{"cmd": e["cmd"], "appseq": e["appseq"],
+                                      "versuche": e.get("versuche", 0)} for e in v]
+                                 for h, v in self._wartend.items() if v}}
         with self._state_lock:
             try:
                 tmp = self.state_file + ".tmp"
@@ -3972,6 +3990,9 @@ class Radio:
             self._wartend[hmid] = [e for e in offen if e["appseq"] != appseq]
             if not self._wartend[hmid]:
                 self._wartend.pop(hmid, None)
+            geaendert = len(offen) != len(self._wartend.get(hmid) or [])
+        if geaendert:
+            self._save_state()
         if eintrag is not None:
             eintrag["ergebnis"] = ergebnis
             eintrag["ev"].set()
@@ -4071,6 +4092,7 @@ class Radio:
             with self.lock:
                 self._wartend.setdefault(hmid, []).extend(
                     {"cmd": cmd, "appseq": seq, "versuche": 0} for seq, cmd in rahmen)
+            self._save_state()
             self._log("##", f"ZENTRALENVERKNUEPFUNG {addr} Kanal "
                             f"{', '.join(map(str, kanaele))}: {len(rahmen)} Rahmen "
                             f"warten auf ein Lebenszeichen (Hoerertyp {hoerer})")
@@ -4109,6 +4131,7 @@ class Radio:
                 self._wartend[hmid] = uebrig
             else:
                 self._wartend.pop(hmid, None)
+        self._save_state()
         if aufgegeben:
             self._log("##", f"WARTEND {aufgegeben} Befehl(e) an {hmid} "
                             f"aufgegeben (nach {LINK_VERSUCHE} Anlaeufen)")
@@ -4129,8 +4152,19 @@ class Radio:
             for e in senden:
                 gut = self._link_senden(hmid, e["appseq"], e["cmd"])
                 self._log("##", f"WARTEND appSeq=0x{e['appseq']:02X} an {hmid}: "
-                                + ("quittiert" if gut else "keine Annahme (Anlauf "
-                                   f"{e['versuche']}/{LINK_VERSUCHE})"))
+                                + ("quittiert" if gut is True else
+                                   "Kurzquittung, gilt als zugestellt" if gut else
+                                   f"keine Annahme (Anlauf {e['versuche']}/{LINK_VERSUCHE})"))
+                if gut:
+                    # Zugestellt — nicht beim naechsten Lebenszeichen erneut.
+                    with self.lock:
+                        rest = [x for x in (self._wartend.get(hmid) or [])
+                                if x["appseq"] != e["appseq"]]
+                        if rest:
+                            self._wartend[hmid] = rest
+                        else:
+                            self._wartend.pop(hmid, None)
+                    self._save_state()
         threading.Thread(target=lauf, name=f"nachreichen-{hmid}", daemon=True).start()
 
     def _link_senden(self, hmid, appseq, cmd):
@@ -4146,11 +4180,23 @@ class Radio:
         eintrag = {"ev": threading.Event(), "ergebnis": None}
         with self.lock:
             self._app_ack[(hmid, appseq)] = eintrag
+        # ⚠️ Die Kurzquittung zaehlt. HmIP-SCI und HmIP-SMI55-A (03.09.2026)
+        # beantworten einen CREATE_LINK zur Zentrale NIE mit einer ANSWER,
+        # quittieren ihn aber auf MAC-Ebene — und nehmen ihn an (danach kamen
+        # die Statusrahmen). Wer nur auf die ANSWER wartet, schickt denselben
+        # Rahmen dreimal und haelt ihn dann fuer verloren.
+        mac = threading.Event()
+        self._acked[hmid] = mac
         try:
             for versuch in range(1, LINK_VERSUCHE + 1):
                 eintrag["ev"].clear()
+                mac.clear()
                 self._submit(cmd, "cmd")
-                if eintrag["ev"].wait(LINK_ANTWORT_ZEIT):
+                if not eintrag["ev"].wait(LINK_ANTWORT_ZEIT) and mac.is_set():
+                    self._log("##", f"VERDRAHTUNG appSeq=0x{appseq:02X} Kurzquittung, "
+                                    f"keine ANSWER — gilt als zugestellt")
+                    return "mac"
+                if eintrag["ev"].is_set():
                     gut, klartext = antwort_deuten(eintrag["ergebnis"])
                     if not gut:
                         self._log("##", f"VERDRAHTUNG appSeq=0x{appseq:02X} "
@@ -4165,6 +4211,8 @@ class Radio:
         finally:
             with self.lock:
                 self._app_ack.pop((hmid, appseq), None)
+            if self._acked.get(hmid) is mac:
+                self._acked.pop(hmid, None)
         self._log("##", f"VERDRAHTUNG appSeq=0x{appseq:02X} ohne Antwort nach "
                         f"{LINK_VERSUCHE} Anlaeufen")
         return None
@@ -4241,6 +4289,7 @@ class Radio:
                 self._wartend[hmid] = [
                     {"cmd": cmd, "appseq": seq, "versuche": 0}
                     for seq, cmd in rahmen]
+            self._save_state()
             self._log("##", f"ANLERNEN Hoerertyp {hoerer} — {len(rahmen)} "
                             f"Verknuepfungsrahmen warten auf ein Lebenszeichen")
             if self.verbose:
