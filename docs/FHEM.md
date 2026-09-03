@@ -30,7 +30,7 @@ kann, steht in der [README](../README.md); Home Assistant daneben in
 ## Zwei Fallen beim Anschluss (am Aufbau gemessen, 19.08.2026)
 
 **HMCCU muss dieselbe Adresse tragen wie `ADVERTISE`.** Meldet QCCU sich als
-`10.10.11.113` und wird HMCCU mit einer anderen Adresse desselben Rechners
+`192.0.2.10` und wird HMCCU mit einer anderen Adresse desselben Rechners
 definiert (etwa `172.17.0.1` aus einem Container heraus), scheitert der Start
 des RPC-Servers mit `HMCCURPCPROC … HMCCU I/O device not found`: HMCCURPCPROC
 sucht sein I/O-Gerät über den Host, den die Zentrale meldet. Mit der
