@@ -150,12 +150,18 @@ angelernte Geräte überstehen es, Adresse und Schlüssel bleiben.)
 2010 offen? Läuft QCCU auf anderen Ports (`RPC_PORT`/`REGA_PORT`), findet
 HMCCU sie nicht.
 
-**`get ccu deviceinfo <adresse>` meldet „Execution of CCU script or command
-failed"** — erwartet: dieses Kommando schickt ein ReGa-Skript, das QCCU nicht
-kennt (`dom.GetObject(ID_DEVICES).Get(…)`), und Unbekanntes wird leer
-beantwortet. Der Betrieb hängt nicht daran: Geräte holen, anlegen, schalten
-und die Readings laufen. QCCU schreibt jedes unbekannte Skript mit `ReGa ?`
-ins Protokoll — wer eines vermisst, findet es dort.
+**`get ccu deviceinfo <adresse>`** wird seit 2026.9.1 beantwortet: je Kanal
+und Datenpunkt Name, Wertetyp, letzter bekannter Wert und die Rechte R/W/E, so
+wie HMCCU es von der CCU erwartet. Ältere Fassungen meldeten dafür „Execution
+of CCU script or command failed". Jedes andere unbekannte Skript schreibt QCCU
+weiterhin mit `ReGa ?` ins Protokoll — wer eines vermisst, findet es dort.
+
+**`set … ` schlägt mit „Generic error (RESPONSE_NAK)" fehl** — das Gerät hat
+den Befehl abgelehnt, und QCCU sagt es, statt den Wert trotzdem einzutragen
+(seit 2026.8.45). Typischer Fall: `BOOST_MODE` an einem Heizkörperthermostat,
+dessen Ventil noch nicht vermessen ist (`VALVE_STATE` ≠ `ADAPTION_DONE`).
+„Generic error (TIMEOUT)" heißt: keine Quittung vom Gerät, es ist als
+`UNREACH` gemeldet.
 
 ---
 

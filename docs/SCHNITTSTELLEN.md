@@ -56,6 +56,15 @@ ausgetragen.
 `system.listMethods`, `system.methodHelp`, `system.methodSignature`,
 `system.multicall`.
 
+**`setValue` und `putParamset VALUES` kehren erst mit dem Ausgang am Gerät
+zurück** (seit 2026.8.45, wie bei der CCU): angenommen → Wert eingetragen und
+als Ereignis gemeldet; vom Gerät abgelehnt → `Fault -1 "Generic error
+(RESPONSE_NAK)"`, der alte Wert bleibt; keine Quittung → `Fault -1 "Generic
+error (TIMEOUT)"` und `UNREACH`; kein belegter Sendeweg für diesen Parameter
+in dieser Form → `Fault -5 "No proven way to set …"`. Nur die Kurzquittung
+ohne Auskunft auf Anwendungsebene trägt nichts ein — der nächste Status des
+Geräts liefert den Wert. Die Wartezeit beträgt höchstens acht Sekunden.
+
 **Methoden, die leer antworten:** `getLinks`, `getLinkPeers`, `getLinkInfo`,
 `addLink`, `removeLink`, `setLinkInfo`, `getSuppressedServiceMessages`,
 `reportValueUsage`, `rssiInfo` — Direktverknüpfungen führt QCCU nicht.
@@ -108,9 +117,10 @@ nicht — Skripte dazu werden leer beantwortet.
 Jedes unbekannte Skript wird mit `ReGa ?` und seinen ersten Zeichen ins
 Protokoll geschrieben — so lässt sich feststellen, was ein Client vermisst.
 Belegtes Beispiel: `get ccu deviceinfo` in FHEM schickt ein Skript über
-`dom.GetObject(ID_DEVICES).Get(<adresse>)`; es steht nicht in der Tabelle und
-wird deshalb leer beantwortet, HMCCU meldet dann „Execution of CCU script or
-command failed".
+`dom.GetObject(ID_DEVICES).Get(<adresse>)` mit `HssType()`, `ValueType()` und
+`Operations()` je Datenpunkt — seit 2026.9.1 beantwortet (eine `D;`-Zeile für
+das Gerät, je Datenpunkt eine `C;`-Zeile mit sieben Feldern, wie
+`HMCCU_FormatDeviceInfo` sie liest).
 
 ---
 
