@@ -201,6 +201,25 @@ def _spannung(v):
     return v[0]
 
 
+def _beleuchtung(v):
+    """2 Byte (Handler, Faelle ILLUMINATION/BRIGHTNESS): Gleitpunkt zu Fuss.
+
+    Bit 7..6 des ersten Bytes sind der Exponent (0..3), die restlichen 14 Bit
+    die Mantisse; Wert = Mantisse * 10^Exponent (`handleIlluminationStatus`).
+    Zwei Mantissen sind Auskuenfte: 16383 unbekannt, 16382 Ueberlauf — bei
+    beiden loescht das Jar den Wert und meldet nur den Status. Was
+    herauskommt, ist noch der PHYSIKALISCHE Wert; die Umrechnung des
+    Parameters (Zehntel-Lux, bei der Fassung `slo` Hundertstel) folgt.
+    """
+    mantisse = ((v[0] & 0x3F) << 8) | v[1]
+    exponent = (v[0] >> 6) & 3
+    if mantisse == 16383:
+        return Sonder("UNKNOWN")
+    if mantisse == 16382:
+        return Sonder("OVERFLOW")
+    return mantisse * (10 ** exponent)
+
+
 def _zeitpunkt(p):
     """Vier Rohbyte eines Zeitpunkts als Text der Form DATUM_FORM.
 
@@ -291,6 +310,13 @@ UMRECHNUNG = {
     #   Fassung `highRes` (DoubleToInteger(100.0), zwei Byte) fuehrt im
     #   Bestand nur der HmIPW-DRAP am Draht; ueber Funk kommt sie nicht vor.
     "OPERATING_VOLTAGE": (10.0, 0.0),
+    # GeneralStateParameterFactory.createIllumination: DoubleToInteger(10.0)
+    # — Zehntel-Lux; MAX 163830. Die Fassung `slo` (createHighResolution-
+    # Illumination) rechnet in Hundertsteln, siehe `umrechnung()`.
+    "ILLUMINATION": (10.0, 0.0),
+    "CURRENT_ILLUMINATION": (10.0, 0.0),
+    "ILLUMINATION@slo": (100.0, 0.0),
+    "CURRENT_ILLUMINATION@slo": (100.0, 0.0),
     # Formen, die anders skalieren als der blanke Name (`umrechnung()`):
     # GeneralStateParameterFactory.createLevel16Bit: DoubleToInteger(50000.0)
     "LEVEL@shade": (50000.0, 0.0),
@@ -635,6 +661,17 @@ SDT_REGELN = {
         Regel("PARTY_TIME_END",
               lambda v: _zeitpunkt((v[2], v[3], v[4] & 0x0F, v[6]))),
     ),
+    # 15 ILLUMINATION und 33 BRIGHTNESS (je 2 Byte) — derselbe Handlerzweig.
+    # Das ZWEITE Vorkommen im selben Kanal ist die aktuelle Helligkeit
+    # (`statusDataTypeOccurence == 1` -> CURRENT_ILLUMINATION).
+    15: (
+        Regel("ILLUMINATION", _beleuchtung, vorkommen=0, status=True),
+        Regel("CURRENT_ILLUMINATION", _beleuchtung, vorkommen=1, status=True),
+    ),
+    33: (
+        Regel("ILLUMINATION", _beleuchtung, vorkommen=0, status=True),
+        Regel("CURRENT_ILLUMINATION", _beleuchtung, vorkommen=1, status=True),
+    ),
     # 22 FLAG_REGISTER_24 (3 Byte) — INTEGER 0..2^24-1, unveraendert.
     22: (
         Regel("WEEK_PROGRAM_CHANNEL_LOCKS", lambda v: _ganz(v)),
@@ -663,6 +700,9 @@ SDT_BELEGSTUFE = {
     13: ("mitschnitt", "BWTH-A (Gegenprobe: Handrechnung des Jars, am Geraet belegt); Kanaltyp-Zweige ohne Geraet ausgelassen"),
     14: ("mitschnitt", "eTRV-F meldet den Abwesenheitszeitraum zurueck, den QCCU selbst gesetzt hatte "
                        "(31.08.2026, vier Rahmen; Start 17:09 -> 17:10 wie im Jar gerundet)"),
+    15: ("mitschnitt", "SMI55-A beim Anlernen (03.09.2026): 0x39C0 = 1478,4 lx im Labor bei Tag; "
+                       "Gegenprobe durch Abdecken ausstehend"),
+    33: ("beschreibungstreu", "BRIGHTNESS: derselbe Handlerzweig wie ILLUMINATION, kein Geraet gesehen"),
     22: ("beschreibungstreu", "kein Geraet mit WEEK_PROGRAM_CHANNEL_LOCKS bisher auf der Luft"),
 }
 DEUTEN_AB = ("on-air", "mitschnitt", "fhem-zeuge", "beschreibungstreu")
@@ -2696,7 +2736,9 @@ class Radio:
                 # Jar liefert ihn als Zeichenkette, ohne Zahl dazwischen.
                 wert = roh
             else:
-                faktor, versatz = UMRECHNUNG.get(regel.param, (1.0, 0.0))
+                faktor, versatz = umrechnung(
+                    regel.param, self._variante(addr, channel, regel.param)
+                    if f"{regel.param}@" in "".join(k + " " for k in UMRECHNUNG) else "default")
                 wert = self._form(desc, (roh - versatz) / faktor, regel.param)
             if wert is None:
                 continue
