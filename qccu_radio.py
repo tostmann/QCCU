@@ -1356,6 +1356,7 @@ class Radio:
         # `PendingDeviceCommandsHolder`.
         self._wartend = {}
         self._zustellung = set()       # Geraete, an die gerade nachgereicht wird
+        self._antwort_offen = {}       # hmid -> letzter Quittungs-/Zeitauftrag an das Geraet
         self._tastenzaehler = {}       # (hmid, Kanal) -> letzter Tastenzaehler eines langen Drucks
         self._letzter_druck = {}       # (hmid, Kanal) -> (Zaehler, lang, respReq) — gegen Wiederholungen
         # Funkadresse -> nachzuholender Anlernabschluss, wenn die
@@ -2464,7 +2465,10 @@ class Radio:
 
         # Das Geraet ist WACH — jetzt geht hinaus, was auf es gewartet hat.
         # Die Reihenfolge ist die der Zentrale: erst die Quittung mit dem
-        # Wach-Bit, dann der Befehl.
+        # Wach-Bit, dann der Befehl. Die Quittung liegt `answer_delay` in der
+        # Zukunft und der Befehlsweg hat auf der Leitung Vorrang — der
+        # Nachreich-Faden wartet sie deshalb ausdruecklich ab
+        # (`_antwort_abwarten`), sonst ueberholt der Befehl die Quittung.
         if self._wartend.get(src.lower()):
             self._nachreichen(src.lower())
 
@@ -2983,12 +2987,37 @@ class Radio:
             # `ms…`/`mT…` wird zu `mb<stufe>s…`/`mb<stufe>T…`.
             cmd = f"mb{burst}{cmd[1:]}"
         job = _Job(cmd, kind, not_before, expect, burst)
+        if kind in ("answer", "zeit") and cmd.startswith("ms"):
+            # Merken, damit ein nachgereichter Befehl der Quittung den Vortritt
+            # laesst (`_antwort_abwarten`).
+            self._antwort_offen[cmd[2:8].lower()] = job
         # Antworten auf einen empfangenen Frame gehoeren in die Antwort-Schlange:
         # nur dort wird `not_before` eingehalten. Wer sofort zurueckfunkt, redet
         # womoeglich, bevor das Geraet wieder zuhoert — die echte Zentrale
         # laesst rund 130 ms verstreichen.
         (self._ansq if kind in ("answer", "zeit") else self._txq).put(job)
         return job
+
+    def _antwort_abwarten(self, hmid, frist=0.6):
+        """Warten, bis die Quittung an dieses Geraet draussen ist.
+
+        Die Zentrale reiht erst die ANSWER (mit dem Wach-Bit) ein und stoesst
+        dann die wartenden Daten an (`handleApplicationFrame`: das
+        `createApplicationResponseTransaction` steht vor dem
+        `PENDING_DATA_COMMAND`). Auf der Leitung hier hatte der Befehlsweg
+        Vorrang vor dem Antwortweg, und die Quittung liegt ohnehin
+        `answer_delay` zurueck — ein nachgereichter CREATE_LINK ging darum VOR
+        der Quittung hinaus. Zwei Geraete haben ihn dann nicht angenommen:
+        der HmIP-SCI nie (sechs Sendungen, keine einzige Kurzquittung, nur
+        unsere ANSWER-Rahmen wurden quittiert; 03.09.2026 11:40 und 11:52),
+        der HmIP-SMI55-A erst bei der Wiederholung nach der Quittung (12:08:39,
+        Kurzquittung 7DA0 galt der ANSWER, 7DA1 dem zweiten Link). Der WRC6-A
+        nahm auch den frueheren an — auf ihn ist kein Verlass fuer die Regel.
+        """
+        job = self._antwort_offen.get(hmid.lower())
+        if job is None or job.done.is_set():
+            return
+        job.done.wait(frist)
 
     def _wach_bit(self, hmid):
         """`APP_STAY_AWAKE`, wenn fuer dieses Geraet noch etwas aussteht.
@@ -4230,6 +4259,7 @@ class Radio:
         # hinaus — das Geraet weiss dann, dass noch etwas kommt.
         def lauf():
           try:
+            self._antwort_abwarten(hmid)
             for e in senden:
                 gut = self._link_senden(hmid, e["appseq"], e["cmd"])
                 self._log("##", f"WARTEND appSeq=0x{e['appseq']:02X} an {hmid}: "
