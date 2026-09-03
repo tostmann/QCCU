@@ -93,6 +93,10 @@ KONFIG_ANFRAGEN = {
 # Ein frisch angelerntes Geraet fragt die Zeit an und verlangt Antwort; die
 # CCU schickt ihr einen TIME_INFO-Frame zurueck, KEIN ANSWER.
 FT_TIME_INFO = 35
+# Die Frage nach dem Zustand eines Kanals. Nutzlast: EIN Byte, der Kanal
+# (`RequestStatusFrame`, `createRequestStatus`). Das Geraet antwortet mit
+# seinem STATUS — dieselben Rahmen, die es von selbst schickt.
+FT_STATUS_REQUEST = 33
 
 # NetworkManagementFrameType — Werte aus denselben Jar-Enums. Der Ausschluss
 # eines Geraets laeuft in drei Schritten, alle ohne Nutzlast.
@@ -721,8 +725,11 @@ SDT_BELEGSTUFE = {
     # der Messung. Waeren es Zehntel, kaeme 519,5 lx heraus — fuer einen
     # hellen Raum ebenso plausibel. Fuer „on-air" fehlt ein Wert in einer
     # anderen Groessenordnung (abgedeckt oder Tageslicht).
-    33: ("mitschnitt", "SMO230-A: 51,95 und 45,98 lx an vier Kanaelen; "
-                       "Skala (Fassung slo) noch aus der Tabelle, nicht gemessen"),
+    33: ("on-air", "SMO230-A (03.09.2026): 51,95 / 45,98 / 0,57 lx — der Sprung um "
+                   "Faktor 91 beim Abdunkeln belegt Mantisse und Exponent ueber zwei "
+                   "Groessenordnungen. Die FASSUNG (slo = Hundertstel) stammt weiter aus "
+                   "der Kanaltyp-Tabelle: bei Zehnteln kaemen 519,5 / 5,7 lx heraus, was "
+                   "fuer denselben Raum ebenso plausibel waere"),
     22: ("beschreibungstreu", "SMO230-A meldete WEEK_PROGRAM_CHANNEL_LOCKS=0 — "
                               "eine Null belegt weder Bitlage noch Skala"),
 }
@@ -3740,6 +3747,46 @@ class Radio:
     # ⚠️ Muss den Weckvorlauf abdecken: 356 ms Vorlauf plus Laufzeit plus die
     # Kurzquittung des Geraets. Mit 1,0 s blieb bei Hoerertyp 3/11 keine Luft.
     PING_WARTEN = 2.0
+
+    def status_anfragen(self, hmid, kanal, warten=2.0):
+        """Einen Kanal nach seinem Zustand fragen (STATUS_REQUEST).
+
+        Die Zentrale nutzt das, um einen Wert zu holen, statt auf den
+        naechsten Rahmen des Geraets zu warten. Fuer uns ist es zusaetzlich
+        die trennscharfe Probe, wenn ein Geraet auf Befehle schweigt: kommt
+        auf die Frage ein STATUS, arbeitet seine Anwendungsschicht, und das
+        Schweigen liegt am Befehl — bleibt auch sie still, liegt es tiefer.
+
+        Rueckgabe: True (Status kam), False (nichts), None (Geraet unbekannt).
+        """
+        hmid = (hmid or "").lower()
+        if hmid not in self.by_hmid:
+            return None
+        addr = self.by_hmid[hmid]
+        vorher = None
+        d = (getattr(self.qccu, "devices", None) or {}).get(addr)
+        if d is not None:
+            vorher = dict(getattr(d, "values", {}) or {})
+        seq = self._next_seq(hmid)
+        kopf = FT_STATUS_REQUEST | APP_RESP_REQ
+        ev = threading.Event()
+        eintrag = {"ev": ev, "ergebnis": None}
+        with self.lock:
+            self._app_ack[(hmid, seq)] = eintrag
+        try:
+            self._submit(f"ms{hmid.upper()}{kopf:02X}{seq:02X}{int(kanal):02X}",
+                         "cmd", burst=self._burst_stufe(f"ms{hmid.upper()}"))
+            ev.wait(warten)
+        finally:
+            with self.lock:
+                self._app_ack.pop((hmid, seq), None)
+        # Geantwortet hat das Geraet, wenn eine ANSWER kam ODER sich Werte
+        # geaendert haben (der STATUS laeuft durch den normalen Empfangsweg).
+        nachher = dict(getattr(d, "values", {}) or {}) if d is not None else {}
+        gekommen = bool(eintrag["ev"].is_set()) or (nachher != vorher)
+        self._log("##", f"STATUSFRAGE {hmid}:{kanal} -> "
+                        + ("Antwort" if gekommen else "keine Antwort"))
+        return gekommen
 
     def _hoerertyp(self, hmid):
         """Der Hoerertyp eines Geraets, oder 0 (staendiger Hoerer), wenn er

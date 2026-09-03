@@ -1328,6 +1328,19 @@ class WebHandler(BaseHTTPRequestHandler):
                               else {"ok": True, "gesetzt": gesetzt},
                               409 if err else 200)
 
+        if self.path == "/api/pruefstand/statusfrage":
+            # Einen Kanal nach seinem Zustand fragen — die trennscharfe Probe,
+            # wenn ein Geraet auf Befehle schweigt.
+            if not self.radio:
+                return self._json({"error": "kein Funk angebunden"}, 409)
+            adresse = str(body.get("address") or "").upper()
+            with self.radio.lock:
+                rf = {a: h for h, a in self.radio.by_hmid.items()}.get(adresse)
+            if not rf:
+                return self._json({"error": "Geraet hat keine Funkadresse"}, 409)
+            erg = self.radio.status_anfragen(rf, int(body.get("channel", 0)))
+            return self._json({"ok": True, "antwortet": erg})
+
         if self.path == "/api/pruefstand/zentralenlink":
             # Die Verknuepfung zur Zentrale fuer ein schon angelerntes Geraet
             # nachholen (Sender-Kanaele laut Tabelle, oder `channels`).
