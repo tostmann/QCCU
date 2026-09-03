@@ -66,6 +66,11 @@ CNT_KEYS = ("rx", "ok", "mic", "dup", "acks", "k6tx", "k6rx", "akdop",
 FT_CONFIGURATION = 1
 FT_ANSWER = 2
 FT_STATUS = 5
+# Schaltbefehle eines Senders an seinen Verknuepfungspartner — so kommt ein
+# Tastendruck bei der Zentrale an (ApplicationFrameType 8/9/10).
+FT_SWITCH_UNCOND = 8
+FT_SWITCH_COND = 9
+FT_LEVEL_CMD = 10
 # Untertyp eines CONFIGURATION-Rahmens (Byte nach dem Anwendungskopf), aus
 # `ConfigurationRequestType` im HMIPServer-Jar. Vom Geraet kommt vor allem
 # REQUEST_CONFIG_UPDATE (0x0F): „ich bin wach, schick mir, was du fuer mich
@@ -1351,6 +1356,8 @@ class Radio:
         # `PendingDeviceCommandsHolder`.
         self._wartend = {}
         self._zustellung = set()       # Geraete, an die gerade nachgereicht wird
+        self._tastenzaehler = {}       # (hmid, Kanal) -> letzter Tastenzaehler eines langen Drucks
+        self._letzter_druck = {}       # (hmid, Kanal) -> (Zaehler, lang, respReq) — gegen Wiederholungen
         # Funkadresse -> nachzuholender Anlernabschluss, wenn die
         # Bestaetigung ausgeblieben ist.
         self._nachtrag = {}
@@ -2376,6 +2383,19 @@ class Radio:
             self._log("<<", f"KONFIGURATION {art} von {src} appSeq=0x{pt[1]:02X}"
                             + (f" Daten={pt[4:].hex().upper()}" if len(pt) > 4 else ""))
 
+        # Ein Tastendruck: der Sender schickt seinem Verknuepfungspartner —
+        # uns, seit die Zentralenverknuepfung steht — einen Schaltbefehl.
+        # Nutzlast nach dem Kopf: Byte 0 = LOW_BAT (0x80) | lang (0x40) |
+        # Kanal (0x3F), Byte 1 = Tastenzaehler (`UnconditionalSwitchCommandFrame`).
+        # Die Zentrale macht daraus (`handleCentralDeviceCommand`): kurz ->
+        # PRESS_SHORT; lang: neuer Zaehler -> PRESS_LONG_START, jede
+        # Wiederholung -> PRESS_LONG, der letzte Rahmen mit Antwortwunsch ->
+        # PRESS_LONG_RELEASE. Am HmIP-WRC6-A gemessen (03.09.2026, 12:25):
+        # kurz `88 09 01 02`, lang `08 0A..0F 41 03` im 250-ms-Takt, Ende
+        # `88 0F 41 03`.
+        if (pt[0] & 0x3F) in (FT_SWITCH_UNCOND, FT_SWITCH_COND, FT_LEVEL_CMD) and len(pt) > 3:
+            self._tastendruck(src.lower(), pt)
+
         # Die ANSWER des Geraets — die Auskunft, ob es einen Frame ANGENOMMEN
         # hat. Zugeordnet ueber die appSeq, wie im Jar; Nutzlast 0 heisst ACK,
         # alles andere ist eine Ablehnung.
@@ -2617,6 +2637,55 @@ class Radio:
         if isinstance(desc, dict) and desc.get("FASSUNG"):
             return str(desc["FASSUNG"])
         return "default"
+
+    def _tastendruck(self, hmid, pt):
+        """Einen Schaltbefehl des Senders als Tastenereignis melden."""
+        addr = self.by_hmid.get(hmid)
+        if not addr:
+            return
+        lang = bool(pt[2] & 0x40)
+        kanal = pt[2] & 0x3F
+        zaehler = pt[3]
+        resp = bool(pt[0] & 0x80)
+        art = {FT_SWITCH_UNCOND: "Schaltbefehl", FT_SWITCH_COND: "bedingter Schaltbefehl",
+               FT_LEVEL_CMD: "Pegelbefehl"}[pt[0] & 0x3F]
+        schluessel = (hmid, kanal)
+        # Eine Wiederholung desselben Rahmens ist kein zweiter Druck. Der Jar
+        # erkennt sie an appSeq, Rahmenart und Antwortwunsch
+        # (`FrameHistoryEntry.isDuplicate`) — NICHT am Tastenzaehler: der bleibt
+        # waehrend eines langen Drucks ueber alle Rahmen gleich, und der
+        # Schlussrahmen traegt sogar dieselbe appSeq wie der letzte laufende,
+        # nur mit Antwortwunsch.
+        marke = (pt[1], pt[0] & 0x3F, resp)
+        if self._letzter_druck.get(schluessel) == marke:
+            self._log("<<", f"TASTE {addr}:{kanal} {art} wiederholt (appSeq 0x{pt[1]:02X}) — kein neues Ereignis")
+            return
+        self._letzter_druck[schluessel] = marke
+        if pt[2] & 0x80:
+            self.qccu.set_value_internal(addr, 0, "LOW_BAT", True)
+        ereignisse = []
+        if not lang:
+            ereignisse.append("PRESS_SHORT")
+        else:
+            letzter = self._tastenzaehler.get(schluessel)
+            if letzter != zaehler:
+                self._tastenzaehler[schluessel] = zaehler
+                ereignisse.append("PRESS_LONG_START")
+            ereignisse.append("PRESS_LONG")
+            if resp:
+                ereignisse.append("PRESS_LONG_RELEASE")
+                self._tastenzaehler.pop(schluessel, None)
+        gemeldet = []
+        for name in ereignisse:
+            if self._beschreibung(addr, kanal, name) is None:
+                continue
+            self.qccu.set_value_internal(addr, kanal, name, True)
+            gemeldet.append(name)
+        self._log("<<", f"TASTE {addr}:{kanal} {art} {'lang' if lang else 'kurz'} "
+                        f"Zaehler {zaehler}{' Ende' if lang and resp else ''} -> "
+                        + (", ".join(gemeldet) if gemeldet else "kein Tastenkanal, nicht gemeldet"))
+        if self.verbose and gemeldet:
+            print(f"  <- {addr}:{kanal} {' '.join(gemeldet)}")
 
     def _form_unbekannt(self, ccu_address, channel, param, fassung):
         """LAUT ablehnen: Form ohne belegten Stellbefehl — nichts senden.
