@@ -1599,12 +1599,22 @@ class QCCU:
                                 else f"{name} ist wieder da")
             self._notify(f"{key}:0", "UNREACH", not reachable)
 
+    # Was ausser UNREACH als Dienstmeldung gilt: die Wartungswerte des
+    # Kanals 0, die ein Eingreifen verlangen. LOW_BAT und SABOTAGE meldet das
+    # Geraet selbst (HmIP-SCI, 03.09.2026: SABOTAGE=true beim Anlernen mit
+    # offenem Gehaeuse); die Zentrale von eq-3 fuehrt beide ebenfalls als
+    # Dienstmeldung. Nur, wenn der Wert WAHR ist.
+    DIENSTMELDUNGEN = ("LOW_BAT", "SABOTAGE")
+
     def getServiceMessages(self, *rest):
         out = []
         with self.lock:
             for a, d in self.devices.items():
                 if d.unreach:
                     out.append([f"{a}:0", "UNREACH", True])
+                for name in self.DIENSTMELDUNGEN:
+                    if d.values.get((0, name)) is True:
+                        out.append([f"{a}:0", name, True])
         return out
 
     def getSuppressedServiceMessages(self, *rest):
