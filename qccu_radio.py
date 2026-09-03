@@ -1362,6 +1362,7 @@ class Radio:
         self._wartend = {}
         self._zustellung = set()       # Geraete, an die gerade nachgereicht wird
         self._antwort_offen = {}       # hmid -> letzter Quittungs-/Zeitauftrag an das Geraet
+        self._zuletzt = {}             # hmid -> zuletzt an das Geraet GESCHRIEBENER Auftrag
         self._tastenzaehler = {}       # (hmid, Kanal) -> letzter Tastenzaehler eines langen Drucks
         self._letzter_druck = {}       # (hmid, Kanal) -> (Zaehler, lang, respReq) — gegen Wiederholungen
         # Funkadresse -> nachzuholender Anlernabschluss, wenn die
@@ -2200,6 +2201,16 @@ class Radio:
         if mk:
             peer = mk.group(1).lower()
             ev = self._acked.get(peer)
+            # Die Kurzquittung gilt dem Rahmen, den wir dem Geraet ZULETZT
+            # geschrieben haben. War das unsere Quittung oder Zeitauskunft auf
+            # einen Rahmen des Geraets, zaehlt sie nicht fuer den wartenden
+            # Befehl — sonst gilt ein nie quittierter START als zugestellt
+            # (WRC6-A 03.09.2026 14:45: PK der ANSWER auf REQUEST_CONFIG_UPDATE
+            # dem START zugerechnet, SET danach mit NAK abgelehnt).
+            job = self._zuletzt.get(peer)
+            if ev and job is not None and job.kind != "cmd":
+                self._log("##", f"Kurzquittung von {peer} — gilt der {job.kind}, nicht dem Befehl")
+                return
             if ev:
                 self._log("##", f"Kurzquittung von {peer}")
                 ev.set()
@@ -2920,6 +2931,14 @@ class Radio:
 
             with self._pending_lock:
                 self._pending = job
+            try:
+                # ms<hmid>…, mT<len><hmid>…, mb<stufe>s<hmid>… (Burst-Umschrift in `_submit`)
+                ziel = (job.cmd[2:8] if job.cmd.startswith("ms") else
+                        job.cmd[4:10] if job.cmd[:2] in ("mT", "mb") else "")
+                if len(ziel) == 6:
+                    self._zuletzt[ziel.lower()] = job
+            except Exception:                    # noqa: BLE001
+                pass
             try:
                 self.ser.write(job.cmd.encode() + b"\r\n")
                 self.ser.flush()
