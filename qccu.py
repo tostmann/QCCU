@@ -1402,7 +1402,8 @@ class QCCU:
             return {}
         pset = str(paramset).upper()
         src = d.master if pset == "MASTER" else d.values
-        gesetzt = {p: v for (c, p), v in src.items() if c == int(ch)}
+        gesetzt = {p: v for (c, p), v in src.items() if c == int(ch)
+                   and not (pset != "MASTER" and self._ist_ereignis(d, ch, p))}
         if pset != "MASTER":
             return gesetzt
         # ⚠️ Bei MASTER liefert eine Zentrale von eQ-3 zu JEDEM beschriebenen
@@ -1424,6 +1425,15 @@ class QCCU:
         aus_beschreibung.update(gesetzt)
         return aus_beschreibung
 
+    def _ist_ereignis(self, d, ch, param):
+        """Ist der Parameter vom Typ ACTION — ein Ereignis, das nie einen
+        Wert hat? (Auch dann, wenn ein aelterer Stand einen abgelegt hat.)"""
+        try:
+            return (self.t.paramset_of(d.devtype, int(ch), "VALUES") or {}
+                    ).get(param, {}).get("TYPE") == "ACTION"
+        except Exception:                        # noqa: BLE001
+            return False
+
     def getValue(self, address, param):
         """Einen Wert lesen — mit den Fehlern der Zentrale.
 
@@ -1442,6 +1452,8 @@ class QCCU:
         if not ch:
             raise xmlrpc.client.Fault(-5, f"Unknown Parameter for value key: {param}")
         v = d.values.get((int(ch), param))
+        if v is not None and self._ist_ereignis(d, ch, param):
+            v = None                             # ein Ereignis hat keinen Wert
         if v is None:
             try:
                 bekannt = param in self.getParamsetDescription(f"{base}:{ch}", "VALUES")
