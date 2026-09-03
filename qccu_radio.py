@@ -63,8 +63,22 @@ TX_NO = re.compile(r"^(?:Pm (?:ERR|NUR-LESEN)|\?\s*$)")
 CNT_KEYS = ("rx", "ok", "mic", "dup", "acks", "k6tx", "k6rx", "akdop",
             "fwd", "tx", "txerr")
 
+FT_CONFIGURATION = 1
 FT_ANSWER = 2
 FT_STATUS = 5
+# Untertyp eines CONFIGURATION-Rahmens (Byte nach dem Anwendungskopf), aus
+# `ConfigurationRequestType` im HMIPServer-Jar. Vom Geraet kommt vor allem
+# REQUEST_CONFIG_UPDATE (0x0F): „ich bin wach, schick mir, was du fuer mich
+# hast" — am HmIP-SCI kurz nach dem Anlernen gemessen (03.09.2026).
+KONFIG_ANFRAGEN = {
+    1: "CREATE_LINK", 2: "REMOVE_LINK", 3: "REQUEST_LINK_PARTNER_LIST",
+    4: "CONFIGURATION_DATA_REQUEST", 5: "START_PARAMETER_SETTING",
+    6: "COMMIT_PARAMETER_SETTING", 7: "SET_PARAMETER_BY_OFFSET",
+    8: "SET_PARAMETER_BY_INDEX", 9: "REQUEST_REPORT_SGTIN",
+    10: "RESPONSE_LINK_PARTNER_LIST", 11: "RESPONSE_CONFIGURATION_DATA",
+    12: "REPORT_CONFIGURATION_CHANGE", 14: "REPORT_LINK_PARTNER_PROBLEM",
+    15: "REQUEST_CONFIG_UPDATE",
+}
 # ApplicationFrameType.TIME_INFO — Wert aus den Enums des HMIPServer-Jars.
 # Ein frisch angelerntes Geraet fragt die Zeit an und verlangt Antwort; die
 # CCU schickt ihr einen TIME_INFO-Frame zurueck, KEIN ANSWER.
@@ -2291,6 +2305,17 @@ class Radio:
 
         with self.lock:
             self.devseq[src.lower()] = pt[1]
+
+        # Ein CONFIGURATION-Rahmen vom Geraet: der Untertyp steht im Byte
+        # nach dem Anwendungskopf. Der Handler des Jars tut bei
+        # REQUEST_CONFIG_UPDATE nichts Eigenes — die Zentrale quittiert und
+        # schickt, was fuer das Geraet wartet; hier uebernimmt das
+        # `_nachreichen` ueber das Lebenszeichen. Benannt wird er trotzdem,
+        # damit im Protokoll steht, WAS das Geraet wollte.
+        if (pt[0] & 0x3F) == FT_CONFIGURATION and len(pt) > 3:
+            art = KONFIG_ANFRAGEN.get(pt[3], f"Untertyp 0x{pt[3]:02X}")
+            self._log("<<", f"KONFIGURATION {art} von {src} appSeq=0x{pt[1]:02X}"
+                            + (f" Daten={pt[4:].hex().upper()}" if len(pt) > 4 else ""))
 
         # Die ANSWER des Geraets — die Auskunft, ob es einen Frame ANGENOMMEN
         # hat. Zugeordnet ueber die appSeq, wie im Jar; Nutzlast 0 heisst ACK,
