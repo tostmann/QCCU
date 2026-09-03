@@ -245,6 +245,37 @@ def channel_type_fassungen(devdir):
     return out, files
 
 
+def channel_type_rollen(devdir):
+    """Aus den channel_type_*.xml: Kanaltyp/vN -> Link-Rolle (SENDER, RECEIVER, NONE).
+
+    Die Rolle entscheidet, ob ein Kanal Ereignisse an Verknuepfungspartner
+    schickt. Die Zentrale von eq-3 legt fuer SENDER-Kanaele eine Verknuepfung
+    zu sich selbst an (`DeviceUtil.createCentralLink`: nur, wenn `getLinkRole()
+    != NONE`) — ohne sie meldet ein Fensterkontakt sein Ereignis nicht als
+    STATUS, sondern bittet nur um seine Konfiguration (HmIP-SCI, 03.09.2026).
+    Aus dem Namen laesst sich die Rolle nicht ableiten: TRANSCEIVER ist
+    33-mal SENDER, 8-mal RECEIVER, 7-mal ohne.
+    """
+    out = {}
+    for root, _, names in os.walk(devdir):
+        for name in names:
+            if not (name.startswith("channel_type_") and name.endswith(".xml")):
+                continue
+            try:
+                tree = ET.parse(os.path.join(root, name))
+            except ET.ParseError:
+                continue
+            ch = tree.getroot()
+            if ch.tag != "channel" or not ch.get("type"):
+                continue
+            key = ch.get("type")
+            if ch.get("typeversion"):
+                key = f"{key}/v{ch.get('typeversion')}"
+            link = ch.find("link")
+            out[key] = (link.get("role") if link is not None and link.get("role") else "NONE").strip().upper()
+    return out
+
+
 def main():
     a = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -350,6 +381,13 @@ def main():
     print(f"  fehlende Grenzen ergaenzt:         {ergaenzt} Felder")
     print(f"  device_*.xml gelesen:              {nfiles}")
     print(f"  channel_type_*.xml gelesen:        {nct}, Form an {mit_fassung} Parametern")
+    rollen = channel_type_rollen(g.devicedir)
+    rollen_pfad = os.path.join(os.path.dirname(os.path.abspath(g.out)), "kanalrollen.json")
+    with open(rollen_pfad + ".tmp", "w", encoding="utf-8") as fh:
+        json.dump(dict(sorted(rollen.items())), fh, indent=1)
+        fh.flush(); os.fsync(fh.fileno())
+    os.replace(rollen_pfad + ".tmp", rollen_pfad)
+    print(f"  Link-Rollen der Kanaltypen:        {len(rollen)} -> {os.path.basename(rollen_pfad)}")
     print(f"  Kanaltypen gesamt:                 {len(merged)}")
     print(f"  aus den Geraete-XML aufgeloest:    {added} Parameter (Bestand)")
     if unresolved:

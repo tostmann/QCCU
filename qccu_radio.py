@@ -3847,6 +3847,13 @@ class Radio:
         # Die Verknuepfungen erst spaeter — zu frueh gesendet nimmt das Geraet
         # sie nicht an (am echten Geraet gemessen).
         self._verdrahten(bytes.fromhex(hmid), devtype, opmode, fassung)
+        # Und die Verknuepfung der Sender-Kanaele zur Zentrale — sonst
+        # schickt ein Ereignismelder seine Ereignisse nicht (HmIP-SCI).
+        try:
+            self.zentralen_verknuepfen(ccu_addr, opmode=opmode,
+                                       devtype=devtype, fassung=fassung)
+        except Exception as ex:                          # noqa: BLE001
+            self._log("##", f"ZENTRALENVERKNUEPFUNG scheiterte: {ex}")
 
         self.spuren_raeumen(src, ccu_addr)
 
@@ -3912,6 +3919,114 @@ class Radio:
         if eintrag is not None:
             eintrag["ergebnis"] = ergebnis
             eintrag["ev"].set()
+
+    # Der „Kanal" der Zentrale in einer Verknuepfung — so fuehrt ihn das Jar
+    # (`channel.getLinkPartner("CENTRAL_DEVICE", 63)`).
+    ZENTRALE_KANAL = 0x3F
+
+    def _zentralen_rahmen(self, hmid, kanal, appseq):
+        """CREATE_LINK vom Geraetekanal zur Zentrale, wie
+        `createCreateCentralDeviceLinkTransaction` ihn baut: Partner ist die
+        Adresse der Zentrale (HM_ADDRESS, drei Byte ohne Typbyte), Daten A der
+        Kanal 63 der Zentrale, Daten B 0, Betriebsart PERMANENT_LISTENER mit
+        gesetztem Bit 7 (0x80)."""
+        return (f"ms{hmid.upper()}C1{appseq:02X}{kanal:02X}01"
+                f"{self.own_addr.upper()}{self.ZENTRALE_KANAL:02X}0080")
+
+    def zentralen_verknuepfen(self, ccu_address, kanaele=None, opmode=None,
+                              devtype=None, fassung=None):
+        """Die Verknuepfung Geraetekanal -> Zentrale anlegen.
+
+        ⚠️ Ohne sie meldet ein Sender-Kanal sein Ereignis NICHT als STATUS.
+        Am HmIP-SCI gemessen (03.09.2026): zwei Kontaktwechsel nach dem
+        Anlernen ergaben zwei REQUEST_CONFIG_UPDATE und keinen Statusrahmen.
+        Die Zentrale von eq-3 legt diese Verknuepfung nicht beim Anlernen an,
+        sondern sobald ein Klient den Wert beobachtet (`reportValueUsage`);
+        da QCCU keine ReGa hat, die das fuer jeden Datenpunkt tut, geschieht
+        es hier beim Anlernen fuer alle Kanaele mit Link-Rolle SENDER — und
+        auf Zuruf fuer aeltere Geraete.
+
+        Welche Kanaele: `kanaele`, sonst alle mit Rolle SENDER laut Tabelle.
+        Ein Geraet, das nicht staendig hoert, bekommt die Rahmen ueber die
+        Warteliste beim naechsten Lebenszeichen — genau dann, wenn es mit
+        REQUEST_CONFIG_UPDATE danach fragt.
+        Rueckgabe: Liste der Kanaele, fuer die ein Rahmen gebaut wurde.
+        """
+        addr = ccu_address.upper()
+        hmid = None
+        with self.lock:
+            for h, a in self.by_hmid.items():
+                if a == addr:
+                    hmid = h
+                    break
+        if not hmid:
+            self._log("##", f"ZENTRALENVERKNUEPFUNG {addr}: keine Funkadresse")
+            return []
+        d = (getattr(self.qccu, "devices", None) or {}).get(addr)
+        if devtype is None and d is not None:
+            devtype = d.devtype
+        if fassung is None and d is not None:
+            fassung = getattr(d, "fassung", None)
+        if opmode is None and d is not None:
+            opmode = getattr(d, "opmode", None)
+        eintrag = None
+        try:
+            eintrag = self.t.fuer_geraet(devtype, fassung)
+        except Exception:                                # noqa: BLE001
+            pass
+        if kanaele is None:
+            kanaele = []
+            unbekannt = []
+            try:
+                for idx in self.t.channels_of(devtype, eintrag):
+                    rolle = self.t.rolle_of(devtype, idx, eintrag)
+                    if rolle is None:
+                        unbekannt.append(int(idx))
+                    elif rolle == "SENDER":
+                        kanaele.append(int(idx))
+            except Exception as ex:                      # noqa: BLE001
+                self._log("##", f"ZENTRALENVERKNUEPFUNG {addr}: Rollen nicht lesbar: {ex}")
+                return []
+            if unbekannt and not kanaele:
+                self._log("##", f"ZENTRALENVERKNUEPFUNG {addr}: Link-Rollen unbekannt "
+                                f"(Tabelle ohne kanalrollen.json) — nichts angelegt")
+                merke = getattr(self.qccu, "merke_ereignis", None)
+                if merke:
+                    merke("warn", "Die Gerätetabellen kennen die Link-Rollen der "
+                                  "Kanäle nicht — Ereignismelder melden ohne "
+                                  "Verknüpfung zur Zentrale keine Ereignisse. "
+                                  "Tabellen neu anlegen.")
+                return []
+        kanaele = [int(k) for k in kanaele]
+        if not kanaele:
+            self._log("##", f"ZENTRALENVERKNUEPFUNG {addr}: kein Sender-Kanal")
+            return []
+        with self.lock:
+            appseq = (self.appseq.get(hmid, LINK_APPSEQ_START - LINK_APPSEQ_SCHRITT)
+                      + LINK_APPSEQ_SCHRITT) & 0xFF
+            rahmen = []
+            for k in kanaele:
+                rahmen.append((appseq, self._zentralen_rahmen(hmid, k, appseq)))
+                appseq = (appseq + LINK_APPSEQ_SCHRITT) & 0xFF
+            self.appseq[hmid] = (appseq - LINK_APPSEQ_SCHRITT) & 0xFF
+        self._save_state()
+        hoerer = (opmode & 0x0F) if opmode is not None else None
+        if hoerer is None or hoerer in LM_NICHT_STAENDIG:
+            with self.lock:
+                self._wartend.setdefault(hmid, []).extend(
+                    {"cmd": cmd, "appseq": seq, "versuche": 0} for seq, cmd in rahmen)
+            self._log("##", f"ZENTRALENVERKNUEPFUNG {addr} Kanal "
+                            f"{', '.join(map(str, kanaele))}: {len(rahmen)} Rahmen "
+                            f"warten auf ein Lebenszeichen (Hoerertyp {hoerer})")
+            return kanaele
+        angenommen = 0
+        for seq, cmd in rahmen:
+            time.sleep(LINK_PAUSE)
+            if self._link_senden(hmid, seq, cmd):
+                angenommen += 1
+        self._log("##", f"ZENTRALENVERKNUEPFUNG {addr} Kanal "
+                        f"{', '.join(map(str, kanaele))}: {angenommen}/{len(rahmen)} quittiert")
+        return kanaele
 
     def _nachreichen(self, hmid):
         """Was auf ein Lebenszeichen gewartet hat, jetzt senden.

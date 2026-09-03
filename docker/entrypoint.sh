@@ -266,6 +266,10 @@ need_tables() {
     # Schaltaktors — wohlgeformt und falsch. Alte Tabellen tragen das Feld
     # nicht; sie werden deshalb neu gebaut.
     grep -q '"FASSUNG"' "$TABLES/paramsets.json" 2>/dev/null || return 1
+    # Link-Rollen der Kanaltypen (ab 2026.9.2): ohne sie kann QCCU keine
+    # Verknuepfung zur Zentrale anlegen — ein Fensterkontakt meldet dann
+    # keine Ereignisse.
+    [ -f "$TABLES/kanalrollen.json" ] || return 1
     if [ "${BIDCOS_PORT:-0}" != "0" ]; then
         [ -f "$TABLES/bidcos_types.json" ] \
             && [ -f "$TABLES/bidcos_layouts.json" ] \

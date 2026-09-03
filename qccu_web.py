@@ -1328,6 +1328,15 @@ class WebHandler(BaseHTTPRequestHandler):
                               else {"ok": True, "gesetzt": gesetzt},
                               409 if err else 200)
 
+        if self.path == "/api/pruefstand/zentralenlink":
+            # Die Verknuepfung zur Zentrale fuer ein schon angelerntes Geraet
+            # nachholen (Sender-Kanaele laut Tabelle, oder `channels`).
+            if not self.radio:
+                return self._json({"error": "kein Funk angebunden"}, 409)
+            kanaele = self.radio.zentralen_verknuepfen(
+                str(body.get("address", "")), body.get("channels"))
+            return self._json({"ok": True, "kanaele": kanaele})
+
         if self.path == "/api/stick/roh":
             # Nur fuer den Pruefstand: ein Kommando aus der weissen Liste an
             # den Stick. Die Liste steht in `qccu_radio.Radio`, damit die

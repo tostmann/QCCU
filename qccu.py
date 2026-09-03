@@ -81,6 +81,9 @@ class Tables:
         # Bestand der Parameter, die nur in den Geraetebeschreibungen stehen.
         # Fehlt er, ist die Tabelle nach altem Muster gebaut (siehe `alt`).
         self.extra = self._load(base, "extra_params.json", pflicht=False)
+        # Link-Rolle je Kanaltyp-Fassung (SENDER/RECEIVER/NONE) — fehlt sie,
+        # legt QCCU keine Verknuepfung zur Zentrale an und sagt das.
+        self.rollen = self._load(base, "kanalrollen.json", pflicht=False) or {}
         # ALTE TABELLEN (bis 2026.8.12) fuehrten je Kanaltyp EINE Liste ueber
         # alle Fassungen — eine Schaltsteckdose bekam damit 1087
         # Konfigurationsparameter angeboten, darunter Farbverlaeufe. Neue
@@ -184,6 +187,24 @@ class Tables:
     def label_of(self, devtype):
         e = self.catalog.get(str(devtype))
         return e["label"] if e else f"Typ {devtype}"
+
+    def rolle_of(self, devtype, kanal, eintrag=None):
+        """Link-Rolle eines Kanals (SENDER, RECEIVER, NONE) — oder None, wenn
+        die Tabelle sie nicht fuehrt."""
+        if not self.rollen:
+            return None
+        ctype = self.channels_of(devtype, eintrag).get(str(kanal))
+        if not ctype:
+            return None
+        v = self.chinfo_of(devtype, kanal, eintrag).get("v")
+        if v is not None and f"{ctype}/v{v}" in self.rollen:
+            return self.rollen[f"{ctype}/v{v}"]
+        fassungen = sorted((int(k.split("/v")[1]) for k in self.rollen
+                            if k.startswith(ctype + "/v") and k.split("/v")[1].isdigit()),
+                           reverse=True)
+        if fassungen:
+            return self.rollen[f"{ctype}/v{fassungen[0]}"]
+        return self.rollen.get(ctype)
 
     def links_of(self, devtype, eintrag=None):
         """Die interne Verdrahtung eines Geraetetyps: [[Quellkanal, Zielkanal]].
@@ -1639,7 +1660,23 @@ class QCCU:
         raise xmlrpc.client.Fault(-5, "Direct links are not implemented")
 
     def reportValueUsage(self, address, value_id, ref_counter):
-        """Der Klient beobachtet einen Wert."""
+        """Der Klient beobachtet einen Wert — dann soll das Geraet ihn auch
+        melden.
+
+        So haelt es die Zentrale von eq-3 (`LegacyServiceHandler.
+        reportValueUsage` -> `DeviceUtil.createCentralLink`): ein Zaehler
+        ueber 0 legt die Verknuepfung des Kanals zur Zentrale an, sofern der
+        Kanal eine Link-Rolle hat. Ohne diese Verknuepfung schickt ein
+        Sender-Kanal sein Ereignis nicht als STATUS. QCCU legt sie zwar schon
+        beim Anlernen an; ein Klient, der hier anklopft, bekommt sie
+        trotzdem — auch fuer Geraete, die vor dieser Fassung angelernt wurden.
+        """
+        try:
+            base, _, ch = address.upper().partition(":")
+            if ch and int(ref_counter or 0) > 0 and self.radio is not None:
+                self.radio.zentralen_verknuepfen(base, [int(ch)])
+        except Exception as ex:                          # noqa: BLE001
+            print(f"  ! reportValueUsage {address}: {ex}")
         return ""
 
     def rssiInfo(self):
