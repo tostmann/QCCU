@@ -286,6 +286,27 @@ UMRECHNUNG = {
 }
 
 
+# Aufzaehlungen, deren Rohwert KEIN Platz in der Werteliste ist, sondern ein
+# fester Wert je Eintrag (`StringEnumToInteger(enumStrings, enumValues)` in
+# GeneralStateParameterFactory). Der Fensterkontakt meldet seinen Zustand als
+# LEVEL-Byte: 0 = CLOSED, 200 = OPEN — wer das als Platz 200 liest, meldet
+# nichts.
+# ⚠️ Geschluesselt nach PARAMETER UND Werteliste: dieselbe Liste CLOSED/OPEN
+# gehoert beim WINDOW_STATE des Heizreglers zu einem Bit (Platz 0/1, am
+# BWTH-A und eTRV gemessen), beim STATE des Fensterkontakts zu den festen
+# Werten 0/200. Die Liste allein unterscheidet das nicht.
+ENUM_WERTE = {
+    # createStateWindowOpenClosed (SHUTTER_CONTACT_, DOOR_STATE_TRANSCEIVER)
+    ("STATE", ("CLOSED", "OPEN")): (0, 200),
+    # createStateWindowOpenTiltedClosed (ROTARY_HANDLE_, ACCELERATION_TRANSCEIVER)
+    ("STATE", ("CLOSED", "TILTED", "OPEN")): (0, 100, 200),
+    # createStateWindowOpenTiltedClosedUnknown
+    ("STATE", ("CLOSED", "TILTED", "OPEN", "UNKNOWN")): (0, 100, 200, 255),
+    # createLevelWindowDrive (WINDOW_DRIVE_RECEIVER, LEVEL@VENTILATION)
+    ("LEVEL", ("NO_VENTILATION", "VENTILATION")): (0, 200),
+}
+
+
 def umrechnung(param, fassung="default"):
     """(Faktor, Versatz) eines Parameters in seiner Form."""
     if fassung and fassung != "default":
@@ -2547,7 +2568,7 @@ class Radio:
         desc = self._paramset(d, channel).get(param)
         return desc if isinstance(desc, dict) else None
 
-    def _form(self, desc, zahl):
+    def _form(self, desc, zahl, param=None):
         """Physikalische Zahl in die Form bringen, die der Kanal ankuendigt.
 
         Im Jar entscheidet darueber `LogicalType` des Parameters, hier `TYPE`
@@ -2571,6 +2592,11 @@ class Radio:
         if typ == "ENUM":
             liste = (desc or {}).get("VALUE_LIST") or ()
             z = int(round(zahl))
+            werte = ENUM_WERTE.get((param, tuple(liste))) if param else None
+            if werte is not None:
+                # Fester Wert je Eintrag, genau getroffen oder nichts — so
+                # haelt es `StringEnumToInteger.convertPhysicalToLogical`.
+                return liste[werte.index(z)] if z in werte else None
             return liste[z] if 0 <= z < len(liste) else None
         if typ == "INTEGER":
             return int(round(zahl))
@@ -2646,7 +2672,7 @@ class Radio:
                 wert = roh
             else:
                 faktor, versatz = UMRECHNUNG.get(regel.param, (1.0, 0.0))
-                wert = self._form(desc, (roh - versatz) / faktor)
+                wert = self._form(desc, (roh - versatz) / faktor, regel.param)
             if wert is None:
                 continue
             self.qccu.set_value_internal(addr, channel, regel.param, wert)
