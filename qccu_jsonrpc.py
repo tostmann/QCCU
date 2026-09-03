@@ -833,9 +833,15 @@ class JsonRpc:
         werte = {}
         with self.q.lock:
             geraete = list(self.q.devices.values())
+        ereignis = getattr(self.q, "_ist_ereignis", None)
         for d in geraete:
             for (ch, param), v in d.values.items():
                 if v is None:
+                    continue
+                # Ein ACTION-Parameter (Tastendruck) hat keinen Wert — die
+                # Zentrale fuehrt ihn nicht, und ein alter Stand, der ihn
+                # abgelegt hat, darf ihn nicht als „gedrueckt" ausgeben.
+                if ereignis is not None and ereignis(d, ch, param):
                     continue
                 # Genau dieser Aufbau wird beim Nachschlagen erwartet:
                 # f"{interface}.{channel_address}.{parameter}"

@@ -966,6 +966,10 @@ class QCCU:
                 for k, v in (e.get("values") or {}).items():
                     kanal, _, name = k.partition(":")
                     if gd is not None and kanal.isdigit() and name:
+                        # Ereignisse (ACTION) aus aelteren Staenden nicht
+                        # wieder zu Werten machen.
+                        if self._ist_ereignis(gd, kanal, name):
+                            continue
                         gd.values[(int(kanal), name)] = v
                 if e.get("values_zeit"):
                     self._wert_zeit[addr.upper()] = e["values_zeit"]
