@@ -2708,6 +2708,20 @@ class Radio:
                 print(f"  <- {addr}:{channel} {regel.param}={wert}"
                       f"{(' ' + einheit) if einheit else ''}{zusatz}")
         if gemeldet:
+            # Ein Rohwert aus einer Zeit ohne Regel darf nicht neben dem
+            # gedeuteten Wert stehenbleiben (HmIP-SCI, 03.09.2026: RAW_SDT2
+            # und STATE nebeneinander) — der Klient fuehrt sonst zwei
+            # Datenpunkte fuer dieselbe Sache.
+            d = (getattr(self.qccu, "devices", None) or {}).get(addr.upper())
+            werte = getattr(d, "values", None)
+            if isinstance(werte, dict) and (int(channel), f"RAW_SDT{sdt}") in werte:
+                schloss = getattr(self.qccu, "lock", None)
+                if schloss is not None:
+                    with schloss:
+                        werte.pop((int(channel), f"RAW_SDT{sdt}"), None)
+                else:
+                    werte.pop((int(channel), f"RAW_SDT{sdt}"), None)
+                self._log("##", f"RAW_SDT{sdt} an {addr}:{channel} geraeumt — jetzt gedeutet")
             return
 
         # Nicht gedeutet — dann wenigstens beim Namen nennen, unter dem eq-3
