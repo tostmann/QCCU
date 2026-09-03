@@ -708,8 +708,11 @@ SDT_BELEGSTUFE = {
     3:  ("mitschnitt", "eTRV-C, 11 Rahmen 2,8 .. 3,0 V (Gegenprobe: Handrechnung des Jars, am Geraet belegt)"),
     4:  ("on-air", "BWTH-A: Soll, Betriebsart, Profil; dazu Gegenprobe: Handrechnung des Jars, am Geraet belegt"),
     5:  ("on-air", "eTRV-C / eTRV-E-S: Ventilzustand, Boost, Fenster (Bench 31.08.2026)"),
-    6:  ("mitschnitt", "eTRV-C: ERROR_CODE und SABOTAGE (Gegenprobe: Handrechnung des Jars, am Geraet belegt); "
-                       "Bitlagen aus GeneralStateParameterFactory"),
+    6:  ("on-air", "SMO230-A (04.09.2026): SABOTAGE als echte Flanke — 00:13:56 kam 0x01, "
+                   "16 s spaeter wieder 0x00, davor 29 Rahmen lang durchgehend 0x00. "
+                   "Bit 0 traegt SABOTAGE und zugleich ERROR_CODE=1, wie die "
+                   "Handrechnung des Jars es vorhersagt. Zuvor nur Mitschnitt am "
+                   "eTRV-C; Bitlagen aus GeneralStateParameterFactory"),
     8:  ("on-air", "BWTH-A, 317 Rahmen: die vier Schaltkanaele (Fassung 2026.8.10)"),
     13: ("mitschnitt", "BWTH-A (Gegenprobe: Handrechnung des Jars, am Geraet belegt); Kanaltyp-Zweige ohne Geraet ausgelassen"),
     14: ("mitschnitt", "eTRV-F meldet den Abwesenheitszeitraum zurueck, den QCCU selbst gesetzt hatte "
