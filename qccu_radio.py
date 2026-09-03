@@ -1350,6 +1350,7 @@ class Radio:
         # Geraete, die nicht staendig hoeren; im Jar der
         # `PendingDeviceCommandsHolder`.
         self._wartend = {}
+        self._zustellung = set()       # Geraete, an die gerade nachgereicht wird
         # Funkadresse -> nachzuholender Anlernabschluss, wenn die
         # Bestaetigung ausgeblieben ist.
         self._nachtrag = {}
@@ -4117,8 +4118,16 @@ class Radio:
         anzusprechen.
         """
         with self.lock:
+            # ⚠️ Nur EINE Zustellung je Geraet zur Zeit. Der WRC6-A gab beim
+            # Anlernen zwei Lebenszeichen kurz hintereinander; zwei Faeden
+            # schickten dieselben Rahmen doppelt, und die ANSWER des Geraets
+            # landete beim falschen (03.09.2026, 12:23).
+            if hmid in self._zustellung:
+                return
             offen = list(self._wartend.get(hmid) or [])
             uebrig = []
+            if offen:
+                self._zustellung.add(hmid)
             senden = []
             for e in offen:
                 if e["versuche"] >= LINK_VERSUCHE:
@@ -4136,6 +4145,8 @@ class Radio:
             self._log("##", f"WARTEND {aufgegeben} Befehl(e) an {hmid} "
                             f"aufgegeben (nach {LINK_VERSUCHE} Anlaeufen)")
         if not senden:
+            with self.lock:
+                self._zustellung.discard(hmid)
             return
         self._log("##", f"WARTEND {len(senden)} Befehl(e) an {hmid} "
                         f"nachgereicht (Geraet ist wach)")
@@ -4149,6 +4160,7 @@ class Radio:
         # auf das Lebenszeichen (mit Wach-Bit) geht dadurch VOR den Befehlen
         # hinaus — das Geraet weiss dann, dass noch etwas kommt.
         def lauf():
+          try:
             for e in senden:
                 gut = self._link_senden(hmid, e["appseq"], e["cmd"])
                 self._log("##", f"WARTEND appSeq=0x{e['appseq']:02X} an {hmid}: "
@@ -4165,6 +4177,9 @@ class Radio:
                         else:
                             self._wartend.pop(hmid, None)
                     self._save_state()
+          finally:
+            with self.lock:
+                self._zustellung.discard(hmid)
         threading.Thread(target=lauf, name=f"nachreichen-{hmid}", daemon=True).start()
 
     def _link_senden(self, hmid, appseq, cmd):
