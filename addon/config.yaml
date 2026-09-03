@@ -43,13 +43,16 @@ ports:
   8082/tcp: 8082
   2000/tcp: 2000
   2001/tcp: 2001
-  # Dieselben Dienste auf den Ausweichports (alt_ports).
-  18080/tcp: 18080
-  12010/tcp: 12010
-  18181/tcp: 18181
-  18082/tcp: 18082
-  12000/tcp: 12000
-  12001/tcp: 12001
+  # ⚠️ KEINE Ausweichports mehr. Wer andere Ports braucht — etwa weil auf
+  # demselben Rechner schon eine CCU/OCCU 8080, 2010, 8181, 2000 oder 2001
+  # belegt —, stellt sie hier in der Erweiterung unter „Netzwerk" ein: dort
+  # steht je Dienst der Port, unter dem er von aussen erreichbar ist. Ein
+  # leeres Feld veroeffentlicht den Dienst gar nicht.
+  # Die frueher hier angebotene Verschiebung im Container (`alt_ports`) war
+  # dafuer der falsche Hebel: sie verschob auch die Weboberflaeche auf 18080,
+  # waehrend `ingress_port` fest auf 8080 zeigt — die Oberflaeche in Home
+  # Assistant war danach tot, und zurueck kam man nur ueber die Einstellungen
+  # (Tester-Meldung 03.09.2026, hier nachgestellt).
 ports_description:
   8080/tcp: Weboberfläche — hier wird angelernt
   2010/tcp: XML-RPC — Home Assistant und FHEM/HMCCU
@@ -96,7 +99,6 @@ options:
   bidcos_senden: false
   bidcos_fremd: ""
   sofort_melden: false
-  alt_ports: false
   localhost_only: false
   raw_log: false
 schema:
@@ -130,7 +132,6 @@ schema:
   # Alle Ports um 10000 verschieben (2010 → 12010). Nötig, wenn auf dieser
   # Maschine schon eine OCCU/RaspberryMatic läuft — die belegt 2000, 2001,
   # 2010 und 8181.
-  alt_ports: "bool?"
   # Dienste (XML-RPC, ReGa, JSON-RPC, CUL-Zugang) nur über 127.0.0.1 — für
   # FHEM oder Home Assistant auf derselben Maschine. Die Oberfläche bleibt
   # erreichbar.

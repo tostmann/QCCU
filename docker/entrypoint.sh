@@ -326,7 +326,17 @@ serve() {
         --json-port "$JSON_PORT" \
         --cul-port "$CUL_PORT" \
         --bidcos-port "$BIDCOS_PORT"
-    [ "$ALT_PORTS" = "1" ] && set -- "$@" --alt-ports
+    # ⚠️ Als Erweiterung NICHT verschieben: `ingress_port` und `webui` zeigen
+    # fest auf 8080, die Oberflaeche waere danach tot. Wer andere Ports
+    # braucht, stellt sie in der Erweiterung unter „Netzwerk" ein.
+    if [ "$ALT_PORTS" = "1" ]; then
+        if [ -f /data/options.json ]; then
+            log "ALT_PORTS wird als Erweiterung ignoriert — sonst zeigt die"
+            log "  Oberflaeche ins Leere. Andere Ports bitte unter „Netzwerk\" einstellen."
+        else
+            set -- "$@" --alt-ports
+        fi
+    fi
     [ "$LOCALHOST_ONLY" = "1" ] && set -- "$@" --localhost
     [ "$BIDCOS_SENDEN" = "1" ] && set -- "$@" --bidcos-senden
     [ -n "$BIDCOS_FREMD" ] && set -- "$@" --bidcos-fremd "$BIDCOS_FREMD"

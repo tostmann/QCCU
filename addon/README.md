@@ -65,6 +65,24 @@ Der Port **bleibt trotzdem veröffentlicht**: für den Zugriff von einem anderen
 Rechner, für die Fehlersuche und für den Fall, dass Home Assistant selbst
 gerade nicht läuft.
 
+## Wenn ein Port schon belegt ist
+
+Läuft auf demselben Rechner schon eine CCU oder OCCU, belegt sie 8080, 2010,
+8181, 2000 und 2001 — die Erweiterung startet dann nicht und meldet
+*„Cannot start app … because port 8080 is already in use"*.
+
+Der Weg dahin führt **nicht** über eine Einstellung der Erweiterung, sondern
+über **Konfiguration → Netzwerk** in ihrer eigenen Seite: dort steht je Dienst
+der Port, unter dem er von außen erreichbar ist. Trage dort einen freien Port
+ein (etwa 18080 statt 8080) oder lasse das Feld leer, dann wird der Dienst gar
+nicht nach außen gereicht. Innen bleibt alles, wie es ist — die Oberfläche im
+Menü läuft über Ingress und funktioniert unabhängig davon weiter.
+
+⚠️ Bis 2026.9.3 gab es dafür eine Einstellung „Ausweichports", die alle Dienste
+im Container um 10000 verschob. Sie verschob auch die Oberfläche, während das
+Menü fest auf 8080 zeigt — danach war die Oberfläche tot und ließ sich nur
+über die Einstellungen zurückholen. Die Einstellung ist deshalb entfallen.
+
 ## Warum zwei Ports
 
 Home Assistant redet über **zwei** Wege gleichzeitig mit einer Zentrale:
