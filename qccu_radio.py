@@ -700,8 +700,8 @@ SDT_BELEGSTUFE = {
     13: ("mitschnitt", "BWTH-A (Gegenprobe: Handrechnung des Jars, am Geraet belegt); Kanaltyp-Zweige ohne Geraet ausgelassen"),
     14: ("mitschnitt", "eTRV-F meldet den Abwesenheitszeitraum zurueck, den QCCU selbst gesetzt hatte "
                        "(31.08.2026, vier Rahmen; Start 17:09 -> 17:10 wie im Jar gerundet)"),
-    15: ("mitschnitt", "SMI55-A beim Anlernen (03.09.2026): 0x39C0 = 1478,4 lx im Labor bei Tag; "
-                       "Gegenprobe durch Abdecken ausstehend"),
+    15: ("on-air", "SMI55-A (03.09.2026): 0x39C0 = 1478,4 lx bei Tag, abgedeckt 0x01C3 = 45,1 lx — "
+                   "die Skala stimmt am Geraet"),
     33: ("beschreibungstreu", "BRIGHTNESS: derselbe Handlerzweig wie ILLUMINATION, kein Geraet gesehen"),
     22: ("beschreibungstreu", "kein Geraet mit WEEK_PROGRAM_CHANNEL_LOCKS bisher auf der Luft"),
 }
