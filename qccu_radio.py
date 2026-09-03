@@ -66,6 +66,11 @@ CNT_KEYS = ("rx", "ok", "mic", "dup", "acks", "k6tx", "k6rx", "akdop",
 FT_CONFIGURATION = 1
 FT_ANSWER = 2
 FT_STATUS = 5
+# Wie lange nach dem Senden einer Quittung ihre Kurzquittung spaetestens da
+# ist — danach darf ein Befehl an dasselbe Geraet hinaus, ohne dass die
+# Kurzquittung des einen dem anderen zugerechnet wird. Gemessen: 23–61 ms.
+ACK_NACHLAUF = 0.15
+
 # Schaltbefehle eines Senders an seinen Verknuepfungspartner — so kommt ein
 # Tastendruck bei der Zentrale an (ApplicationFrameType 8/9/10).
 FT_SWITCH_UNCOND = 8
@@ -3015,9 +3020,17 @@ class Radio:
         nahm auch den frueheren an — auf ihn ist kein Verlass fuer die Regel.
         """
         job = self._antwort_offen.get(hmid.lower())
-        if job is None or job.done.is_set():
+        if job is None:
             return
-        job.done.wait(frist)
+        if not job.done.is_set():
+            job.done.wait(frist)
+        # Und dann noch die Kurzquittung des Geraets auf DIESE Quittung
+        # verstreichen lassen: die PK-Meldung des Sticks traegt keine
+        # Sequenznummer, `_link_senden` erkennt eine Kurzquittung ereignisweise
+        # — kaeme die des ANSWER-Rahmens erst nach dem `mac.clear()` des
+        # Links, gaelte sie dem Link (SMI55-A: 23 ms, WRC6-A: 61 ms nach dem
+        # Schreiben). Die Zeit ist kurz gegen das Wachfenster.
+        time.sleep(ACK_NACHLAUF)
 
     def _wach_bit(self, hmid):
         """`APP_STAY_AWAKE`, wenn fuer dieses Geraet noch etwas aussteht.
