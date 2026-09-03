@@ -267,6 +267,9 @@ need_tables() {
     # Schaltaktors — wohlgeformt und falsch. Alte Tabellen tragen das Feld
     # nicht; sie werden deshalb neu gebaut.
     grep -q '"FASSUNG"' "$TABLES/paramsets.json" 2>/dev/null || return 1
+    # Und die Adresse der Konfigurationsparameter (`ADRESSE`, ab 2026.9.2):
+    # ohne sie kann putParamset MASTER nichts an das Gerät schreiben.
+    grep -q '"ADRESSE"' "$TABLES/paramsets.json" 2>/dev/null || return 1
     # Link-Rollen der Kanaltypen (ab 2026.9.2): ohne sie kann QCCU keine
     # Verknuepfung zur Zentrale anlegen — ein Fensterkontakt meldet dann
     # keine Ereignisse.
