@@ -2398,7 +2398,11 @@ class Radio:
         # Wiederholung -> PRESS_LONG, der letzte Rahmen mit Antwortwunsch ->
         # PRESS_LONG_RELEASE. Am HmIP-WRC6-A gemessen (03.09.2026, 12:25):
         # kurz `88 09 01 02`, lang `08 0A..0F 41 03` im 250-ms-Takt, Ende
-        # `88 0F 41 03`.
+        # `88 0F 41 03` — dieselbe appSeq wie der letzte laufende Rahmen. Um
+        # 12:59 dagegen: lang `08 11..16 41 05`, Ende `88 17 41 05` mit NEUER
+        # appSeq. Beides kommt vor; die Deutung haengt nur am Antwortwunsch.
+        # Live gedeutet 12:59: PRESS_SHORT, dann START + 7x LONG + RELEASE,
+        # 32 ms nach dem Rahmen.
         if (pt[0] & 0x3F) in (FT_SWITCH_UNCOND, FT_SWITCH_COND, FT_LEVEL_CMD) and len(pt) > 3:
             self._tastendruck(src.lower(), pt)
 
