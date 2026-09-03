@@ -3141,12 +3141,25 @@ class Radio:
                       t.tm_min,
                       t.tm_sec))
 
-    def _time_info(self, hmid, appseq):
-        """Die Zeitanfrage eines Geraets mit der Ortszeit beantworten."""
+    def _time_info(self, hmid, appseq, wecken=False):
+        """Die Zeitanfrage eines Geraets mit der Ortszeit beantworten.
+
+        `wecken=True` schickt den Weckvorlauf mit, den der Hoerertyp verlangt.
+        ⚠️ Als ANTWORT auf eine Zeitanfrage waere er Verschwendung — das Geraet
+        hat gerade selbst gesendet und hoert. Wer die Uhrzeit dagegen von sich
+        aus schickt, um an der Kurzquittung die Erreichbarkeit zu pruefen,
+        braucht ihn: ohne Vorlauf hoert ein schlafendes Batteriegeraet nichts,
+        und die Probe meldete es faelschlich als tot (am HmIP-eTRV-F
+        gemessen, 03.09.2026 — Hoerertyp 11, 0 von 106 Proben beantwortet).
+        """
         p = self.zeit_payload(time.localtime())
         kopf = FT_TIME_INFO | self._wach_bit(hmid)
-        job = self._submit(f"ms{hmid.upper()}{kopf:02X}{appseq:02X}{p.hex().upper()}",
-                           "zeit", time.time() + self.answer_delay)
+        cmd = f"ms{hmid.upper()}{kopf:02X}{appseq:02X}{p.hex().upper()}"
+        # ⚠️ Die Stufe hier selbst bestimmen: die Automatik in `_submit` gibt
+        # allem ausser `kind="cmd"` eine 0, ein `burst=None` liefe also ins
+        # Leere.
+        stufe = self._burst_stufe(cmd) if wecken else 0
+        job = self._submit(cmd, "zeit", time.time() + self.answer_delay, burst=stufe)
         if self.verbose:
             print(f"  Zeit an {hmid}: {time.strftime('%a %d.%m.%Y %H:%M:%S')}")
         return job
@@ -3713,7 +3726,9 @@ class Radio:
     # Wie lange auf die Kurzquittung gewartet wird. Die Gegenstelle antwortet
     # binnen weniger Millisekunden; eine Sekunde ist reichlich und haelt den
     # Knopf in der Oberflaeche flott.
-    PING_WARTEN = 1.0
+    # ⚠️ Muss den Weckvorlauf abdecken: 356 ms Vorlauf plus Laufzeit plus die
+    # Kurzquittung des Geraets. Mit 1,0 s blieb bei Hoerertyp 3/11 keine Luft.
+    PING_WARTEN = 2.0
 
     def erreichbarkeit_pruefen(self, hmid, warten=None):
         """Aktiv nachsehen, ob ein Geraet noch antwortet.
@@ -3731,6 +3746,17 @@ class Radio:
         HmIP-Geraet mit sechs Byte, ohne Zaehler und ohne Verschluesselung.
         Kommt sie, lebt das Geraet und hoert uns.
 
+        ⚠️ NUR FUER GERAETE, DIE STAENDIG HOEREN. Ein Batteriegeraet
+        beantwortet eine unaufgeforderte Zeitauskunft NICHT — auch nicht mit
+        Weckvorlauf. Am HmIP-eTRV-E-S und -F gemessen (03.09.2026, Hoerertyp
+        11): wach quittiert es binnen 59 ms, geweckt gar nicht; 106 Proben,
+        keine Antwort. Wer das als „nicht erreichbar" wertet, meldet der
+        Haussteuerung reihum gesunde Geraete als tot. Fuer solche Geraete gibt
+        es hier deshalb KEINE Aussage (`None`) — ihre Erreichbarkeit haengt an
+        ihrem eigenen Takt, nicht an unserer Frage. Warum das Geraet schweigt,
+        ist offen: die Annahme „jeden Unicast quittiert es" gilt fuer den
+        geweckten Empfaenger offenbar nicht.
+
         ⚠️ Das kostet Sendezeit — sparsam benutzen, nicht im Minutentakt.
 
         Rueckgabe: True (antwortet), False (keine Antwort), None (kein Funk
@@ -3739,12 +3765,20 @@ class Radio:
         hmid = (hmid or "").lower()
         if not hmid or hmid not in self.by_hmid:
             return None
+        addr0 = self.by_hmid.get(hmid)
+        d0 = (getattr(self.qccu, "devices", None) or {}).get(addr0 or "")
+        hoerer = (getattr(d0, "opmode", None) or 0) & 0x0F
+        if hoerer in LM_NICHT_STAENDIG or hoerer in LM_BURST_STUFE:
+            self._log("##", f"PING {hmid} uebersprungen — Hoerertyp {hoerer} "
+                            f"beantwortet keine unaufgeforderte Auskunft")
+            return None
         ev = threading.Event()
         self._acked[hmid] = ev
         try:
             # Der eigene Auftrag wird vermerkt, damit seine Kurzquittung auch
             # als seine erkannt wird (siehe Waechter in `_handle`).
-            self._acked_job[hmid] = self._time_info(hmid, self._next_seq(hmid))
+            self._acked_job[hmid] = self._time_info(hmid, self._next_seq(hmid),
+                                                    wecken=True)
             antwortet = ev.wait(warten or self.PING_WARTEN)
         finally:
             self._acked.pop(hmid, None)
