@@ -1506,6 +1506,15 @@ class WebHandler(BaseHTTPRequestHandler):
             if not rf:
                 return self._json({"error": "Geraet hat keine Funkadresse — "
                                             "es wurde noch nie gehoert."}, 409)
+            # ⚠️ Ein Batteriegeraet beantwortet die Probe nicht (es hoert nur
+            # in seinem eigenen Takt) — das ist keine Aussage ueber seine
+            # Erreichbarkeit und darf nicht als Fehler aussehen.
+            if not self.radio.ping_moeglich(rf):
+                return self._json(
+                    {"ok": True, "antwortet": None,
+                     "hinweis": "Das Geraet hoert nur in seinem eigenen Takt und "
+                                "beantwortet keine Nachfrage. Ob es lebt, zeigt "
+                                "sein naechster eigener Rahmen."})
             antwortet = self.radio.erreichbarkeit_pruefen(rf)
             if antwortet is None:
                 return self._json({"error": "Geraet ist dem Funkpfad unbekannt."}, 409)

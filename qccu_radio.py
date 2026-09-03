@@ -3730,6 +3730,23 @@ class Radio:
     # Kurzquittung des Geraets. Mit 1,0 s blieb bei Hoerertyp 3/11 keine Luft.
     PING_WARTEN = 2.0
 
+    def _hoerertyp(self, hmid):
+        """Der Hoerertyp eines Geraets, oder 0 (staendiger Hoerer), wenn er
+        nicht bekannt ist — so wie ihn `_burst_stufe` auch liest."""
+        addr = self.by_hmid.get((hmid or "").lower())
+        d = (getattr(self.qccu, "devices", None) or {}).get(addr or "")
+        return (getattr(d, "opmode", None) or 0) & 0x0F
+
+    def ping_moeglich(self, hmid):
+        """Beantwortet dieses Geraet eine unaufgeforderte Auskunft?
+
+        Nur staendige Hoerer tun das. Fuer alle anderen ist die Probe kein
+        Erkenntnismittel, sondern eine Fehlerquelle (siehe
+        `erreichbarkeit_pruefen`).
+        """
+        h = self._hoerertyp(hmid)
+        return h not in LM_NICHT_STAENDIG and h not in LM_BURST_STUFE
+
     def erreichbarkeit_pruefen(self, hmid, warten=None):
         """Aktiv nachsehen, ob ein Geraet noch antwortet.
 
@@ -3765,10 +3782,8 @@ class Radio:
         hmid = (hmid or "").lower()
         if not hmid or hmid not in self.by_hmid:
             return None
-        addr0 = self.by_hmid.get(hmid)
-        d0 = (getattr(self.qccu, "devices", None) or {}).get(addr0 or "")
-        hoerer = (getattr(d0, "opmode", None) or 0) & 0x0F
-        if hoerer in LM_NICHT_STAENDIG or hoerer in LM_BURST_STUFE:
+        if not self.ping_moeglich(hmid):
+            hoerer = self._hoerertyp(hmid)
             self._log("##", f"PING {hmid} uebersprungen — Hoerertyp {hoerer} "
                             f"beantwortet keine unaufgeforderte Auskunft")
             return None
