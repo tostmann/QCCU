@@ -4056,11 +4056,26 @@ class Radio:
         if aufgegeben:
             self._log("##", f"WARTEND {aufgegeben} Befehl(e) an {hmid} "
                             f"aufgegeben (nach {LINK_VERSUCHE} Anlaeufen)")
-        for e in senden:
-            self._submit(e["cmd"], "cmd")
-        if senden:
-            self._log("##", f"WARTEND {len(senden)} Befehl(e) an {hmid} "
-                            f"nachgereicht (Geraet ist wach)")
+        if not senden:
+            return
+        self._log("##", f"WARTEND {len(senden)} Befehl(e) an {hmid} "
+                        f"nachgereicht (Geraet ist wach)")
+
+        # ⚠️ NACHEINANDER, mit Warten auf die ANSWER — nicht alle auf einmal.
+        # Am HmIP-SCI gesehen (03.09.2026, 11:40): zwei CREATE_LINK und die
+        # Quittung binnen 100 ms hinaus, vom Geraet EINE Kurzquittung und
+        # keine ANSWER. So haelt es auch die Zentrale: ein Rahmen je
+        # Transaktion, die naechste erst nach der Antwort. Im eigenen Faden,
+        # damit der Empfang nicht steht, waehrend wir warten; die Quittung
+        # auf das Lebenszeichen (mit Wach-Bit) geht dadurch VOR den Befehlen
+        # hinaus — das Geraet weiss dann, dass noch etwas kommt.
+        def lauf():
+            for e in senden:
+                gut = self._link_senden(hmid, e["appseq"], e["cmd"])
+                self._log("##", f"WARTEND appSeq=0x{e['appseq']:02X} an {hmid}: "
+                                + ("quittiert" if gut else "keine Annahme (Anlauf "
+                                   f"{e['versuche']}/{LINK_VERSUCHE})"))
+        threading.Thread(target=lauf, name=f"nachreichen-{hmid}", daemon=True).start()
 
     def _link_senden(self, hmid, appseq, cmd):
         """Einen Konfigurationsrahmen senden und auf die ANSWER warten.
