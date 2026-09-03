@@ -28,9 +28,9 @@ QCCU ist ein Nachbau der CCU-*Schnittstellen*, kein Nachbau der CCU:
   **Systemvariablen** (Schalter, Zahl, Auswahl, Text — in Home Assistant als
   bedienbare Entitäten).
 * **Nein:** keine CCU-Weboberfläche, keine Programme, Räume oder
-  Direktverknüpfungen; keine Gerätekonfiguration (MASTER-Parameter) und
-  Wochenprofile; keine Firmware-Aktualisierung der Geräte; keine Übernahme
-  einer laufenden Zentrale ohne Neu-Anlernen.
+  Direktverknüpfungen; keine Verknüpfungslisten (`putParamset LINK`); keine
+  Firmware-Aktualisierung der Geräte; keine Übernahme einer laufenden Zentrale
+  ohne Neu-Anlernen.
 * **Der eine harte Unterschied:** eine Zentrale von eQ-3 beschafft sich den
   Schlüssel eines neuen Geräts selbst. QCCU kann das nicht — **der Schlüssel
   vom Aufkleber des Geräts muss ihm beigebracht werden**, in der Weboberfläche

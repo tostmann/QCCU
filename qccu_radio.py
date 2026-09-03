@@ -1363,6 +1363,7 @@ class Radio:
         self._zustellung = set()       # Geraete, an die gerade nachgereicht wird
         self._antwort_offen = {}       # hmid -> letzter Quittungs-/Zeitauftrag an das Geraet
         self._zuletzt = {}             # hmid -> zuletzt an das Geraet GESCHRIEBENER Auftrag
+        self._acked_job = {}           # hmid -> Auftrag, dessen Kurzquittung erwartet wird
         self._tastenzaehler = {}       # (hmid, Kanal) -> letzter Tastenzaehler eines langen Drucks
         self._letzter_druck = {}       # (hmid, Kanal) -> (Zaehler, lang, respReq) — gegen Wiederholungen
         # Funkadresse -> nachzuholender Anlernabschluss, wenn die
@@ -2201,15 +2202,19 @@ class Radio:
         if mk:
             peer = mk.group(1).lower()
             ev = self._acked.get(peer)
-            # Die Kurzquittung gilt dem Rahmen, den wir dem Geraet ZULETZT
-            # geschrieben haben. War das unsere Quittung oder Zeitauskunft auf
-            # einen Rahmen des Geraets, zaehlt sie nicht fuer den wartenden
-            # Befehl — sonst gilt ein nie quittierter START als zugestellt
-            # (WRC6-A 03.09.2026 14:45: PK der ANSWER auf REQUEST_CONFIG_UPDATE
-            # dem START zugerechnet, SET danach mit NAK abgelehnt).
-            job = self._zuletzt.get(peer)
-            if ev and job is not None and job.kind != "cmd":
-                self._log("##", f"Kurzquittung von {peer} — gilt der {job.kind}, nicht dem Befehl")
+            # Die Kurzquittung traegt keine Sequenznummer — sie gilt dem
+            # Rahmen, den wir dem Geraet ZULETZT geschrieben haben. Wer auf
+            # eine wartet, hinterlegt darum seinen Auftrag (`_acked_job`);
+            # kam seither ein anderer hinaus, gehoert die Quittung nicht ihm.
+            # ⚠️ NICHT an der Auftragsart festmachen: die Erreichbarkeitsprobe
+            # wartet auf die Quittung ihrer eigenen ZEITAUSKUNFT, und eine
+            # Pruefung auf „nur cmd zaehlt" erklaerte jedes Geraet fuer tot
+            # (eingebaut und wieder entfernt am 03.09.2026).
+            erwartet = self._acked_job.get(peer)
+            if ev and erwartet is not None and self._zuletzt.get(peer) is not erwartet:
+                anderer = self._zuletzt.get(peer)
+                self._log("##", f"Kurzquittung von {peer} — gilt dem "
+                                f"{anderer.kind if anderer else '?'}-Auftrag, nicht dem erwarteten")
                 return
             if ev:
                 self._log("##", f"Kurzquittung von {peer}")
@@ -2932,9 +2937,15 @@ class Radio:
             with self._pending_lock:
                 self._pending = job
             try:
-                # ms<hmid>…, mT<len><hmid>…, mb<stufe>s<hmid>… (Burst-Umschrift in `_submit`)
-                ziel = (job.cmd[2:8] if job.cmd.startswith("ms") else
-                        job.cmd[4:10] if job.cmd[:2] in ("mT", "mb") else "")
+                # `_submit` schreibt fuer den Vorlauf `ms…`/`mT…` zu
+                # `mb<stufe>s…`/`mb<stufe>T…` um — die Adresse rueckt dabei
+                # um ein Zeichen weiter. Beide Formen einzeln behandeln, sonst
+                # landet bei `mb3T11<hmid>` der Laengenteil in der Adresse.
+                c = job.cmd
+                if c.startswith("mb"):
+                    c = c[3:]                        # Stufe weg: wieder ms…/mT…
+                ziel = (c[2:8] if c.startswith("ms") else
+                        c[4:10] if c.startswith("mT") else "")
                 if len(ziel) == 6:
                     self._zuletzt[ziel.lower()] = job
             except Exception:                    # noqa: BLE001
@@ -3134,10 +3145,11 @@ class Radio:
         """Die Zeitanfrage eines Geraets mit der Ortszeit beantworten."""
         p = self.zeit_payload(time.localtime())
         kopf = FT_TIME_INFO | self._wach_bit(hmid)
-        self._submit(f"ms{hmid.upper()}{kopf:02X}{appseq:02X}{p.hex().upper()}",
-                     "zeit", time.time() + self.answer_delay)
+        job = self._submit(f"ms{hmid.upper()}{kopf:02X}{appseq:02X}{p.hex().upper()}",
+                           "zeit", time.time() + self.answer_delay)
         if self.verbose:
             print(f"  Zeit an {hmid}: {time.strftime('%a %d.%m.%Y %H:%M:%S')}")
+        return job
 
     # Ab welcher Aenderung ein neuer Pegel gemeldet wird. Der Wert schwankt
     # von Frame zu Frame um ein bis zwei dB; jede Zuckung zu melden fuellte
@@ -3730,10 +3742,13 @@ class Radio:
         ev = threading.Event()
         self._acked[hmid] = ev
         try:
-            self._time_info(hmid, self._next_seq(hmid))
+            # Der eigene Auftrag wird vermerkt, damit seine Kurzquittung auch
+            # als seine erkannt wird (siehe Waechter in `_handle`).
+            self._acked_job[hmid] = self._time_info(hmid, self._next_seq(hmid))
             antwortet = ev.wait(warten or self.PING_WARTEN)
         finally:
             self._acked.pop(hmid, None)
+            self._acked_job.pop(hmid, None)
         addr = self.by_hmid.get(hmid)
         if addr:
             try:
@@ -4156,6 +4171,43 @@ class Radio:
         if ergebnis == 0:
             for e in erledigt:
                 self._abschluss(hmid, e)
+        else:
+            # Abgelehnt: der Rahmen ist entfernt (das Geraet will ihn nicht,
+            # Wiederholen bringt nichts) — aber der Rest seiner Kette darf
+            # nicht ohne ihn weiterlaufen.
+            for e in erledigt:
+                if e.get("kette"):
+                    self._kette_aufgeben(hmid, e["kette"], "vom Geraet abgelehnt")
+
+    def _kette_aufgeben(self, hmid, kid, grund):
+        """Eine Konfigurationskette als GANZES verwerfen.
+
+        ⚠️ Einzelne Glieder aufzugeben geht nicht: START, SET und COMMIT sind
+        eine Sitzung am Geraet. Faellt eines aus, ist der Rest wertlos — und
+        ginge er beim naechsten Lebenszeichen trotzdem hinaus, kaeme ein SET
+        ohne START (das Geraet lehnt es ab). Darum: alles weg, `CONFIG_PENDING`
+        zurueck und laut melden, statt den Auftrag still verschwinden zu lassen.
+        """
+        with self.lock:
+            offen = self._wartend.get(hmid) or []
+            rest = [e for e in offen if e.get("kette") != kid]
+            weg = len(offen) - len(rest)
+            if rest:
+                self._wartend[hmid] = rest
+            else:
+                self._wartend.pop(hmid, None)
+            noch = any(x.get("kette") for x in rest)
+        if not weg:
+            return
+        self._save_state()
+        addr = self.by_hmid.get(hmid)
+        self._log("##", f"KONFIG {kid} aufgegeben ({grund}) — {weg} Rahmen verworfen")
+        if addr:
+            self.qccu.merke_ereignis(
+                "bad", f"{self.qccu.name_of(addr, addr)}: Konfiguration nicht "
+                       f"geschrieben ({grund}) — die Werte stehen weiter auf dem alten Stand")
+            if not noch:
+                self.qccu.set_value_internal(addr, 0, "CONFIG_PENDING", False)
 
     def _abschluss(self, hmid, e):
         """Was nach der Annahme eines Warterahmens zu tun ist — genau einmal."""
@@ -4334,7 +4386,8 @@ class Radio:
                     "".join(f"{int(ix):02X}{int(b) & 0xFF:02X}" for ix, b in teil))))
             rahmen.append((naechste(), self._konfig_rahmen(hmid, kanal, appseq, self.KONFIG_COMMIT)))
             self.appseq[hmid] = appseq
-            eintraege = [{"cmd": cmd, "appseq": seq, "versuche": 0, "kette": True} for seq, cmd in rahmen]
+            kid = f"{addr}:{kanal}:{liste}:{rahmen[0][0]:02X}"
+            eintraege = [{"cmd": cmd, "appseq": seq, "versuche": 0, "kette": kid} for seq, cmd in rahmen]
             eintraege[-1]["danach"] = {"master": [addr, int(kanal), dict(werte)]}
             self._wartend.setdefault(hmid, []).extend(eintraege)
         self._save_state()
@@ -4370,9 +4423,13 @@ class Radio:
             if offen:
                 self._zustellung.add(hmid)
             senden = []
+            aufgeben = {e.get("kette") for e in offen
+                        if e.get("kette") and e["versuche"] >= LINK_VERSUCHE}
             for e in offen:
                 if e["versuche"] >= LINK_VERSUCHE:
                     continue
+                if e.get("kette") in aufgeben:
+                    continue          # Glied einer Kette, deren Kopf aufgegeben hat
                 # Der Anlauf zaehlt erst beim Senden (in `lauf`) — ein Glied
                 # hinter einer gerissenen Kette hat keinen Anlauf verbraucht.
                 senden.append(e)
@@ -4383,6 +4440,8 @@ class Radio:
             else:
                 self._wartend.pop(hmid, None)
         self._save_state()
+        for kid in aufgeben:
+            self._kette_aufgeben(hmid, kid, f"nach {LINK_VERSUCHE} Anlaeufen ohne Annahme")
         if aufgegeben:
             self._log("##", f"WARTEND {aufgegeben} Befehl(e) an {hmid} "
                             f"aufgegeben (nach {LINK_VERSUCHE} Anlaeufen)")
@@ -4406,9 +4465,10 @@ class Radio:
             self._antwort_abwarten(hmid)
             for e in senden:
                 with self.lock:
-                    if e not in (self._wartend.get(hmid) or []):
+                    if not any(x is e for x in (self._wartend.get(hmid) or [])):
                         continue            # inzwischen quittiert (ANSWER kam vorab)
                     e["versuche"] += 1
+                self._save_state()          # der Anlauf zaehlt auch ueber einen Neustart
                 gut = self._link_senden(hmid, e["appseq"], e["cmd"])
                 self._log("##", f"WARTEND appSeq=0x{e['appseq']:02X} an {hmid}: "
                                 + ("quittiert" if gut is True else
@@ -4462,6 +4522,7 @@ class Radio:
                 eintrag["ev"].clear()
                 mac.clear()
                 job = self._submit(cmd, "cmd")
+                self._acked_job[hmid] = job
                 # Das Antwortfenster beginnt, wenn der Rahmen die Leitung
                 # verlassen hat — nicht beim Einreihen. Steht davor noch ein
                 # Auftrag in der Schlange, liefe es sonst leer, bevor das
@@ -4489,6 +4550,7 @@ class Radio:
                 self._app_ack.pop((hmid, appseq), None)
             if self._acked.get(hmid) is mac:
                 self._acked.pop(hmid, None)
+            self._acked_job.pop(hmid, None)
         self._log("##", f"VERDRAHTUNG appSeq=0x{appseq:02X} ohne Antwort nach "
                         f"{LINK_VERSUCHE} Anlaeufen")
         return None

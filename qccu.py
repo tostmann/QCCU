@@ -567,16 +567,25 @@ def listenbytes(beschr, bestand, neu):
         for i in range(n):
             beruehrt.add((liste, byte + i))
     aus = {}
-    def eintragen(p, wert):
+    def eintragen(p, wert, nur=None):
         liste, byte, bit, lb, lbit = stelle(p)
         n = bytezahl(beschr[p]["ADRESSE"])
         if lbit and bit + lbit > 8 * n:
             raise ValueError(f"{p}: Bitfeld {bit}+{lbit} passt nicht in {n} Byte")
         zahl = int.from_bytes(physisch(beschr[p], wert), "big")
-        if lbit and zahl >= (1 << lbit):
-            raise ValueError(f"{p}: {wert!r} passt nicht in {lbit} Bit")
+        # ⚠️ Die Feldbreite ist LAENGE_BYTE *und* LAENGE_BIT zusammen
+        # (`ConfigurationParameter`: die Laengenrechnung addiert beide, die
+        # Lesemaske kappt nur das oberste Byte auf `lengthBit`). Wer nur
+        # `lengthBit` prueft, weist an einem 9-Bit-Feld (1 Byte + 1 Bit) jeden
+        # Wert ueber 1 ab — das betraf 3960 Parameter, darunter alle
+        # Wochenprofil-Zeiten (03.09.2026 durchgezaehlt).
+        breite = 8 * lb + lbit
+        if breite and zahl >= (1 << breite):
+            raise ValueError(f"{p}: {wert!r} passt nicht in {breite} Bit")
         zahl <<= bit
         for i in range(n):
+            if nur is not None and (byte + i) not in nur:
+                continue
             b = (zahl >> (8 * (n - 1 - i))) & 0xFF
             aus.setdefault(liste, {}).setdefault(byte + i, 0)
             aus[liste][byte + i] |= b
@@ -588,17 +597,27 @@ def listenbytes(beschr, bestand, neu):
             continue
         liste, byte, bit, lb, lbit = stelle(p)
         n = bytezahl(beschr[p]["ADRESSE"])
-        if not any((liste, byte + i) in beruehrt for i in range(n)):
+        # Nur Nachbarn, die ein beruehrtes Byte TEILEN — und von denen auch nur
+        # die beruehrten Bytes. Sonst schriebe ein Bitfeld die Folgebytes seines
+        # Nachbarn gleich mit und loeschte, was dort sonst noch steht.
+        eigene = [byte + i for i in range(n) if (liste, byte + i) in beruehrt]
+        if not eigene:
             continue
         wert = bestand.get(p)
         if wert is None:
             wert = e.get("DEFAULT")
         if wert is None:
             continue
+        # ⚠️ Ein Nachbar, der sich nicht rechnen laesst, darf NICHT stillschweigend
+        # als 0 im Byte landen — die Zentrale bricht den ganzen Schreibvorgang ab
+        # (`getConfigurationDataOfParameters` laesst die ConversionException nach
+        # oben). Ein wohlgeformter Rahmen mit geloeschten Fremdbits ist der
+        # schlimmere Ausgang.
         try:
-            eintragen(p, wert)
-        except ValueError:
-            continue                    # ein Nachbar, der sich nicht rechnen laesst, bleibt 0
+            eintragen(p, wert, nur=set(eigene))
+        except ValueError as ex:
+            raise ValueError(f"Nachbar {p} im selben Byte laesst sich nicht "
+                             f"berechnen ({ex}) — nichts geschrieben") from ex
     return aus
 
 
@@ -1749,8 +1768,22 @@ class QCCU:
             raise xmlrpc.client.Fault(-5, str(ex))
         if self.on_put_master is None:
             raise xmlrpc.client.Fault(-5, "No radio")
+        # ⚠️ Je Liste eine eigene Kette — und jede schliesst NUR ihre eigenen
+        # Werte ab. Traegt jede Kette den vollen Satz, wandern nach der ersten
+        # auch die Werte der zweiten in den Bestand, obwohl sie noch gar nicht
+        # geschrieben sind; scheitert die zweite, liest der Klient danach einen
+        # Wert, den das Geraet nie bekommen hat. 38 Kanaltypen fuehren
+        # MASTER-Parameter in mehr als einer Liste.
+        misslungen = []
         for liste, paare in sorted(listen.items()):
-            self.on_put_master(base, ch, liste, sorted(paare.items()), dict(values))
+            meine = {p: v for p, v in values.items()
+                     if beschr[p]["ADRESSE"]["LISTE"] == liste}
+            if not self.on_put_master(base, ch, liste, sorted(paare.items()), meine):
+                misslungen.append(liste)
+        if misslungen:
+            raise xmlrpc.client.Fault(
+                -5, "Configuration could not be queued for list(s): "
+                    + ", ".join(str(x) for x in misslungen))
         return ""
 
     def master_uebernehmen(self, address, channel, values):
@@ -2385,8 +2418,9 @@ def main():
                    help="Kennung dieser Instanz vor der Funkadresse in der Seriennummer "
                         "(Vorgabe QCCU). Zwei Instanzen mit demselben Stick — etwa ein "
                         "Pruefstand neben der Produktion — brauchen verschiedene Kennungen, "
-                        "sonst haelt Home Assistant sie fuer dieselbe Zentrale. Vier Zeichen "
-                        "empfohlen: HA behaelt die letzten zehn Zeichen der Seriennummer.")
+                        "sonst haelt Home Assistant sie fuer dieselbe Zentrale. HOECHSTENS "
+                        "VIER Zeichen; laengere werden gekuerzt, weil die Gegenstelle nur "
+                        "die letzten zehn Zeichen der Seriennummer behaelt.")
     a.add_argument("--advertise", default=None,
                    help="Adresse, unter der uns die Gegenstelle erreicht "
                         "(geht in die Schnittstellen-Zeile)")
@@ -2462,7 +2496,10 @@ def main():
     # (FHEM, Home Assistant), koennen auf 127.0.0.1 bleiben. Die Oberflaeche
     # NICHT — sonst sperrt man sich mit dem Haekchen selbst aus.
     dienst_bind = "127.0.0.1" if g.localhost else g.bind
-    lc.kennung = (g.kennung or "QCCU").strip().upper()
+    lc.kennung = (g.kennung or "QCCU").strip().upper()[:4] or "QCCU"
+    if (g.kennung or "QCCU").strip().upper()[:4] != (g.kennung or "QCCU").strip().upper():
+        print(f"  ! Kennung auf vier Zeichen gekuerzt: {lc.kennung} "
+              f"(die Gegenstelle behaelt nur die letzten zehn Zeichen der Seriennummer)")
     lc.own_host = (g.advertise or dienst_bind if dienst_bind != "0.0.0.0"
                    else (g.advertise or "127.0.0.1"))
     try:

@@ -804,7 +804,13 @@ class JsonRpc:
         # davon die letzten zehn Zeichen; mit der Vorgabe "QCCU" sind das genau
         # Kennung + Funkadresse. Ohne eigene Kennung brach das Anlegen eines
         # zweiten Eintrags mit "already configured" ab (03.09.2026).
-        kennung = (getattr(self.q, "kennung", None) or "QCCU").upper()
+        # ⚠️ HOECHSTENS VIER Zeichen: aiohomematic behaelt von der Seriennummer
+        # die letzten zehn (`json_rpc.py`: `serial = serial[-10:]`). Bei einer
+        # laengeren Kennung faellt ihr Anfang weg — zwei Instanzen mit gleichem
+        # Kennungs-ENDE („haus-test" und „labor-test") bekaemen dieselbe
+        # Kennung und damit genau die Kollision, die diese Angabe verhindern
+        # soll. Lieber sichtbar kuerzen als still kollidieren.
+        kennung = (getattr(self.q, "kennung", None) or "QCCU").upper()[:4]
         return f"{kennung}{addr}"
 
     def _alle_werte(self, s):
