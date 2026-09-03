@@ -797,8 +797,15 @@ class JsonRpc:
         sich also nicht bei jedem Start aendern. Die Funkadresse leistet das
         und ist zugleich die ehrlichste Kennung, die wir haben."""
         radio = getattr(self.q, "radio", None)
-        addr = (getattr(radio, "own_addr", None) or "").upper()
-        return f"QCCU{addr}"[:10] if addr else "QCCU000000"
+        addr = (getattr(radio, "own_addr", None) or "").upper() or "000000"
+        # Die Kennung davor unterscheidet zwei Instanzen mit DEMSELBEN Stick —
+        # Pruefstand neben Produktion. Home Assistant (aiohomematic) macht aus
+        # der Seriennummer die eindeutige Kennung des Eintrags und behaelt
+        # davon die letzten zehn Zeichen; mit der Vorgabe "QCCU" sind das genau
+        # Kennung + Funkadresse. Ohne eigene Kennung brach das Anlegen eines
+        # zweiten Eintrags mit "already configured" ab (03.09.2026).
+        kennung = (getattr(self.q, "kennung", None) or "QCCU").upper()
+        return f"{kennung}{addr}"
 
     def _alle_werte(self, s):
         # Der Interface-Name steht IM Skript: die Gegenstelle ersetzt

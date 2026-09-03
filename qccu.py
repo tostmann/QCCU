@@ -2198,6 +2198,12 @@ def main():
     a.add_argument("--alt-ports", action="store_true",
                    help="alle Ports um 10000 verschieben (2010 -> 12010), "
                         "wenn auf derselben Maschine schon eine OCCU laeuft")
+    a.add_argument("--kennung", default="QCCU",
+                   help="Kennung dieser Instanz vor der Funkadresse in der Seriennummer "
+                        "(Vorgabe QCCU). Zwei Instanzen mit demselben Stick — etwa ein "
+                        "Pruefstand neben der Produktion — brauchen verschiedene Kennungen, "
+                        "sonst haelt Home Assistant sie fuer dieselbe Zentrale. Vier Zeichen "
+                        "empfohlen: HA behaelt die letzten zehn Zeichen der Seriennummer.")
     a.add_argument("--advertise", default=None,
                    help="Adresse, unter der uns die Gegenstelle erreicht "
                         "(geht in die Schnittstellen-Zeile)")
@@ -2273,6 +2279,7 @@ def main():
     # (FHEM, Home Assistant), koennen auf 127.0.0.1 bleiben. Die Oberflaeche
     # NICHT — sonst sperrt man sich mit dem Haekchen selbst aus.
     dienst_bind = "127.0.0.1" if g.localhost else g.bind
+    lc.kennung = (g.kennung or "QCCU").strip().upper()
     lc.own_host = (g.advertise or dienst_bind if dienst_bind != "0.0.0.0"
                    else (g.advertise or "127.0.0.1"))
     try:

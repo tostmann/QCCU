@@ -38,7 +38,7 @@ except Exception:
 # `--bidcos-port` am Aufruf). Eine neue Einstellung ist erst fertig, wenn ihr
 # Name AUCH hier steht.
 for name in ("SERIAL", "OWN_ADDR", "RPC_PORT", "REGA_PORT",
-             "WEB_PORT", "JSON_PORT", "CUL_PORT", "ADVERTISE",
+             "WEB_PORT", "JSON_PORT", "CUL_PORT", "ADVERTISE", "KENNUNG",
              "SOFORT_MELDEN", "ALT_PORTS", "LOCALHOST_ONLY",
              "BIDCOS_PORT", "BIDCOS_SENDEN", "BIDCOS_FREMD",
              "RAW_LOG"):
@@ -97,6 +97,7 @@ LOCALHOST_ONLY=${LOCALHOST_ONLY:-0}
 BIDCOS_SENDEN=${BIDCOS_SENDEN:-0}
 BIDCOS_FREMD=${BIDCOS_FREMD:-}
 ADVERTISE=${ADVERTISE:-}
+KENNUNG=${KENNUNG:-}
 
 log() { echo "[qccu] $*"; }
 die() { echo "[qccu] FEHLER: $*" >&2; exit 1; }
@@ -327,6 +328,7 @@ serve() {
     [ "$BIDCOS_SENDEN" = "1" ] && set -- "$@" --bidcos-senden
     [ -n "$BIDCOS_FREMD" ] && set -- "$@" --bidcos-fremd "$BIDCOS_FREMD"
     [ -n "$ADVERTISE" ] && set -- "$@" --advertise "$ADVERTISE"
+    [ -n "$KENNUNG" ] && set -- "$@" --kennung "$KENNUNG"
     # Ohne Posteingang (FHEM/HMCCU): frisch Angelerntes sofort melden.
     [ "$SOFORT_MELDEN" = "1" ] && set -- "$@" --sofort-melden
     # Rohmitschnitt zur Fehlersuche. Er liegt neben den Tabellen in /data und
