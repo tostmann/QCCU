@@ -1414,6 +1414,8 @@ class Radio:
         # Zuletzt gemeldeter Stand von CONFIG_PENDING je Geraet — nur damit
         # der Wechsel einmal im Protokoll steht statt in jedem Frame.
         self._config_pending = {}
+        # Zuletzt gemeldetes Boot-Bit je Geraet — fuer die Protokollzeile beim Wechsel.
+        self._booted = {}
 
         self.tx_timeout = 0.4
         self.tx_tries = 3
@@ -2641,17 +2643,32 @@ class Radio:
         """
         for bit, param in ((SF_CONFIG_PENDING, "CONFIG_PENDING"),
                            (SF_LOWBAT, "LOW_BAT"),
-                           (SF_DUTYCYCLE, "DUTY_CYCLE")):
+                           (SF_DUTYCYCLE, "DUTY_CYCLE"),
+                           (SF_BOOTED, "BOOTED")):
             wert = bool(flags & bit)
             if not self._kanal_fuehrt(addr, 0, param):
                 continue
-            if param == "CONFIG_PENDING":
-                vorher = self._config_pending.get(addr)
+            # Zwei Bits werden beim WECHSEL protokolliert: CONFIG_PENDING (s. o.)
+            # und BOOTED. ⚠️ BOOTED ist mehr als eine Neustart-Anzeige: der
+            # HmIP-SMO230-A fuehrte es von der Inklusion an 61 Minuten lang und
+            # verwarf in dieser Zeit JEDEN Stellbefehl ohne ANSWER (7/7, MAC-
+            # quittiert); ab dem Rahmen, in dem es fiel, kam auf jeden Befehl
+            # ANSWER=ACK (5/5). Ob das Bit Ursache oder Anzeige ist, ist
+            # offen (04.09.2026) — sichtbar muss es sein, sonst sieht so ein
+            # Geraet von aussen aus wie ein kaputter Aktorpfad. Die Zentrale
+            # fuehrt es ebenso als Zustandsparameter des Wartungskanals
+            # (`StateParameterFactory`, Handler `handleStatusFrame`); ihre
+            # XML-RPC-Schicht zeigt es nicht, deshalb steht es bei uns in den
+            # Ergaenzungen der Tabellen.
+            merker = {"CONFIG_PENDING": self._config_pending,
+                      "BOOTED": self._booted}.get(param)
+            if merker is not None:
+                vorher = merker.get(addr)
                 if vorher != wert:
-                    self._config_pending[addr] = wert
-                    self._log("<<", f"{addr} CONFIG_PENDING={wert}")
+                    merker[addr] = wert
+                    self._log("<<", f"{addr} {param}={wert}")
                     if self.verbose:
-                        print(f"  <- {addr}:0 CONFIG_PENDING={wert}")
+                        print(f"  <- {addr}:0 {param}={wert}")
             self.qccu.set_value_internal(addr, 0, param, wert)
 
     def _paramset(self, d, channel):

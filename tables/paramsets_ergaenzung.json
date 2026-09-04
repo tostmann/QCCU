@@ -31,6 +31,14 @@
    }
   },
   "VALUES": {
+   "BOOTED": {
+    "DEFAULT": false,
+    "FLAGS": 1,
+    "MAX": true,
+    "MIN": false,
+    "OPERATIONS": 5,
+    "TYPE": "BOOL"
+   },
    "INSTALL_TEST": {
     "DEFAULT": false,
     "FLAGS": 2,
@@ -42,6 +50,54 @@
    "UPDATE_PENDING": {
     "DEFAULT": false,
     "FLAGS": 9,
+    "MAX": true,
+    "MIN": false,
+    "OPERATIONS": 5,
+    "TYPE": "BOOL"
+   }
+  }
+ },
+ "MAINTENANCE_BAT_BL": {
+  "VALUES": {
+   "BOOTED": {
+    "DEFAULT": false,
+    "FLAGS": 1,
+    "MAX": true,
+    "MIN": false,
+    "OPERATIONS": 5,
+    "TYPE": "BOOL"
+   }
+  }
+ },
+ "MAINTENANCE_BAT_CL": {
+  "VALUES": {
+   "BOOTED": {
+    "DEFAULT": false,
+    "FLAGS": 1,
+    "MAX": true,
+    "MIN": false,
+    "OPERATIONS": 5,
+    "TYPE": "BOOL"
+   }
+  }
+ },
+ "MAINTENANCE_BAT_EL": {
+  "VALUES": {
+   "BOOTED": {
+    "DEFAULT": false,
+    "FLAGS": 1,
+    "MAX": true,
+    "MIN": false,
+    "OPERATIONS": 5,
+    "TYPE": "BOOL"
+   }
+  }
+ },
+ "MAINTENANCE_SD": {
+  "VALUES": {
+   "BOOTED": {
+    "DEFAULT": false,
+    "FLAGS": 1,
     "MAX": true,
     "MIN": false,
     "OPERATIONS": 5,

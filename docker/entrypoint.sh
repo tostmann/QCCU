@@ -270,6 +270,11 @@ need_tables() {
     # Und die Adresse der Konfigurationsparameter (`ADRESSE`, ab 2026.9.2):
     # ohne sie kann putParamset MASTER nichts an das Gerät schreiben.
     grep -q '"ADRESSE"' "$TABLES/paramsets.json" 2>/dev/null || return 1
+    # Das Boot-Bit des Wartungskanals (`BOOTED`, ab 2026.9.5): die Tabellen
+    # aus der Zentrale fuehren es nicht, es kommt aus den Ergaenzungen. Ohne
+    # den Eintrag filtert QCCU den Wert weg — und ein Geraet, das nach der
+    # Inklusion eine Stunde lang jeden Befehl verwirft, sieht aus wie kaputt.
+    grep -q '"BOOTED"' "$TABLES/paramsets.json" 2>/dev/null || return 1
     # Link-Rollen der Kanaltypen (ab 2026.9.2): ohne sie kann QCCU keine
     # Verknuepfung zur Zentrale anlegen — ein Fensterkontakt meldet dann
     # keine Ereignisse.
