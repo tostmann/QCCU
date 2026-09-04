@@ -1338,7 +1338,11 @@ class WebHandler(BaseHTTPRequestHandler):
                 rf = {a: h for h, a in self.radio.by_hmid.items()}.get(adresse)
             if not rf:
                 return self._json({"error": "Geraet hat keine Funkadresse"}, 409)
-            erg = self.radio.status_anfragen(rf, int(body.get("channel", 0)))
+            try:
+                kanal = int(body.get("channel", 0))
+            except (TypeError, ValueError):
+                return self._json({"error": "channel ist keine Zahl"}, 400)
+            erg = self.radio.status_anfragen(rf, kanal)
             return self._json({"ok": True, "antwortet": erg})
 
         if self.path == "/api/pruefstand/zentralenlink":

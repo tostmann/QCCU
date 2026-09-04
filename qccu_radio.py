@@ -3823,8 +3823,10 @@ class Radio:
                 self._app_ack.pop((hmid, seq), None)
         # Geantwortet hat das Geraet, wenn eine ANSWER kam ODER sich Werte
         # geaendert haben (der STATUS laeuft durch den normalen Empfangsweg).
-        nachher = dict(getattr(d, "values", {}) or {}) if d is not None else {}
-        gekommen = bool(eintrag["ev"].is_set()) or (nachher != vorher)
+        # ⚠️ Ohne Wertespeicher (d is None) gibt es keinen Vergleich — sonst
+        # waere `{} != None` ein Scheinerfolg fuer jedes fremde Geraet.
+        nachher = dict(getattr(d, "values", {}) or {}) if d is not None else None
+        gekommen = bool(eintrag["ev"].is_set()) or (d is not None and nachher != vorher)
         self._log("##", f"STATUSFRAGE {hmid}:{kanal} -> "
                         + ("Antwort" if gekommen else "keine Antwort"))
         return gekommen
