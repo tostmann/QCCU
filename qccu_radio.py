@@ -1368,7 +1368,6 @@ class Radio:
         # Fremde Absender, ueber die schon einmal berichtet wurde.
         self._fremd_gemeldet = set()
         self.appseq = {}
-        self.devseq = {}
         self.lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._stop = False
@@ -1728,7 +1727,8 @@ class Radio:
     # Normalbetrieb verstellt: tx_timeout unter 20 ms waere kuerzer als die
     # MAC-Latenz des Geraets (~55 ms gemessen), ueber 5 s laenger als jede
     # sinnvolle Geduld; tx_tries hoeher als 5 verbrennt nur Sendezeit.
-    PRUEFSTAND_GRENZEN = {"tx_timeout": (0.02, 5.0), "tx_tries": (1, 5)}
+    # tx_timeout bis 12 s: Teil 6 (Anlauf-Abstand 1/5/10 s) braucht die 10-s-Stufe.
+    PRUEFSTAND_GRENZEN = {"tx_timeout": (0.02, 12.0), "tx_tries": (1, 5)}
 
     def pruefstand_setzen(self, werte):
         """Sendeparameter fuer eine MESSREIHE stellen.
@@ -2448,9 +2448,6 @@ class Radio:
         pt = b[1:1 + ln]
         if len(pt) < 2:
             return
-
-        with self.lock:
-            self.devseq[src.lower()] = pt[1]
 
         # Ein CONFIGURATION-Rahmen vom Geraet: der Untertyp steht im Byte
         # nach dem Anwendungskopf. Der Handler des Jars tut bei
@@ -3337,10 +3334,16 @@ class Radio:
         return dict(self.counters)
 
     def _next_seq(self, hmid):
-        """Eigener, fortlaufender UNGERADER Zaehler je Geraet."""
+        """Eigener, fortlaufender UNGERADER Zaehler je Geraet.
+
+        Ein neues Geraet beginnt bei 3. Bis 04.09.2026 uebernahm QCCU hier die
+        appSeq DES GERAETS aus seinem letzten Rahmen — eine Annahme ohne
+        Grundlage: die Zentrale fuehrt einen Zaehler je Zugangspunkt fuer alle
+        Geraete, beginnt bei jedem Start bei 0 und kuemmert sich nicht um die
+        Zaehler der Geraete (HMIPAccessPoint.getApplicationSequenceNumber).
+        Die Richtungen sind unabhaengig; unser Zaehler ist nur unserer.
+        """
         with self.lock:
-            if hmid not in self.appseq and hmid in self.devseq:
-                self.appseq[hmid] = self.devseq[hmid]
             s = (self.appseq.get(hmid, 0) + 2) & 0xFF
             if not s % 2:
                 s = (s + 1) & 0xFF
