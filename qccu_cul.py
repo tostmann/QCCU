@@ -201,6 +201,13 @@ class CulDienst:
         self.letzte_unbekannt = zeile
         if self.verbose:
             print(f"  CUL-Zugang: '{zeile}' nicht weitergereicht")
+        # ⚠️ Quittieren, nicht schweigen. `get <cul> raw <x>` nimmt jede
+        # Antwort (`00_CUL.pm`, %gets: Muster `.*`), aber KEINE Antwort kostet
+        # die Verbindung: `CUL_Get` ruft dann `DevIo_Disconnected`. Der Stick
+        # selbst gibt auf Unbekanntes `? ` aus (q-culfw `main.c`, default im
+        # Kommandoschalter) — dasselbe hier, damit ein Klient am Zugang
+        # sieht, was er am Stick saehe.
+        self._an_klient(sock, "? ")
 
     def _version_zeile(self):
         """Fassung im culfw-Format: `V <fassung> <name>`."""

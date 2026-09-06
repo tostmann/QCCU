@@ -196,10 +196,13 @@ Konfiguration, Peering); QCCU reicht die Frames nur durch.
 beantwortet werden `V`, `?`, `T01`, `T03`, `t`, `X` und `C<hh>` — damit laufen
 die `get`-Abfragen des CUL-Moduls (`version`, `cmds`, `fhtbuf`, `uptime`,
 `credit10ms`, `ccconf`) durch, statt in FHEMs Drei-Sekunden-Fenster zu
-verhungern. Verworfen wird weiterhin alles übrige, insbesondere die
+verhungern. Ausgeführt wird weiterhin nichts übriges — insbesondere nicht die
 Registerschreibbefehle (`W0F`, `W10`, `W11`), die die Frequenz verstellen und
-den Homematic-IP-Betrieb beenden würden, und Registerlesungen ab 0x30 (dort
-liegt der Empfangspuffer). Die letzte verworfene Zeile hält der Zugang fest —
+den Homematic-IP-Betrieb beenden würden, und keine Registerlesung ab 0x30 (dort
+liegt der Empfangspuffer). Quittiert wird es aber: unbekannte Zeilen bekommen
+`? `, wie sie der Stick selbst gibt. Ohne diese Quittung wirft FHEM bei
+`get <cul> raw` die Verbindung weg (`DevIo_Disconnected`), statt bloß in den
+Zeitablauf zu laufen. Die letzte verworfene Zeile hält der Zugang fest —
 wer wissen will, was FHEM hier schickt, findet sie im Zustand der Oberfläche
 unter `cul.letzte_unbekannt`.
 

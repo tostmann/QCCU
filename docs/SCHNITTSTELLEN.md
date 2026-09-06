@@ -206,7 +206,7 @@ gleichzeitig sind möglich; jeder bekommt die empfangenen BidCoS-Frames als
 | `C<hh>` | ein CC1101-Register **bis 0x2E**, in der Schreibweise von culfw: `C0D = 21 / 33` | `get <cul> ccconf` |
 | `Ar` | durchgereicht (schaltet den Empfang ein, den QCCU ohnehin führt) | rfmode-Wechsel |
 | `Ax` | angenommen, aber **nicht** ausgeführt — abschalten darf den Empfang kein Klient: am selben Stick hängt die HmIP-Seite | rfmode-Wechsel |
-| alles andere | verworfen und gezählt, die letzte Zeile steht im Zustand (`letzte_unbekannt`) — darunter die Registerschreibbefehle `W…`, die die Frequenz verstellen würden | — |
+| alles andere | verworfen und gezählt, aber mit `? ` quittiert (wie der Stick); die letzte Zeile steht im Zustand (`letzte_unbekannt`) — darunter die Registerschreibbefehle `W…`, die die Frequenz verstellen würden | `get <cul> raw` |
 
 Ab Register 0x30 liest der Stick mit gesetztem Burst-Bit, und 0x3F ist der
 RX-FIFO: ein `C3F` zöge ein Byte aus einem laufenden Empfang. Darum endet der
@@ -219,7 +219,9 @@ Antwort in der falschen Form ist so gut wie keine — und **gar keine** Antwort
 ist schlimmer als eine späte: `CUL_Get` ruft dann `DevIo_Disconnected` und meldet
 die Verbindung neu an. Deshalb antwortet `X` immer (notfalls nur mit der
 Meldeform, die leere Zahl ist zulässig), und `C<hh>` greift auf den zuletzt
-gelesenen Registerwert zurück, wenn der Stick gerade nicht antwortet. Zwei Stellen weichen darum
+gelesenen Registerwert zurück, wenn der Stick gerade nicht antwortet. Und
+alles Unbekannte wird mit `? ` quittiert, statt verschwiegen zu werden — so
+hält es der Stick selbst, und `get <cul> raw` nimmt jede Antwort. Zwei Stellen weichen darum
 bewusst von dem ab, was der Stick selbst sagt: er antwortet auf `C0D` knapp mit
 `C0D=21`, FHEM erwartet aber `^C.* = .*` und liest den **Dezimalwert** aus dem
 fünften Feld — QCCU schreibt die Antwort des Sticks entsprechend um. Und `t`
