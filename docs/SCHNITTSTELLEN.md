@@ -216,8 +216,9 @@ FHEM braucht ohnehin nur 0D, 0E, 0F, 10, 1B und 1D.
 **Das Format ist nicht Geschmackssache.** FHEM prüft jede Antwort gegen ein
 Muster (`00_CUL.pm`, `%gets`) und wartet sonst drei Sekunden vergeblich; eine
 Antwort in der falschen Form ist so gut wie keine — und **gar keine** Antwort
-ist schlimmer als eine späte: `CUL_Get` ruft dann `DevIo_Disconnected` und meldet
-die Verbindung neu an. Deshalb antwortet `X` immer (notfalls nur mit der
+ist schlimmer als eine späte: bei `uptime`, `fhtbuf`, `credit10ms` und `raw` ruft
+`CUL_Get` dann `DevIo_Disconnected` und meldet die Verbindung neu an (nur
+`ccconf` gibt bloß den Zeitablauf zurück). Deshalb antwortet `X` immer (notfalls nur mit der
 Meldeform, die leere Zahl ist zulässig), und `C<hh>` greift auf den zuletzt
 gelesenen Registerwert zurück, wenn der Stick gerade nicht antwortet. Und
 alles Unbekannte wird mit `? ` quittiert, statt verschwiegen zu werden — so

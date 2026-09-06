@@ -173,12 +173,15 @@ class CulDienst:
             antwort = self._ccreg_zeile(m.group(1).upper())
             if antwort:
                 return self._an_klient(sock, antwort)
-            # Keine Antwort heisst in FHEM nicht „Zeitablauf", sondern
-            # `DevIo_Disconnected` (`00_CUL.pm`, CUL_Get): die Verbindung wird
-            # abgeworfen und neu angemeldet. Das muss im Protokoll stehen,
+            # ⚠️ Was FHEM aus dem Schweigen macht, haengt am Weg: `get ccconf`
+            # gibt bloss den Zeitablauf zurueck (`00_CUL.pm`, CUL_Get:
+            # `return $err if($err)` im ccconf-Zweig), `get raw C0D` dagegen
+            # landet im allgemeinen Zweig und ruft `DevIo_Disconnected` —
+            # Verbindung weg, Neuanmeldung. Beides gehoert ins Protokoll,
             # sonst sucht jemand den Grund im Netz.
             print(f"  CUL-Zugang: Register {m.group(1)} nicht lesbar — "
-                  f"FHEM wird die Verbindung neu aufbauen")
+                  f"`get ccconf` meldet einen Zeitablauf, `get raw` wirft "
+                  f"die Verbindung weg")
             return
 
         if RE_ASKSIN.match(zeile):
