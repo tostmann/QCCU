@@ -193,13 +193,38 @@ TCP, zeilenorientiert (CR LF), im Stil eines culfw-CUL. Mehrere Klienten
 gleichzeitig sind möglich; jeder bekommt die empfangenen BidCoS-Frames als
 `A…`-Zeilen.
 
-| Vom Klienten | Wirkung |
-|---|---|
-| `As<hex>` | Frame senden (roh, der Stick prüft nur die Länge) |
-| `V` | `V <fassung> q-culfw` — die Fassung des Sticks |
-| `T01` / `T01<xxxx>` | FHT-Kennung lesen / setzen (nur gemerkt, damit `CUL_DoInit` durchläuft) |
-| `?` | `? (? is unknown) Use one of A V X T` |
-| alles andere | verworfen und gezählt — auch `Ar`/`Ax` (Empfang schaltet QCCU selbst), `X…`, und alle Registerbefehle `W…` |
+| Vom Klienten | Wirkung | FHEM |
+|---|---|---|
+| `As<hex>` | Frame senden (roh, der Stick prüft nur die Länge) | `CUL_HM` |
+| `V` | `V <fassung> q-culfw` — die Fassung des Sticks | `get <cul> version` |
+| `?` | `? (? is unknown) Use one of A C T V X t` | `get <cul> cmds` |
+| `T01` / `T01<xxxx>` | FHT-Kennung lesen / setzen (nur gemerkt, damit `CUL_DoInit` durchläuft) | Anmeldung |
+| `T03` | `00` — diese Zentrale hat keinen FHT-Sendepuffer | `get <cul> fhtbuf` |
+| `t` | Laufzeit von QCCU, acht Hexziffern in Ticks von 8 ms | `get <cul> uptime` |
+| `X` | Meldeform und Restkonto des Sticks, etwa `21 900` | `get <cul> credit10ms` |
+| `X<hh>` | Meldeform setzen (FHEM schickt beim Anmelden `X21`); keine Antwort | Anmeldung |
+| `C<hh>` | ein CC1101-Register **bis 0x2E**, in der Schreibweise von culfw: `C0D = 21 / 33` | `get <cul> ccconf` |
+| `Ar` | durchgereicht (schaltet den Empfang ein, den QCCU ohnehin führt) | rfmode-Wechsel |
+| `Ax` | angenommen, aber **nicht** ausgeführt — abschalten darf den Empfang kein Klient: am selben Stick hängt die HmIP-Seite | rfmode-Wechsel |
+| alles andere | verworfen und gezählt, die letzte Zeile steht im Zustand (`letzte_unbekannt`) — darunter die Registerschreibbefehle `W…`, die die Frequenz verstellen würden | — |
+
+Ab Register 0x30 liest der Stick mit gesetztem Burst-Bit, und 0x3F ist der
+RX-FIFO: ein `C3F` zöge ein Byte aus einem laufenden Empfang. Darum endet der
+Zugang bei 0x2E — dieselbe Grenze, die q-culfw für seinen Schreibbefehl zieht.
+FHEM braucht ohnehin nur 0D, 0E, 0F, 10, 1B und 1D.
+
+**Das Format ist nicht Geschmackssache.** FHEM prüft jede Antwort gegen ein
+Muster (`00_CUL.pm`, `%gets`) und wartet sonst drei Sekunden vergeblich; eine
+Antwort in der falschen Form ist so gut wie keine — und **gar keine** Antwort
+ist schlimmer als eine späte: `CUL_Get` ruft dann `DevIo_Disconnected` und meldet
+die Verbindung neu an. Deshalb antwortet `X` immer (notfalls nur mit der
+Meldeform, die leere Zahl ist zulässig), und `C<hh>` greift auf den zuletzt
+gelesenen Registerwert zurück, wenn der Stick gerade nicht antwortet. Zwei Stellen weichen darum
+bewusst von dem ab, was der Stick selbst sagt: er antwortet auf `C0D` knapp mit
+`C0D=21`, FHEM erwartet aber `^C.* = .*` und liest den **Dezimalwert** aus dem
+fünften Feld — QCCU schreibt die Antwort des Sticks entsprechend um. Und `t`
+kennt der Stick gar nicht; dort antwortet die Zentrale mit ihrer eigenen
+Laufzeit.
 
 Homematic-IP-Frames erscheinen hier nicht — der Stick trennt die Familien
 selbst. Beide teilen sich das 1-%-Sendezeitkonto des Sticks.

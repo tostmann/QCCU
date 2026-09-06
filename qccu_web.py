@@ -1257,6 +1257,12 @@ class WebHandler(BaseHTTPRequestHandler):
         t = getattr(lc, "t", None)
         if t is not None and hasattr(t, "zustand"):
             out["tabellen"] = t.zustand()
+        # Der CUL-Zugang meldet seine Zaehler und die zuletzt VERWORFENE Zeile.
+        # Das ist die Antwort auf „mein FHEM bekommt hier keine Antwort": man
+        # sieht ohne Mitschnitt, was der Klient geschickt hat.
+        cul = getattr(lc, "cul", None)
+        if cul is not None and hasattr(cul, "zustand"):
+            out["cul"] = cul.zustand()
         # Wovon die Oberflaeche abhaengt, wenn sie einen Rat gibt: in der
         # Erweiterung gibt es keine `docker run`-Zeile.
         try:

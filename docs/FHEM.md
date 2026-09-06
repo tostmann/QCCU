@@ -180,9 +180,10 @@ attr qcul hmId <6 Hexziffern>
 `rfmode HomeMatic` ist **nicht** optional: ohne ihn führt FHEM den Zugang im
 SlowRF-Modus, und `CUL_HM` steht gar nicht erst in seiner Client-Liste — es
 ließe sich also kein einziges BidCoS-Gerät anlegen. Die Umschaltung schickt
-Registerbefehle (`X21`, `Ar`), die QCCU verwirft und im Protokoll vermerkt
-(`CUL-Zugang: 'Ar' nicht weitergereicht`); das ist richtig so und stört den
-Homematic-IP-Betrieb nicht — der Stick steht ohnehin auf dieser Frequenz.
+`X21` und `Ar`: die Meldeform reicht QCCU an den Stick weiter, den Empfang
+führt es ohnehin selbst. Ein `Ax` (Wechsel auf einen anderen rfmode) wird
+angenommen, aber nicht ausgeführt — am selben Stick hängt die
+Homematic-IP-Seite, die nicht taub werden darf.
 
 `hmId` ist die Zentralen-Adresse von CUL_HM und Sache des FHEM-Betreibers —
 ohne sie hört CUL_HM nur mit und sendet nie (das Gerät blinkt dann weiter).
@@ -192,10 +193,15 @@ Anlerntaste am Gerät. Das Anlernen macht FHEM allein (Pairing-Request,
 Konfiguration, Peering); QCCU reicht die Frames nur durch.
 
 **Was der Zugang kann und was nicht:** durchgereicht wird `As<hex>` (senden);
-beantwortet werden `V`, `T01` und `?`. Alles andere wird verworfen — auch
-Registerbefehle (`W0F`, `W10`, `W11`), die die Frequenz verstellen und den
-Homematic-IP-Betrieb beenden würden. Den Empfang schaltet QCCU selbst; ein
-`Ar`/`Ax` vom Klienten wird nicht weitergereicht.
+beantwortet werden `V`, `?`, `T01`, `T03`, `t`, `X` und `C<hh>` — damit laufen
+die `get`-Abfragen des CUL-Moduls (`version`, `cmds`, `fhtbuf`, `uptime`,
+`credit10ms`, `ccconf`) durch, statt in FHEMs Drei-Sekunden-Fenster zu
+verhungern. Verworfen wird weiterhin alles übrige, insbesondere die
+Registerschreibbefehle (`W0F`, `W10`, `W11`), die die Frequenz verstellen und
+den Homematic-IP-Betrieb beenden würden, und Registerlesungen ab 0x30 (dort
+liegt der Empfangspuffer). Die letzte verworfene Zeile hält der Zugang fest —
+wer wissen will, was FHEM hier schickt, findet sie im Zustand der Oberfläche
+unter `cul.letzte_unbekannt`.
 
 **Ein Gerät auf diesen CUL umhängen** (etwa von einem alten IO): `attr <gerät>
 IODev qcul` greift **nicht**, solange das alte IO noch definiert ist — CUL_HM
@@ -211,7 +217,10 @@ einspielen (Oberfläche → *Firmware*).
 
 **Wenn etwas nicht geht:** bleibt der CUL nach einem Neustart des Containers
 auf `disconnected` — `set qcul reopen`. Beide Funkfamilien teilen sich das
-1-%-Sendezeitkonto des Sticks; FHEM weiß nichts davon und sähe bei
+1-%-Sendezeitkonto des Sticks; `get qcul credit10ms` nennt den Rest (in
+Einheiten von 10 ms, wie bei culfw). FHEM *rechnet* damit nicht — weder
+`00_CUL.pm` noch `CUL_HM` werten das Reading aus, FHEMs eigene Bremse ist
+`XMIT_TIME`/`NR_CMD_LAST_H` —, aber ohne diesen Blick sieht man bei
 erschöpftem Konto nur ein stummes Gerät.
 
 ---
