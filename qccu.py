@@ -11,7 +11,8 @@ import sys
 import threading
 import time
 import xmlrpc.client
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import socketserver
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from xmlrpc.server import SimpleXMLRPCServer, SimpleXMLRPCRequestHandler
 
 # Fassung im Schema von Home Assistant (Jahr.Monat.Zaehler). ⚠️ Sie ist
@@ -473,6 +474,30 @@ class RpcHandler(SimpleXMLRPCRequestHandler):
 
     def log_message(self, fmt, *args):
         pass
+
+
+class ThreadingXMLRPCServer(socketserver.ThreadingMixIn, SimpleXMLRPCServer):
+    """XML-RPC, das mehrere Aufrufe gleichzeitig beantwortet.
+
+    ⚠️ Bis zum 07.09.2026 war dieser Dienst einfaedig, und das war eine
+    Eigenschaft mit Folgen: `setValue` und `putParamset VALUES` kehren erst
+    mit dem Ausgang am Geraet zurueck (seit 2026.8.45, so haelt es auch die
+    Zentrale von eq-3), und solange stand der GANZE Dienst. Bei einem
+    Burst-Hoerer sind das inzwischen bis zu 22 s — drei Anlaeufe im Abstand
+    von 4,5 s, gemessen am 05.09.2026. In dieser Zeit kam kein `getValue`,
+    kein `listDevices` und kein `ping` durch; die Zentrale wirkte tot,
+    waehrend sie nur auf einen Heizungsregler wartete.
+
+    Der Zustand der Zentrale ist auf nebenlaeufigen Zugriff ausgelegt — der
+    Funkfaden, der Rueckruffaden und die Waechter arbeiten laengst parallel
+    zu den Diensten, `save_store` und die Bestandsaenderungen laufen unter
+    `self.lock`. Die Weboberflaeche (`qccu_web.serve`) ist aus demselben
+    Grund seit jeher ein `ThreadingHTTPServer`.
+
+    `daemon_threads`, damit ein haengender Aufruf das Beenden nicht aufhaelt.
+    """
+
+    daemon_threads = True
 
 
 NOTIFY_TIMEOUT = 5.0
@@ -1614,10 +1639,11 @@ class QCCU:
     # Sekunden spaeter ankamen — dieselbe Unwahrheit, die `setValue` seit dem
     # 02.09. eigentlich abstellt, nur mit umgekehrtem Vorzeichen.
     #
-    # ⚠️ Der XML-RPC-Dienst ist einfaedig (`SimpleXMLRPCServer` ohne
-    # ThreadingMixIn): so lange steht er auch fuer jeden anderen Aufruf. Mit
-    # dem gemessenen Abstand ist die Frist eines Burst-Ziels rund 21 s statt
-    # 8 s — das ist keine neue Eigenschaft, aber eine deutlich laengere. Die
+    # Die Frist eines Burst-Ziels ist damit rund 21 s statt 8 s. Damit das
+    # nicht den ganzen Dienst anhaelt, beantworten die Dienste seit dem
+    # 07.09.2026 mehrere Aufrufe gleichzeitig (`ThreadingXMLRPCServer`);
+    # gesendet wird weiterhin nacheinander, und ein Befehl, der deshalb nicht
+    # an die Reihe kommt, wird als BUSY gemeldet, nicht als Zeitablauf. Die
     # Zentrale von eq-3 wartet ebenfalls den Ausgang der Transaktion ab.
     STELL_WARTEN = 8.0
 
@@ -1677,6 +1703,18 @@ class QCCU:
         namen = "+".join(p for p, _ in satz)
         frist = getattr(auftrag, "frist", None) or self.STELL_WARTEN
         if not auftrag.warten(frist):
+            # Zwei verschiedene Wahrheiten, und sie duerfen nicht dieselbe
+            # Meldung bekommen: entweder das Geraet hat nicht geantwortet,
+            # oder der Befehl kam gar nicht erst an die Reihe (ein einziger
+            # Sendefaden arbeitet die Warteschlange ab, waehrend die Dienste
+            # beliebig viele Aufrufe gleichzeitig annehmen). Im zweiten Fall
+            # ist NICHTS ueber das Geraet gesagt — also auch kein UNREACH.
+            begonnen = getattr(auftrag, "begonnen", None)
+            if begonnen is not None and not begonnen.is_set():
+                self.merke_ereignis("warn", f"{name}: {namen} — nicht gesendet, "
+                                            f"stand nach {frist:.0f} s noch in "
+                                            f"der Warteschlange")
+                raise xmlrpc.client.Fault(-1, "Generic error (BUSY)")
             self.merke_ereignis("warn", f"{name}: {namen} — kein Ausgang nach "
                                         f"{frist:.0f} s")
             raise xmlrpc.client.Fault(-1, "Generic error (TIMEOUT)")
@@ -2804,8 +2842,9 @@ def main():
         print(f"  Kein Stick an {g.serial} — die Oberflaeche fuehrt durch das "
               f"Einspielen der Firmware.")
 
-    rpc = SimpleXMLRPCServer((dienst_bind, g.rpc_port), requestHandler=RpcHandler,
-                             allow_none=True, logRequests=False)
+    rpc = ThreadingXMLRPCServer((dienst_bind, g.rpc_port),
+                                requestHandler=RpcHandler,
+                                allow_none=True, logRequests=False)
     rpc.register_instance(lc, allow_dotted_names=False)
     rpc.register_introspection_functions()
     rpc.register_multicall_functions()
@@ -2840,9 +2879,9 @@ def main():
             # „Zuletzt geschehen" — der Anwender soll nicht zwei Stellen
             # ansehen muessen, um zu erfahren, was gerade passiert ist.
             bidcos.ereignis = lc.merke_ereignis
-            brpc = SimpleXMLRPCServer((dienst_bind, g.bidcos_port),
-                                      requestHandler=RpcHandler,
-                                      allow_none=True, logRequests=False)
+            brpc = ThreadingXMLRPCServer((dienst_bind, g.bidcos_port),
+                                         requestHandler=RpcHandler,
+                                         allow_none=True, logRequests=False)
             brpc.register_instance(bidcos, allow_dotted_names=False)
             brpc.register_introspection_functions()
             brpc.register_multicall_functions()
@@ -2869,7 +2908,9 @@ def main():
             print(f"  ! BidCos-RF nicht gestartet: {ex}")
 
     RegaHandler.qccu = lc
-    rega = HTTPServer((dienst_bind, g.rega_port), RegaHandler)
+    # Auch hier mehrfaedig: HMCCU holt seine Auskuenfte ueber ReGa-Skripte,
+    # und die duerfen nicht warten, weil gerade ein Ventil gestellt wird.
+    rega = ThreadingHTTPServer((dienst_bind, g.rega_port), RegaHandler)
     threading.Thread(target=rega.serve_forever, daemon=True).start()
     print(f"  ReGa    auf {dienst_bind}:{g.rega_port}")
 

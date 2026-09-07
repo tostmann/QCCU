@@ -1276,7 +1276,10 @@ def serve(qccu, bind, port, verbose=False, interface=None, rpc_port=2010,
     `rpc_port` ist der Port der XML-RPC-Auskunft — er geht in
     `listInterfaces` ein, damit die Gegenstelle die Schnittstelle dort
     wiederfindet, wo sie wirklich horcht."""
-    from http.server import HTTPServer
+    # Mehrfaedig: ueber diesen Weg holt Home Assistant seine Auskuenfte,
+    # waehrend ein Stellbefehl auf der XML-RPC-Seite noch laeuft (bis zu 22 s
+    # bei einem Burst-Hoerer). Einfaedig hiesse: die Oberflaeche steht.
+    from http.server import ThreadingHTTPServer
 
     JsonRpcHandler.api = JsonRpc(qccu, interface=interface, rpc_port=rpc_port,
                                  hostname=hostname, bidcos=bidcos,
@@ -1285,6 +1288,6 @@ def serve(qccu, bind, port, verbose=False, interface=None, rpc_port=2010,
     # `laut` trennt zwei Dinge, die vorher eines waren: DASS gemeldet wird
     # (verbose) und OB auch der Dauerverkehr dazugehoert.
     JsonRpcHandler.laut = laut
-    srv = HTTPServer((bind, port), JsonRpcHandler)
+    srv = ThreadingHTTPServer((bind, port), JsonRpcHandler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv

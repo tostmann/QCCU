@@ -1241,10 +1241,13 @@ class Stellauftrag:
                „nicht stellbar")
     """
 
-    __slots__ = ("ev", "mac", "antwort", "klartext", "frist")
+    __slots__ = ("ev", "mac", "antwort", "klartext", "frist", "begonnen")
 
     def __init__(self, frist=None):
         self.ev = threading.Event()
+        # Gesetzt, sobald der Sendefaden DIESEN Auftrag in die Hand nimmt.
+        # Die Frist laeuft ab da, nicht ab der Annahme — siehe `warten`.
+        self.begonnen = threading.Event()
         self.mac = None
         self.antwort = None
         self.klartext = "offen"
@@ -1260,10 +1263,24 @@ class Stellauftrag:
         self.ev.set()
 
     def warten(self, sekunden):
-        """True, wenn der Ausgang binnen `sekunden` feststeht.
+        """True, wenn der Ausgang binnen `sekunden` NACH DEM SENDEBEGINN feststeht.
 
+        ⚠️ Die Uhr laeuft ab dem Sendebeginn, nicht ab der Annahme. Seit die
+        Dienste nebenlaeufig antworten (07.09.2026), koennen mehrere Befehle
+        GLEICHZEITIG angenommen werden — abgearbeitet werden sie nacheinander,
+        von einem einzigen Sendefaden an einer Warteschlange (`_cmdq`). Wer ab
+        der Annahme misst, meldet dem zweiten Anrufer einen Zeitablauf fuer
+        einen Befehl, der noch gar nicht hinaus war.
+
+        Steht der Auftrag nach `sekunden` immer noch in der Warteschlange,
+        wird nicht weiter gewartet: dann ist die Aussage nicht „das Geraet
+        antwortet nicht", sondern „wir sind nicht dazu gekommen". Wer wartet,
+        sieht das an `begonnen` und kann es unterscheiden.
         """
-        return self.ev.wait(sekunden)
+        ende = time.monotonic() + sekunden
+        if self.begonnen.wait(sekunden):
+            return self.ev.wait(sekunden)
+        return self.ev.wait(max(0.0, ende - time.monotonic()))
 
 
 LINK_VERSUCHE = 3
@@ -3672,6 +3689,9 @@ class Radio:
         angenommen / Grund) geht an den `auftrag`, falls einer mitkommt.
         """
         paare = tuple(paare)
+        if auftrag is not None:
+            # Ab hier laeuft die Frist des Auftrags (s. `Stellauftrag.warten`).
+            auftrag.begonnen.set()
         param = "+".join(p for p, _ in paare)
         hmid = None
         with self.lock:
