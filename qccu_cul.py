@@ -47,7 +47,10 @@ class CulDienst:
         self.verbose = verbose
         self.klienten = []
         self.lock = threading.Lock()
-        self.zaehler = {"rx": 0, "tx": 0, "verworfen": 0}
+        # `lovf` ist die Zahl, die bei einem „missing ack"-Bericht die Frage
+        # beantwortet, ob der Rahmen ueberhaupt hinausging.
+        self.zaehler = {"rx": 0, "tx": 0, "verworfen": 0, "lovf": 0,
+                        "sendefehler": 0}
         self.fhtid = "0000"
         # Die Meldeform, die FHEM beim Anmelden setzt (`X21`). Nur ein
         # Rueckfallwert fuer den Fall, dass der Stick gerade nicht antwortet:
@@ -323,6 +326,35 @@ class CulDienst:
             sock.sendall((text + "\r\n").encode("ascii", "replace"))
         except Exception:
             pass
+
+    def sende_fehler(self, art):
+        """Der Stick hat eine durchgereichte Sendung NICHT hinausgegeben.
+
+        `art` ist `"LOVF"` (Sendezeit-Konto erschoepft) oder `None` (anderer
+        Sendefehler) — die beiden Faelle, die q-culfw fuer die BidCoS-Seite
+        unterscheidet (`Ps ERR LOVF` / `Ps ERR`).
+
+        Bei LOVF bekommt der Klient die nackte Zeile `LOVF`, denn genau die
+        schreibt ein echter CUL in diesem Fall auf die Leitung (culfw
+        `clib/rf_send.c`: `DS_P(PSTR("LOVF\\r\\n"))`, ebenso `rf_moritz.c`).
+        Damit verhaelt sich FHEM an QCCU wie an echter Hardware.
+
+        Fuer die uebrigen Sendefehler hat culfw KEINE Meldung — die bleiben
+        beim Zaehler und im Protokoll. Hier etwas zu erfinden, was ein CUL nie
+        sagt, waere schlimmer als zu schweigen.
+
+        ⚠️ Nur die `Ps…`-Meldungen kommen hier an. Ein `Pm ERR LOVF` betrifft
+        eine HmIP-Sendung der Zentrale selbst und ist keine Auskunft fuer
+        FHEM — auch wenn dasselbe Konto dahintersteht.
+        """
+        if art == "LOVF":
+            self.zaehler["lovf"] += 1
+            with self.lock:
+                ziele = list(self.klienten)
+            for sock in ziele:
+                self._an_klient(sock, "LOVF")
+        else:
+            self.zaehler["sendefehler"] += 1
 
     def a_zeile(self, zeile):
         """Eine `A`-Zeile des Sticks an alle Klienten weitergeben."""

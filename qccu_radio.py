@@ -60,6 +60,20 @@ BUDGET = re.compile(r"^Pm budget=(\d) credit=(\d+)/(\d+) lovf=(\d+)")
 TX_OK = re.compile(r"^Pm tx ok")
 TX_NO = re.compile(r"^(?:Pm (?:ERR|NUR-LESEN)|\?\s*$)")
 
+# Die Sendemeldungen der BidCoS-Seite des Sticks — `Ps…`, nicht `Pm…`.
+# `Ps ERR LOVF` heisst „Sendezeit-Konto erschoepft, es ging NICHTS hinaus",
+# `Ps ERR` ein anderer Sendefehler; bei Erfolg schweigt der Stick dort
+# (q-culfw `main.c`: `if (r == LOVF) { cnt.tx_err++; CON_PSTR("Ps ERR LOVF\r\n"); }`,
+# sonst `else if (r) { cnt.tx_ok++; }` ohne Ausgabe).
+#
+# ⚠️ `TX_OK`/`TX_NO` fassen nur `Pm…` und damit UNSERE eigenen HmIP-Sendungen.
+# Die `Ps…`-Zeilen gehoeren dem FHEM-Klienten: sie sind die Antwort auf ein
+# `As…`, das er durchgereicht hat. Bis zum 07.09.2026 fielen sie hier durch
+# alle Muster und verfielen — FHEM sah nur sein eigenes `missing ack` und
+# konnte nicht unterscheiden, ob der Rahmen ueberhaupt hinausging (Anlass:
+# Forum 145306 #31).
+PS_FEHLER = re.compile(r"^Ps ERR(?:\s+(LOVF))?\s*$")
+
 CNT_KEYS = ("rx", "ok", "mic", "dup", "acks", "k6tx", "k6rx", "akdop",
             "fwd", "tx", "txerr")
 
@@ -2288,6 +2302,17 @@ class Radio:
             if job is not None:
                 job.verdict = "ok" if TX_OK.match(line) else "err"
                 job.done.set()
+            return
+
+        mp = PS_FEHLER.match(line)
+        if mp is not None:
+            # Weiter an den, dem die Sendung gehoerte (s. `PS_FEHLER`).
+            if self.cul is not None:
+                try:
+                    self.cul.sende_fehler(mp.group(1))
+                except Exception:                            # noqa: BLE001
+                    pass
+            self._log("##", f"BIDCOS-SENDUNG ABGELEHNT: {line}")
             return
 
         mk = KURZQUITTUNG.match(line)
