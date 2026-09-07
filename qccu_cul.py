@@ -242,10 +242,21 @@ class CulDienst:
         culfw gibt `DH2(TX_REPORT)` und `DU(credit_10ms, 5)` aus
         (`rf_receive.c`, set_txreport), q-culfw dasselbe mit einem Leerzeichen
         dazwischen (`main.c`, case 'X'). FHEM legt die Zahl als Reading
-        `credit10ms` ab (`^.. *(\\d*)`, `00_CUL.pm`) — nicht mehr: weder
-        `00_CUL.pm` noch `10_CUL_HM.pm` rechnen damit, FHEMs eigene Bremse ist
-        `XMIT_TIME`/`NR_CMD_LAST_H`. Die Zahl ist also eine Auskunft ueber das
-        Konto DES STICKS, das sich beide Funkfamilien teilen.
+        `credit10ms` ab (`^.. *(\\d*)`, `00_CUL.pm`) — nicht mehr: in
+        `10_CUL_HM.pm` kommt das Wort nicht vor, in `00_CUL.pm` nur im
+        Get-Zweig. Die Zahl ist eine Auskunft ueber das Konto DES STICKS, das
+        sich beide Funkfamilien teilen.
+
+        ⚠️ Bis zum 07.09.2026 stand hier, FHEMs eigene Bremse sei
+        `XMIT_TIME`/`NR_CMD_LAST_H`. Das ist fuer HomeMatic falsch: das Limit
+        von 163 Sendungen je Stunde in `CUL_XmitLimitCheck` nimmt HM und MAX
+        ausdruecklich aus (`00_CUL.pm`, `# Maximum nr of transmissions per
+        hour, but not for HM and MAX` / `if(@b > 163 && $fn !~ m/^[AZ]/)`) —
+        die beiden Internals laufen bei HM nur als Zaehler mit. Gebremst wird
+        ueber den Sendeabstand je ZIELGERAET (`CUL_XmitDlyHM`,
+        `helper{io}{nextSend}`: hoechstens 0,12 s warten, danach 0,06 s
+        Mindestabstand) und den Abstand der Sendewarteschlange
+        (`CUL_SendFromQueue`: `my $to = ($hm ? 0.15 : 0.3);`).
 
         Geantwortet wird immer, auch ohne Auskunft: bleibt die Antwort aus,
         legt FHEM auf (`DevIo_Disconnected`) statt bloss in den Zeitablauf zu
