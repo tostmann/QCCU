@@ -1108,6 +1108,32 @@ LM_BURST_STUFE = {1: 1, 9: 1, 3: 3, 11: 3}
 BURST_ZUSCHLAG = 0.5
 
 
+# Wie weit die drei Anlaeufe eines Befehls auseinanderliegen, wenn das Ziel
+# ein BURST-Hoerer ist. Gemessen (Teil 6, 04./05.09.2026, HmIP-eTRV-E-S,
+# Hoerertyp 11, je 16 Versuche nach >= 300 s Stille, Plan vor der Messung):
+#
+#     ~1 s    Echo  3/16   — die Anlaeufe 2 und 3 trafen KEIN einziges Mal
+#     ~5 s    Echo 15/16
+#     ~10 s   Echo 13/16
+#
+# Fisher exakt ~1 s gegen ~10 s: p = 0,001. ~5 s gegen ~10 s: p = 0,60 — ueber
+# 5 s hinaus wird nichts besser, nur die Latenz doppelt so gross. Darum 4,5 s
+# (der gemessene Abstand ist rund 0,5 s groesser als dieser Wert: das Urteil
+# des Sticks kommt dazu).
+#
+# ⚠️ Der erste Anlauf trifft in JEDER Stufe genau 3 von 16 — der Gewinn kommt
+# ausschliesslich aus den spaeteren Anlaeufen. Das Echo kam in beiden langen
+# Stufen bei ~10,5 s (in S5 im dritten Anlauf, in S10 im zweiten): verschiedene
+# Anlaufzahlen, gleiche Zeit. Das sieht nach einem Zeitpunkt aus und nicht nach
+# der Anlaufdichte — belegt ist es NICHT, dafuer braucht es eine eigene Messung
+# mit vorher festgelegtem Kriterium.
+#
+# ⚠️ Vermessen ist Burst-Stufe 3 (Hoerertyp 3 und 11). Fuer Stufe 1 (1 und 9)
+# liegt kein Geraet vor; sie bekommt denselben Wert, weil sie dieselbe
+# Weckmechanik benutzt — das ist eine UEBERTRAGUNG, keine Messung.
+TX_TIMEOUT_BURST = 4.5
+
+
 def burst_zuschlag(stufe):
     return BURST_ZUSCHLAG if stufe else 0.0
 
@@ -1215,20 +1241,28 @@ class Stellauftrag:
                „nicht stellbar")
     """
 
-    __slots__ = ("ev", "mac", "antwort", "klartext")
+    __slots__ = ("ev", "mac", "antwort", "klartext", "frist")
 
-    def __init__(self):
+    def __init__(self, frist=None):
         self.ev = threading.Event()
         self.mac = None
         self.antwort = None
         self.klartext = "offen"
+        # Wie lange der Sendepfad fuer DIESEN Befehl hoechstens braucht —
+        # gesetzt von dem, der den Auftrag annimmt (`on_set`), weil nur er das
+        # Ziel kennt. Wer auf den Ausgang wartet, nimmt diese Frist statt einer
+        # festen Zahl: bei einem Burst-Hoerer liegen die Anlaeufe 4,5 s
+        # auseinander, da ist nach 8 s noch nichts entschieden.
+        self.frist = frist
 
     def fertig(self, mac, antwort, klartext):
         self.mac, self.antwort, self.klartext = mac, antwort, klartext
         self.ev.set()
 
     def warten(self, sekunden):
-        """True, wenn der Ausgang binnen `sekunden` feststeht."""
+        """True, wenn der Ausgang binnen `sekunden` feststeht.
+
+        """
         return self.ev.wait(sekunden)
 
 
@@ -1417,6 +1451,10 @@ class Radio:
         self._booted = {}
 
         self.tx_timeout = 0.4
+        # Fuer Burst-Hoerer gilt ein eigener, gemessener Abstand (s.
+        # TX_TIMEOUT_BURST). Getrennt gefuehrt, damit der Pruefstand ihn
+        # stellen kann, ohne den Abstand fuer staendige Hoerer mitzuziehen.
+        self.tx_timeout_burst = TX_TIMEOUT_BURST
         self.tx_tries = 3
         self.verdict_timeout = 1.2
         self.ask_timeout = 1.5
@@ -1728,7 +1766,12 @@ class Radio:
     # MAC-Latenz des Geraets (~55 ms gemessen), ueber 5 s laenger als jede
     # sinnvolle Geduld; tx_tries hoeher als 5 verbrennt nur Sendezeit.
     # tx_timeout bis 12 s: Teil 6 (Anlauf-Abstand 1/5/10 s) braucht die 10-s-Stufe.
-    PRUEFSTAND_GRENZEN = {"tx_timeout": (0.02, 12.0), "tx_tries": (1, 5)}
+    # ⚠️ Seit dem Ausgang von Teil 6 entscheidet fuer ein Burst-Ziel
+    # `tx_timeout_burst`, nicht `tx_timeout` — eine Messreihe am Burst-Hoerer
+    # muss diesen Namen stellen, sonst stellt sie nichts.
+    PRUEFSTAND_GRENZEN = {"tx_timeout": (0.02, 12.0),
+                          "tx_timeout_burst": (0.02, 12.0),
+                          "tx_tries": (1, 5)}
 
     def pruefstand_setzen(self, werte):
         """Sendeparameter fuer eine MESSREIHE stellen.
@@ -3356,13 +3399,13 @@ class Radio:
     def on_set(self, ccu_address, channel, param, value):
         """Befehl ANNEHMEN und sofort zurueckkehren — mit dem Auftrag, an dem
         sich der Ausgang abwarten laesst (`Stellauftrag`)."""
-        auftrag = Stellauftrag()
+        auftrag = Stellauftrag(self.stellfrist(ccu_address))
         self._cmdq.put((ccu_address, channel, ((param, value),), auftrag))
         return auftrag
 
     def on_set_many(self, ccu_address, channel, werte):
         """Einen SATZ annehmen — er geht in EINEM Rahmen hinaus."""
-        auftrag = Stellauftrag()
+        auftrag = Stellauftrag(self.stellfrist(ccu_address))
         self._cmdq.put((ccu_address, channel, tuple(werte), auftrag))
         return auftrag
 
@@ -3674,6 +3717,8 @@ class Radio:
         antwort = {"ev": threading.Event(), "ergebnis": None}
         with self.lock:
             self._app_ack[(hmid, seq)] = antwort
+        # Der Abstand haengt am ZIEL (s. `_anlauf_abstand`), nicht am Rahmen.
+        abstand = self._anlauf_abstand(hmid)
         angenommen = None
         klartext = "keine ANSWER"
         acked = False
@@ -3720,7 +3765,7 @@ class Radio:
                 if job.verdict == "err":
                     self._log("##", "Stick hat NICHT gesendet")
                     continue
-                if ev.wait(self.tx_timeout):
+                if ev.wait(abstand):
                     acked = True
                     if self.verbose and attempt > 1:
                         print(f"     quittiert nach Versuch {attempt}")
@@ -3840,6 +3885,44 @@ class Radio:
         addr = self.by_hmid.get((hmid or "").lower())
         d = (getattr(self.qccu, "devices", None) or {}).get(addr or "")
         return (getattr(d, "opmode", None) or 0) & 0x0F
+
+    def _anlauf_abstand(self, hmid):
+        """Abstand zwischen zwei Anlaeufen fuer DIESES Ziel.
+
+        Ein Burst-Hoerer wird geweckt und braucht danach Zeit, bis er hoert;
+        gemessen ist, dass drei Anlaeufe binnen einer Sekunde bei ihm nichts
+        ausrichten (TX_TIMEOUT_BURST). Ein staendiger Hoerer quittiert in
+        Millisekunden — dort waeren 4,5 s nur eine lange Wartezeit auf eine
+        Antwort, die schon feststeht.
+        """
+        if self._hoerertyp(hmid) in LM_BURST_STUFE:
+            return self.tx_timeout_burst
+        return self.tx_timeout
+
+    def stellfrist(self, ccu_address):
+        """Wie lange ein Stellbefehl an dieses Geraet HOECHSTENS braucht.
+
+        Der Aufrufer von `setValue` wartet danach, statt nach einer festen
+        Zahl — sonst meldet er einen Fehlschlag, waehrend der Sendepfad noch
+        laeuft (bis zum 07.09.2026 genau so: 8 s fest, das Echo eines
+        Burst-Hoerers kommt im Mittel nach 10,5 s).
+
+        Aufgerechnet wird, was ein Anlauf im schlechtesten Fall kostet: das
+        Urteil des Sticks (`verdict_timeout` + Uebertragung + Vorlauf) und
+        danach die Wartezeit auf die Kurzquittung. Mal `tx_tries`, plus das
+        Fenster fuer die Antwort auf Anwendungsebene.
+        """
+        hmid = None
+        ziel = (ccu_address or "").upper()
+        with self.lock:
+            for h, a in self.by_hmid.items():
+                if a == ziel:
+                    hmid = h
+                    break
+        stufe = LM_BURST_STUFE.get(self._hoerertyp(hmid), 0) if hmid else 0
+        je_anlauf = (self.verdict_timeout + 0.5 + burst_zuschlag(stufe)
+                     + self._anlauf_abstand(hmid))
+        return self.tx_tries * je_anlauf + LINK_ANTWORT_ZEIT + 1.0
 
     def ping_moeglich(self, hmid):
         """Beantwortet dieses Geraet eine unaufgeforderte Auskunft?

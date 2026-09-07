@@ -63,7 +63,7 @@ als Ereignis gemeldet; vom Gerät abgelehnt → `Fault -1 "Generic error
 error (TIMEOUT)"` und `UNREACH`; kein belegter Sendeweg für diesen Parameter
 in dieser Form → `Fault -5 "No proven way to set …"`. Nur die Kurzquittung
 ohne Auskunft auf Anwendungsebene trägt nichts ein — der nächste Status des
-Geräts liefert den Wert. Die Wartezeit beträgt höchstens acht Sekunden.
+Geräts liefert den Wert. Wie lange gewartet wird, hängt am **Hörertyp des Ziels**: ein dauerhaft hörendes Gerät antwortet in Millisekunden (Frist rund acht Sekunden), ein Gerät, das erst geweckt werden muss (Burst-Hörer, z. B. ein Heizungsregler), bekommt seine drei Anläufe im Abstand von 4,5 s und damit eine Frist von rund 22 Sekunden. Gemessen: das Echo eines Burst-Hörers kommt im Mittel nach 10,5 s — mit den früheren acht Sekunden meldete QCCU einen Fehlschlag, während der Befehl noch unterwegs war. Der XML-RPC-Dienst beantwortet währenddessen keinen anderen Aufruf.
 
 **Methoden, die leer antworten:** `getLinks`, `getLinkPeers`, `getLinkInfo`,
 `addLink`, `removeLink`, `setLinkInfo`, `getSuppressedServiceMessages`,

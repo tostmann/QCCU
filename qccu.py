@@ -1603,11 +1603,22 @@ class QCCU:
                 -5, f"Unknown Parameter {'value ' if bekannt else ''}for value key: {param}")
         return v
 
-    # Wie lange `setValue` auf den Ausgang wartet. Drei Anlaeufe mit Weckpaar,
-    # Urteil und Antwortfenster brauchen bis zu ~6 s; danach gilt der Befehl
-    # als nicht zugestellt. Der XML-RPC-Dienst ist einfaedig — so lange steht
-    # er fuer andere Aufrufe. Die Zentrale von eq-3 haelt es genauso: ihr
-    # `setValue` kehrt erst mit dem Ausgang der Transaktion zurueck.
+    # Rueckfallwert, wenn der Funkpfad keine eigene Frist mitgibt (`Stellauftrag
+    # .frist`). Wie lange wirklich gewartet wird, weiss nur er: der Abstand
+    # zwischen zwei Anlaeufen haengt am Hoerertyp des Ziels, und bei einem
+    # Burst-Hoerer sind es 4,5 s statt 0,4 s.
+    #
+    # ⚠️ Bis zum 07.09.2026 standen hier 8 s fest — fuer einen Burst-Hoerer zu
+    # kurz. Gemessen (Teil 6, eTRV-E-S, 48 Versuche): das Echo kommt im Mittel
+    # nach 10,5 s. QCCU meldete also `Fault -1 TIMEOUT` fuer Befehle, die zwei
+    # Sekunden spaeter ankamen — dieselbe Unwahrheit, die `setValue` seit dem
+    # 02.09. eigentlich abstellt, nur mit umgekehrtem Vorzeichen.
+    #
+    # ⚠️ Der XML-RPC-Dienst ist einfaedig (`SimpleXMLRPCServer` ohne
+    # ThreadingMixIn): so lange steht er auch fuer jeden anderen Aufruf. Mit
+    # dem gemessenen Abstand ist die Frist eines Burst-Ziels rund 21 s statt
+    # 8 s — das ist keine neue Eigenschaft, aber eine deutlich laengere. Die
+    # Zentrale von eq-3 wartet ebenfalls den Ausgang der Transaktion ab.
     STELL_WARTEN = 8.0
 
     def setValue(self, address, param, value, *rest):
@@ -1664,9 +1675,10 @@ class QCCU:
         uebersetzen — siehe `setValue`."""
         name = self.name_of(base, base)
         namen = "+".join(p for p, _ in satz)
-        if not auftrag.warten(self.STELL_WARTEN):
+        frist = getattr(auftrag, "frist", None) or self.STELL_WARTEN
+        if not auftrag.warten(frist):
             self.merke_ereignis("warn", f"{name}: {namen} — kein Ausgang nach "
-                                        f"{self.STELL_WARTEN:.0f} s")
+                                        f"{frist:.0f} s")
             raise xmlrpc.client.Fault(-1, "Generic error (TIMEOUT)")
         if auftrag.antwort is True:
             for p, v in satz:
