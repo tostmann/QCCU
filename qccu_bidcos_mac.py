@@ -457,8 +457,9 @@ def quittung(frame, zentrale):
     vorbereitetem IO.
     Der Grund, es NICHT feiner zu machen, ist aber nicht nur „genuegt": das
     Geraet hat um eine QUITTUNG gebeten, nicht ums Wachbleiben. Eine `A112`
-    haelt seinen Empfaenger fuer ein Kommando offen, das nicht kommt — auf
-    einem Batteriegeraet Wachzeit ohne Gegenwert.
+    haelt seinen Empfaenger fuer ein Kommando offen, das von hier nicht kommt
+    — dieser Pfad legt nichts zurueck; auf einem Batteriegeraet ist das
+    Wachzeit ohne Gegenwert.
     ⚠️ Wer das hier dennoch nachruestet, muss den Fall „nichts zu senden"
     mitdenken: eine andere Zentrale trat WKMEUP-Rahmen an einen Weckpfad ab,
     der nur bei wartendem Kommando sendet, und quittierte Batteriegeraete
