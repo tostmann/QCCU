@@ -1102,21 +1102,26 @@ LM_NICHT_STAENDIG = (4, 5, 8)
 # eq-3-Dual-Copro: zwei Rahmen, die sich in genau einem Byte unterscheiden,
 # je sechs Versuche abwechselnd, jeweils fruehestens 5 s nach dem letzten
 # Geraeterahmen — Byte 0 null Antworten, Byte 3 sechs von sechs
-# (Fisher exakt, zweiseitig p = 0,0022). Auf der Luft ist der Unterschied ein
-# rund 356 ms laengerer Vorlauf (385,5 ms gegen 29,5 ms Huellkurve) auf
-# DERSELBEN Frequenz — 868,28..868,32 MHz bei beiden Stufen, gegengeprueft
-# durch Verschieben der Aufnahmemitte.
+# (Fisher exakt, zweiseitig p = 0,0022). Auf der Luft ist der Unterschied
+# ein rund 360 ms langer Vorlauf samt Rahmen auf dem Weckkanal 869,52 MHz,
+# rund 30 ms spaeter derselbe Rahmen auf 868,30 (SPI am Coprozessor, siehe
+# `WECKKANAL_HMIP`; eq-3-Folie 14: „Burst auf 869 MHz, Standard auf
+# 868 MHz").
+# ⚠️ Die Erstauswertung sah beide Stufen auf 868,3 MHz — sie nahm je
+# Aufnahme nur den staerksten Bin, und den gewinnt der schmale Rahmen gegen
+# den breiten Vorlauf immer. An denselben Rohdaten zurueckgezogen (02.09.).
 LM_BURST = (1, 3, 9, 11)
 # Byte 3 fuer die Dreifach-Stufe, Byte 1 fuer die Einfach-Stufe.
 LM_BURST_STUFE = {1: 1, 9: 1, 3: 3, 11: 3}
 
-# Wie lange ein Vorlauf jede Wartezeit verlaengert. Gemessen am
-# eq-3-Coprozessor (HackRF, Huellkurve auf 868,3 MHz): 386 ms mit Vorlauf
-# gegen 29,5 ms ohne, also rund 356 ms mehr. Fuer BEIDE Stufen derselbe Wert —
-# je drei Messungen, auf 0,5 ms gleich (02.09.2026). Ein Unterschied zwischen
-# Stufe 1 und Stufe 3 ist damit auf der Luft nicht nachweisbar; der Name
-# „TrippleBurst" beschreibt also nicht die Dauer.
-# 0,5 s laesst Luft fuer die serielle Uebertragung und den Programmpfad im
+# Wie lange ein Vorlauf jede Wartezeit verlaengert. Der Vorlauf des
+# eq-3-Coprozessors dauert 360 ms (SPI: 359,8..360,1 ms; eq-3-Folie 10:
+# „Burst-Preamble 360 ms"), der Rahmen dahinter rund 30 ms. Fuer BEIDE
+# Stufen derselbe Wert — Huellkurve je drei Messungen, auf 0,5 ms gleich
+# (02.09.2026); der Name „TrippleBurst" beschreibt also nicht die Dauer.
+# Seit `mb` das Paar sendet (Vorlauf samt Rahmen auf 869,52, nach 30 ms der
+# Rahmen auf 868,30), dauert eine Sendung rund 450 ms. 0,5 s deckt das und
+# laesst Luft fuer die serielle Uebertragung und den Programmpfad im
 # Stick. Zu wenig zu warten ist der teurere Fehler: es erzeugt ein
 # „kein Urteil" fuer eine Sendung, die noch laeuft.
 BURST_ZUSCHLAG = 0.5
