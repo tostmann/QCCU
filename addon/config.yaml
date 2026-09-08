@@ -140,4 +140,8 @@ schema:
   # empfangene Zeile, mit Zeitstempel. ⚠️ NUR zur Fehlersuche: er wächst im
   # Betrieb stetig. Bei 8 MB wird auf `luft.log.1` weitergeschoben, es liegen
   # also höchstens zwei Dateien und rund 16 MB in `/data`.
+  # Rohmitschnitt beim START. ⚠️ Zum Einfangen eines sporadischen Fehlers
+  # ist der Knopf auf der Startseite der bessere Weg (oder
+  # `POST /api/mitschnitt {"an": true}`): er braucht keinen Neustart,
+  # und ein Neustart raeumt genau den Zustand weg, den man aufzeichnen will.
   raw_log: "bool?"

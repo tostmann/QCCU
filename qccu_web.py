@@ -256,6 +256,8 @@ footer a{color:var(--mut)} footer a:hover{color:var(--acc)}
     <span>
       <button class="quiet" id="knopf_luft" style="display:none"
               onclick="location.href='api/luft.log'">Rohmitschnitt laden</button>
+      <button id="knopf_luft_an" class="quiet" type="button"
+              onclick="mitschnittSchalten()">Mitschnitt einschalten</button>
       <button class="quiet" onclick="oeffneFirmware()">Stick-Firmware</button>
     </span>
   </h2>
@@ -477,6 +479,26 @@ function bidcosZiel(){
 // offen stehen bliebe, verdeckt die Seite und sieht aus wie ein Hänger.
 function dialogeSchliessen(){
   document.querySelectorAll('dialog[open]').forEach(d=>d.close());
+}
+
+async function mitschnittSchalten(){
+  // ⚠️ Umschalten anhand des ZULETZT GEMELDETEN Zustands, nicht anhand der
+  // Aufschrift: die Aufschrift sagt, was der Knopf tun wird.
+  const ka=$('#knopf_luft_an');
+  const an = ka.dataset.an !== '1';
+  ka.disabled=true;
+  try{
+    const r=await fetch('api/mitschnitt',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({an:an})});
+    let d={}; try{ d=await r.json(); }catch(e){}
+    // Die Antwort auswerten, nicht bloss neu laden — ein Pfad, in den nicht
+    // geschrieben werden kann, saehe sonst wie ein Erfolg aus.
+    if(!r.ok) melde(d.error || 'Der Mitschnitt ließ sich nicht schalten.','bad');
+    else melde(an ? 'Mitschnitt läuft — '+(d.pfad||'') : 'Mitschnitt beendet.','ok');
+  }catch(e){ melde('Mitschnitt: '+e,'bad'); }
+  ka.disabled=false;
+  laden();
 }
 
 async function bidcosAnlernen(){
@@ -929,6 +951,15 @@ async function laden(){
     if(mb!==null&&mb!==undefined)
       kl.textContent='Rohmitschnitt laden ('+(mb/1048576).toFixed(1)+' MB)';
   }
+  // ⚠️ Der Schalter steht IMMER da, auch wenn nichts mitgeschrieben wird —
+  // sonst sucht ihn jemand in der Konfiguration und findet nichts (so
+  // geschehen am 08.09.2026). Er sagt, was er tun wird, nicht was gerade ist.
+  const ka=document.getElementById('knopf_luft_an');
+  if(ka){
+    const an=!!r.mitschnitt_an;
+    ka.textContent = an ? 'Mitschnitt ausschalten' : 'Mitschnitt einschalten';
+    ka.dataset.an = an ? '1' : '0';
+  }
   const fg=r.funkgute;
   if(fg && (fg.pll_fail||fg.pll_lost)){
     h+='<dt>Oszillator</dt><dd class="'+(fg.pll_fail?'bad':'warn')+'">'
@@ -1124,8 +1155,13 @@ class WebHandler(BaseHTTPRequestHandler):
             hole = getattr(self.radio, "raw_dateien", None) if self.radio else None
             dateien = hole() if hole else []
             if not dateien:
-                return self._json({"error": "Kein Rohmitschnitt — die "
-                                            "Einstellung `raw_log` ist aus."}, 404)
+                return self._json({"error": "Kein Rohmitschnitt — er laeuft "
+                                            "gerade nicht und hat in dieser "
+                                            "Laufzeit auch nichts "
+                                            "aufgezeichnet. Einschalten: der "
+                                            "Knopf auf der Startseite oder "
+                                            "POST /api/mitschnitt {\"an\": "
+                                            "true}."}, 404)
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.send_header("Content-Disposition",
@@ -1322,6 +1358,21 @@ class WebHandler(BaseHTTPRequestHandler):
                                            body.get("next_addr") or None,
                                            body.get("local_key"))
             return self._json({"error": err} if err else {"ok": True},
+                              409 if err else 200)
+
+        if self.path == "/api/mitschnitt":
+            # Den Rohmitschnitt zur Laufzeit schalten — OHNE Neustart. Ein
+            # Neustart raeumt den Zustand weg, den man aufzeichnen will
+            # (Anwendermeldung 08.09.2026: Fehler nicht auf Zuruf
+            # wiederholbar, Mitschnitt nur ueber einen Startparameter).
+            if not self.radio:
+                return self._json({"error": "kein Funk angebunden"}, 409)
+            an = body.get("an")
+            if not isinstance(an, bool):
+                return self._json({"error": "an muss true oder false sein"}, 400)
+            zustand, err = self.radio.mitschnitt_setzen(an)
+            return self._json({"error": err, **zustand} if err
+                              else {"ok": True, **zustand},
                               409 if err else 200)
 
         if self.path == "/api/pruefstand":

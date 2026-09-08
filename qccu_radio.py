@@ -1110,8 +1110,9 @@ LM_NICHT_STAENDIG = (4, 5, 8)
 # ⚠️ Die Erstauswertung sah beide Stufen auf 868,3 MHz — sie nahm je
 # Aufnahme nur den staerksten Bin, und den gewinnt der schmale Rahmen gegen
 # den breiten Vorlauf immer. An denselben Rohdaten zurueckgezogen (02.09.).
-LM_BURST = (1, 3, 9, 11)
-# Byte 3 fuer die Dreifach-Stufe, Byte 1 fuer die Einfach-Stufe.
+# Byte 3 fuer die Dreifach-Stufe, Byte 1 fuer die Einfach-Stufe. Die Menge
+# der Burst-Hoerer steckt in den Schluesseln — eine eigene Tupel-Konstante
+# daneben waere eine zweite Wahrheit ueber dieselbe Sache.
 LM_BURST_STUFE = {1: 1, 9: 1, 3: 3, 11: 3}
 
 # Wie lange ein Vorlauf jede Wartezeit verlaengert. Der Vorlauf des
@@ -1534,6 +1535,12 @@ class Radio:
         self.measure = bool(raw_log)
         self._raw_zeilen = 0
         self._raw_umbruch_aus = False
+        # ⚠️ Der Pfad wird GEMERKT, auch wenn gerade nicht mitgeschrieben
+        # wird: nach dem Ausschalten will man das Aufgezeichnete noch holen.
+        # Haenge `raw_dateien()` an `self._raw.name`, verschwindet der
+        # Knopf in der Oberflaeche in dem Moment, in dem der Anwender den
+        # Mitschnitt beendet — und mit ihm der Zugriff auf das Ergebnis.
+        self._raw_pfad = raw_log
         if raw_log:
             self._raw = open(raw_log, "a", buffering=1)
             self._log("##", f"--- Start {time.strftime('%Y-%m-%d %H:%M:%S')} ---")
@@ -1569,14 +1576,33 @@ class Radio:
     RAW_MAX = 8 * 1024 * 1024
     RAW_PRUEF_JE = 500          # nicht bei jeder Zeile die Groesse messen
 
+    @staticmethod
+    def _zeitmarke():
+        t = time.time()
+        return (time.strftime("%H:%M:%S", time.localtime(t))
+                + ".%03d" % int(t % 1 * 1000))
+
     def _log(self, direction, text):
-        """Eine Zeile in den Rohmitschnitt."""
+        """Eine Zeile in den Rohmitschnitt.
+
+        ⚠️ Der Griff wird IM Schloss geholt. Die Pruefung davor ist nur eine
+        billige Abkuerzung fuer den Normalfall „aus"; verlassen darf man sich
+        nicht auf sie. Zwischen Pruefung und Schreiben kann
+        `mitschnitt_setzen(False)` den Mitschnitt schliessen und `_raw` auf
+        None setzen — und ein `None.write` waere hier teuer: im Lesefaden
+        steht dieser Aufruf AUSSERHALB des `try` um `_handle`, die Ausnahme
+        beendet also den Faden, ohne dass sich jemand abmeldet. Die Zentrale
+        waere still, ohne es zu sagen. Vor dem Laufzeitschalter war das
+        Fenster praktisch unerreichbar, seither ist es ein Klick.
+        """
         if not self._raw:
             return
-        t = time.time()
-        ts = time.strftime("%H:%M:%S", time.localtime(t)) + ".%03d" % int(t % 1 * 1000)
+        ts = self._zeitmarke()
         with self._log_lock:
-            self._raw.write(f"{ts} {direction} {text}\n")
+            raw = self._raw
+            if raw is None:
+                return
+            raw.write(f"{ts} {direction} {text}\n")
             self._raw_zeilen += 1
             if self._raw_zeilen % self.RAW_PRUEF_JE == 0:
                 self._raw_umbrechen()
@@ -1590,9 +1616,9 @@ class Radio:
         `docker exec` sperrt der Protection Mode). Ein Mitschnitt, den
         niemand holen kann, ist ein halbes Werkzeug.
         """
-        if not self._raw:
+        name = self._raw_pfad
+        if not name:
             return []
-        name = self._raw.name
         return [p for p in (name + ".1", name) if os.path.exists(p)]
 
     def _raw_umbrechen(self):
@@ -1808,6 +1834,76 @@ class Radio:
     PRUEFSTAND_GRENZEN = {"tx_timeout": (0.02, 12.0),
                           "tx_timeout_burst": (0.02, 12.0),
                           "tx_tries": (1, 5)}
+
+    def mitschnitt_setzen(self, an, pfad=None):
+        """Den Rohmitschnitt zur LAUFZEIT ein- oder ausschalten.
+
+        Liefert (zustand, fehler_oder_None); `zustand` ist das, was auch
+        `mitschnitt_zustand()` liefert.
+
+        ⚠️ Das ist keine Bequemlichkeit, sondern der Unterschied zwischen
+        einem eingefangenen und einem verlorenen Fehler. Vorher ging der
+        Mitschnitt nur ueber `--raw-log` beim Start: wer einen Aussetzer
+        aufzeichnen wollte, musste die Zentrale neu starten — und der
+        Neustart raeumt genau den Zustand weg, den er einfangen sollte. Ein
+        Anwender ist am 08.09.2026 daran haengengeblieben, mit einem Fehler,
+        der sich nicht auf Zuruf wiederholen laesst.
+
+        ⚠️ Der Pfad ist NICHT frei waehlbar. Ein Feld, in das der Aufrufer
+        einen Dateinamen schreibt, ist ein Schreibzugriff auf das Dateisystem
+        des Behaelters ueber die Weboberflaeche — dafuer gibt es hier keinen
+        Grund. Vorgabe ist `luft.log` neben den Zaehlerstaenden, also im
+        Datenspeicher; genau dort sucht auch der Download.
+        """
+        fehler = None
+        gestartet = False
+        # ⚠️ Unter dem Schloss steht NUR der Wechsel des Griffs. Der Zustand
+        # wird danach gebildet: er misst Dateigroessen, und der Lesefaden
+        # braucht dasselbe Schloss fuer JEDE Stickzeile — ein `getsize` auf
+        # langsamem Speicher hielte den Empfang an.
+        with self._log_lock:
+            if not an:
+                if self._raw is not None:
+                    try:
+                        self._raw.write(
+                            f"{self._zeitmarke()} ## --- Ende "
+                            f"{time.strftime('%Y-%m-%d %H:%M:%S')} "
+                            f"(zur Laufzeit ausgeschaltet) ---\n")
+                        self._raw.close()
+                    except Exception:                        # noqa: BLE001
+                        pass
+                    self._raw = None
+                self.measure = False
+            elif self._raw is None:
+                ziel = self._raw_pfad or pfad
+                if not ziel:
+                    bas = os.path.dirname(os.path.abspath(self.state_file)) \
+                        if self.state_file else os.getcwd()
+                    ziel = os.path.join(bas, "luft.log")
+                try:
+                    self._raw = open(ziel, "a", buffering=1)
+                except Exception as ex:                      # noqa: BLE001
+                    fehler = f"{ziel}: {ex}"
+                else:
+                    self._raw_pfad = ziel
+                    self._raw_zeilen = 0
+                    self._raw_umbruch_aus = False
+                    self.measure = True
+                    gestartet = True
+        if gestartet:                       # `_log` nimmt sich das Schloss selbst
+            self._log("##", f"--- Start {time.strftime('%Y-%m-%d %H:%M:%S')} "
+                            f"(zur Laufzeit eingeschaltet) ---")
+        return self.mitschnitt_zustand(), fehler
+
+    def mitschnitt_zustand(self):
+        """Laeuft der Mitschnitt, wohin, und wie gross ist er?"""
+        groesse = None
+        try:
+            groesse = sum(os.path.getsize(p) for p in self.raw_dateien())
+        except OSError:
+            pass
+        return {"an": self._raw is not None, "pfad": self._raw_pfad,
+                "bytes": groesse}
 
     def pruefstand_setzen(self, werte):
         """Sendeparameter fuer eine MESSREIHE stellen.
@@ -2160,10 +2256,16 @@ class Radio:
 
     def stop(self):
         self._stop = True
-        if self._raw:
-            with self._log_lock:
-                self._raw.close()
-            self._raw = None
+        # ⚠️ Griff im Schloss fassen und dort auch nullen — sonst schreibt ein
+        # Faden weiter in die geschlossene Datei (dasselbe Muster wie in
+        # `_log`).
+        with self._log_lock:
+            raw, self._raw = self._raw, None
+        if raw is not None:
+            try:
+                raw.close()
+            except Exception:                                # noqa: BLE001
+                pass
 
     def firmware_version(self):
         """Fassung, wie der Stick sie selbst meldet."""
@@ -3874,9 +3976,13 @@ class Radio:
                 "burst_faehig": self.burst_faehig,
                 "weckkanal": self.weckkanal,
                 # Damit die Oberflaeche den Download nur zeigt, wenn es auch
-                # etwas zu holen gibt.
+                # etwas zu holen gibt. ⚠️ Haengt am PFAD, nicht am offenen
+                # Griff: nach dem Ausschalten bleibt das Aufgezeichnete
+                # holbar, sonst verschwaende der Anwender sein Ergebnis mit
+                # dem Klick, der die Aufzeichnung beendet.
                 "mitschnitt": sum(os.path.getsize(p) for p in self.raw_dateien()
-                                  if os.path.exists(p)) if self._raw else None,
+                                  if os.path.exists(p)) or None,
+                "mitschnitt_an": self._raw is not None,
                 "icmp": dict(self.icmp_seen),
                 "devices": {h: a for h, a in self.by_hmid.items()}}
 
