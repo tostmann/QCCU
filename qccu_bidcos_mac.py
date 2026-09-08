@@ -47,6 +47,37 @@ WAS BELEGT IST UND WAS NICHT — die Trennlinie ist wichtig
   eigener Hardware bestaetigt. Das Anlernen ist damit genau dieser
   Schreibvorgang mit der eigenen Adresse.
 
+**Nachgetragen am 08.09.2026, aus fremder Messung und offenem Quelltext:**
+
+* Die Quittung ist auf der EMPFANGSSEITE Bedingung, nicht Hoeflichkeit:
+  AskSinPP nimmt eine Antwort nur an, wenn Zaehlernummer UND Absender
+  stimmen (`Device.h`, `waitResponse`), und wiederholt sonst bis
+  `transmitDevTryMax` — je Versuch 600 ms blockierend. Ein Ereignis kostet
+  damit sechs Sendungen statt einer; auf einem Batteriegeraet ist das die
+  Zelle. An einem AskSinPP-Kontakt gegengeprueft (Fremdmessung 08.09.2026):
+  mit Quittung stellt das Geraet das Wiederholen sofort ein. ⚠️ Ein
+  DAUERrhythmus ist damit NICHT erklaert — der in jener Messung zuerst
+  auffaellige 32-s-Takt kam von einem zu knappen Watchdog auf dem Geraet,
+  nicht von der Wiederholung.
+* Das **Sensorereignis**: Typ `0x41`, Nutzlast `<kanal> <zaehler> <wert>`,
+  Laenge `0x0C`. So melden Tuer-/Fensterkontakte ihre Flanken — NICHT als
+  Statusmeldung `0x10`. Quelle ist eq-3 selbst: `rf_sc.xml` deklariert
+  `<frame id="EVENT" type="0x41" channel_field="9:0.6">` mit STATE auf
+  Index 11 und LOWBAT auf 9.7 (Zaehlung ohne Laengenbyte, Index 9 = erstes
+  Nutzlastbyte). Damit ist auch die Maske belegt — sechs Bit Kanal, oben
+  Flags — und dass STATE dort ein `boolean` ist. Dieselbe Datei speist STATE
+  aus genau drei Rahmen: EVENT, INFO_LEVEL, ACK_STATUS. AskSinPP baut es
+  gleich (`Message.h`, `SensorEventMsg::init`).
+  ⚠️ Der Bewegungsmelder benutzt denselben Typ mit Laenge `0x0D` und legt
+  dort die HELLIGKEIT ab (`Motion.h`) — die Laenge trennt die beiden.
+* **`0xFF` heisst „unbekannt"**, nicht „an". Es ist keine Position: bei
+  AskSinPP ist 255 der ANFANGSWERT des Kontaktzustands (`ContactState.h`,
+  `EventSender`), und er bleibt stehen, solange die Sensorlage auf keine der
+  drei Meldungen abgebildet wird. `status_aus` gibt darauf None zurueck.
+  ⚠️ Bei eq-3 kommt sie in der Beschreibung NICHT vor: `rf_sc.xml` fuehrt
+  STATE als `boolean`, `rf_rhs_le_v1_6.xml` bildet 0/100/200 auf
+  CLOSED/TILTED/OPEN ab — kein 255. Sie auszuschliessen kostet dort nichts.
+
 **Weiterhin NICHT belegt:**
 
 * Der Weg vom **Anlernruf** zur Antwort: ob ein Geraet die Sequenz auch dann
@@ -80,6 +111,7 @@ MT_CONFIG = 0x01
 MT_ACK = 0x02
 MT_INFO = 0x10
 MT_SET = 0x11
+MT_EVENT = 0x41           # Sensorereignis (Kontakt, Bewegungsmelder, iButton)
 
 SUB_INFO_LEVEL = 0x06     # Statusmeldung
 SUB_ACK_STATUS = 0x01     # Quittung MIT Zustand
@@ -87,6 +119,12 @@ SUB_ACK_L2 = 0x00         # blosse Empfangsquittung
 
 PEGEL_EIN = 0xC8
 PEGEL_AUS = 0x00
+
+# Zustandswerte, die KEIN Pegel sind. Die 0xFF ist die wichtigste: sie heisst
+# „unbekannt", nicht „an" — siehe `status_aus`.
+ZUSTAND_UNBEKANNT = 0xFF
+KONTAKT_OFFEN = 0xC8
+KONTAKT_ZU = 0x00
 
 ANLERNEN_UNGEPRUEFT = """Die Anlern-Sequenz ist NICHT on-air belegt.
 Zum Freischalten fehlt genau eines von beidem:
@@ -183,12 +221,63 @@ class Frame:
 def status_aus(frame):
     """Statusmeldung -> (Kanal, an?) oder None.
 
-    Gilt fuer `0x10`/Subtyp `0x06` (Statusmeldung) und `0x02`/Subtyp `0x01`
-    (Quittung mit Zustand). ⚠️ Die Maske `& 0x3F` auf dem Kanalbyte ist
-    PFLICHT: die oberen Bits tragen bei batteriebetriebenen Bauformen Flags
-    (0x80 = schwache Batterie). Ohne Maske meldet so ein Geraet einen
-    Geisterkanal 129 statt Kanal 1.
+    Drei Rahmenarten fuehren hierher, und sie haben ZWEI verschiedene
+    Feldlagen:
+
+        `0x10`/Subtyp `0x06`   Statusmeldung        `06 <kanal> <pegel> …`
+        `0x02`/Subtyp `0x01`   Quittung mit Zustand `01 <kanal> <pegel> …`
+        `0x41`                 Sensorereignis       `<kanal> <zaehler> <wert>`
+
+    ⚠️ Beim Sensorereignis steht der Kanal an Index 0, nicht an Index 1. Wer
+    die Feldlage der Statusmeldung darauf anwendet, liest den ZAEHLER als
+    Kanal — und bekommt bei jedem Ereignis einen anderen.
+
+    ⚠️ Die Maske `& 0x3F` auf dem Kanalbyte ist PFLICHT: die oberen Bits
+    tragen Flags (0x80 = schwache Batterie; beim Sensorereignis zusaetzlich
+    0x40 = „lang"). Ohne Maske meldet ein Batteriegeraet einen Geisterkanal
+    129 statt Kanal 1. Belegt bei eq-3 selbst — `rf_sc.xml` deklariert
+    `channel_field="9:0.6"`, also SECHS Bit Kanal, und LOWBAT getrennt auf
+    9.7; AskSinPP baut dasselbe (`SensorEventMsg::init`: `(ch & 0x3f)|flags`).
+
+    ⚠️ `0xFF` ist KEIN Zustand, sondern „unbekannt" — bis zum 08.09.2026 ging
+    er hier ueber `>= 1` als „an" durch, ein Kontakt OHNE bekannten Zustand
+    erschien also als offen. Jetzt faellt er auf None, der zuletzt bekannte
+    Wert bleibt stehen statt falsch zu werden. Belegt ist die 255 als
+    ANFANGSWERT bei AskSinPP (`ContactState.h`, `EventSender`); auf der
+    HmIP-Seite fuehrt eq-3 sie als Aufzaehlungswert UNKNOWN
+    (`createStateWindowOpenTiltedClosedUnknown`, `ENUM_WERTE` in
+    `qccu_radio.py`). In den BidCoS-Beschreibungen kommt sie nicht vor
+    (`rf_sc.xml`: STATE `boolean`; `rf_rhs_le_v1_6.xml`: 0/100/200) — sie
+    auszuschliessen kostet dort also nichts.
     """
+    if frame.mtype == MT_EVENT:
+        # ⚠️ Typ 0x41 tragen auch BEWEGUNGSMELDER, und dort ist das dritte
+        # Byte die HELLIGKEIT, kein Zustand (AskSinPP `Motion.h`,
+        # `MotionEventMsg::init`: `pload[0] = brightness`). Die beiden Formen
+        # unterscheiden sich in der LAENGE — Sensorereignis `0x0C`, Bewegung
+        # `0x0D` —, hier also an der Nutzlast getrennt. Wer jedes 0x41 als
+        # Zustand deutet, meldet einen Bewegungsmelder im dunklen Raum als
+        # „zu".
+        # ⚠️ BEKANNTE LUECKE: uebersetzt man AskSinPP mit
+        # `CONTACT_STATE_WITH_BATTERY`, haengt es die Batteriespannung an
+        # (`ContactState.h`) — vier Byte, und der Rahmen faellt hier durch
+        # wie ein Bewegungsmelder. Ein Trennmerkmal dafuer haben wir nicht
+        # (das vierte Byte ist dort beliebig), und raten ist teurer als eine
+        # Meldung, die ausbleibt. Quittiert wird der Rahmen trotzdem.
+        if len(frame.payload) != 3:
+            return None
+        wert = frame.payload[2]
+        # Nur die beiden Werte, die on-air belegt sind. 0x64 bleibt BEWUSST
+        # ohne Aussage: eq-3 bildet beim Drehgriffkontakt 0/100/200 auf
+        # CLOSED/TILTED/OPEN ab (`rf_rhs_le_v1_6.xml`), und „gekippt" laesst
+        # sich in einem Wahrheitswert nicht ausdruecken. Wer den Drehgriff
+        # fuehren will, braucht einen eigenen Datenpunkt, keine Notluege hier.
+        if wert == KONTAKT_ZU:
+            return (frame.payload[0] & 0x3F, False)
+        if wert == KONTAKT_OFFEN:
+            return (frame.payload[0] & 0x3F, True)
+        return None
+
     if frame.mtype == MT_INFO and frame.subtyp == SUB_INFO_LEVEL:
         pass
     elif frame.mtype == MT_ACK and frame.subtyp == SUB_ACK_STATUS:
@@ -196,6 +285,8 @@ def status_aus(frame):
     else:
         return None
     if len(frame.payload) < 3:
+        return None
+    if frame.payload[2] == ZUSTAND_UNBEKANNT:
         return None
     return (frame.payload[1] & 0x3F, frame.payload[2] >= 1)
 
@@ -332,10 +423,51 @@ def statusabfrage(zentrale, geraet, kanal=1, msgcnt=1):
 def quittung(frame, zentrale):
     """Die Empfangsquittung auf einen Rahmen an uns: Typ 0x02, Nutzlast `00`.
 
-    ⚠️ NICHT on-air belegt, nur die Form: `busware-groundtruth` nennt
-    „mt=0x02 subtype 0x00" als blosse Empfangsquittung. Dass die Zaehlernummer
-    des quittierten Rahmens uebernommen wird, ist AskSin-Brauch und hier
-    Annahme — vor dem ersten Senden zu bestaetigen.
+    Zwei Quellen, beide nachlesbar — die Zaehlernummer ist damit BEDINGUNG,
+    nicht Brauch (bis zum 08.09.2026 stand hier „Annahme"):
+
+    * **Sendeseite**, Mitschnitt einer echten Zentrale (20.08.2026): sie baut
+      genau diese Zeile, `As 0A <zaehler> 80 02 <zentrale> <geraet> 00`, und
+      uebernimmt die Zaehlernummer des quittierten Rahmens.
+    * **Empfangsseite**, AskSinPP `Device.h`, `waitResponse`: die Antwort wird
+      nur angenommen, wenn `msg.count() == response.count()` UND
+      `msg.to() == response.from()`. Eine Quittung mit falschem Zaehler faellt
+      durch diesen Vergleich, das Geraet laeuft in den Zeitablauf (600 ms je
+      Versuch) und wiederholt bis `transmitDevTryMax` — auf einem
+      Batteriegeraet ist das die Zelle.
+
+    Beides erfuellt diese Funktion bauartbedingt: `msgcnt` kommt aus dem
+    quittierten Rahmen, `src` ist die eigene Adresse, und gebaut wird sie nur
+    fuer Rahmen an uns (`Zentrale.verarbeite`). Ohne Nachschlagerei — weder
+    Modellkennung noch Geraeteklasse noch „kennen wir das Geraet ueberhaupt"
+    gehen ein. Das ist Absicht: die Quittungspflicht sitzt auf der
+    Rahmenebene, nicht an der Geraetegattung.
+
+    ⚠️ KEINE Ausnahme fuer WKMEUP (Flag 0x02) — Entscheidung, nicht Luecke.
+    Ein AskSinPP-Batteriegeraet setzt das Bit auf seinen Sensorereignissen
+    (`Message.h`, `SensorEventMsg::init` baut `BIDI|WKMEUP`) und kuendigt
+    damit an, kurz wach zu bleiben. Hier geht trotzdem die schlichte Quittung
+    hinaus, denn sie genuegt: `waitResponse` prueft Zaehler und Absender,
+    danach `isAck()` — Typ 0x02 mit Nutzlast `00`; wach bleibt das Geraet
+    wegen des EIGENEN Bits (`Device.h`), nicht wegen unserer Antwort.
+    Andere machen es feiner: CUL_HM setzt bei Weckgeraeten das Weckbit in die
+    Quittung (`8102` statt `8002`) bzw. antwortet im Zweig „Weckbit ohne
+    BIDI" mit `A112`, und unterdrueckt danach die regulaere Quittung (Merker
+    `wakupAck` in `10_CUL_HM.pm`) — beides nur bei passendem rxType und
+    vorbereitetem IO.
+    ⚠️ Wer das hier nachruestet, muss den Fall „nichts zu senden" mitdenken:
+    eine andere Zentrale trat WKMEUP-Rahmen an einen Weckpfad ab, der nur bei
+    wartendem Kommando sendet, und quittierte Batteriegeraete deshalb GAR
+    NICHT (Fremdmessung 08.09.2026, A/B auf das Flagbyte eingegrenzt: mit
+    Weckbit keine Quittung, ohne Weckbit quittiert).
+
+    ⚠️ Offen bleibt zweierlei, beides mangels Datenlage:
+    die eq-3-Firmware selbst (Quelle zu), und wie eine ECHTE Zentrale auf
+    einen WKMEUP-Rahmen antwortet — unser Mitschnitt vom 20.08. enthaelt
+    keinen: der Schalter dort sendet mit `0xA4` (BIDI OHNE WKMEUP), der
+    einzige WKMEUP-Rahmen darin ist ein Wetterrundruf ohne Quittungswunsch.
+    Belegt ist die Form also fuer AskSinPP und fuer das, was eine echte
+    Zentrale auf einen Rahmen OHNE WKMEUP sendet.
     """
     return Frame(msgcnt=frame.msgcnt, flags=FLAG_RPTEN, mtype=MT_ACK,
                  src=zentrale, dst=frame.src, payload=bytes([SUB_ACK_L2]))
