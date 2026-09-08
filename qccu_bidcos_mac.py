@@ -455,19 +455,31 @@ def quittung(frame, zentrale):
     BIDI" mit `A112`, und unterdrueckt danach die regulaere Quittung (Merker
     `wakupAck` in `10_CUL_HM.pm`) — beides nur bei passendem rxType und
     vorbereitetem IO.
-    ⚠️ Wer das hier nachruestet, muss den Fall „nichts zu senden" mitdenken:
-    eine andere Zentrale trat WKMEUP-Rahmen an einen Weckpfad ab, der nur bei
-    wartendem Kommando sendet, und quittierte Batteriegeraete deshalb GAR
-    NICHT (Fremdmessung 08.09.2026, A/B auf das Flagbyte eingegrenzt: mit
-    Weckbit keine Quittung, ohne Weckbit quittiert).
+    Der Grund, es NICHT feiner zu machen, ist aber nicht nur „genuegt": das
+    Geraet hat um eine QUITTUNG gebeten, nicht ums Wachbleiben. Eine `A112`
+    haelt seinen Empfaenger fuer ein Kommando offen, das nicht kommt — auf
+    einem Batteriegeraet Wachzeit ohne Gegenwert.
+    ⚠️ Wer das hier dennoch nachruestet, muss den Fall „nichts zu senden"
+    mitdenken: eine andere Zentrale trat WKMEUP-Rahmen an einen Weckpfad ab,
+    der nur bei wartendem Kommando sendet, und quittierte Batteriegeraete
+    deshalb GAR NICHT (Fremdmessung 08.09.2026, A/B auf das Flagbyte
+    eingegrenzt: mit Weckbit keine Quittung, ohne Weckbit quittiert; dort
+    inzwischen behoben, indem der Weckpfad den Rahmen nur noch beansprucht,
+    wenn er ihn wirklich beantwortet).
 
-    ⚠️ Offen bleibt zweierlei, beides mangels Datenlage:
-    die eq-3-Firmware selbst (Quelle zu), und wie eine ECHTE Zentrale auf
-    einen WKMEUP-Rahmen antwortet — unser Mitschnitt vom 20.08. enthaelt
-    keinen: der Schalter dort sendet mit `0xA4` (BIDI OHNE WKMEUP), der
-    einzige WKMEUP-Rahmen darin ist ein Wetterrundruf ohne Quittungswunsch.
+    ⚠️ Offen bleibt zweierlei, beides mangels Datenlage: die eq-3-Firmware
+    selbst (Quelle zu), und wie eine ECHTE Zentrale auf einen WKMEUP-Rahmen
+    antwortet. Unser Mitschnitt vom 20.08. enthaelt keinen — und das ist eine
+    EIGENSCHAFT des Datensatzes, kein Versaeumnis: das Weckbit setzt, wer
+    schlafen geht, und die Gegenstelle dort war netzbetrieben. Ihr Schalter
+    sendet mit `0xA4` (BIDI ohne Weckbit), ein Batteriegeraet mit `0xA2`;
+    der einzige WKMEUP-Rahmen im Mitschnitt ist ein Wetterrundruf ohne
+    Quittungswunsch. Wer nie ein Batteriegeraet mitgeschnitten hat, KANN die
+    Frage nicht beantwortet haben. ⚠️ Als Regel taugt das nicht — belegt ist
+    je ein Einzelfall auf beiden Seiten (ein Schalter hier, ein
+    AskSinPP-Kontakt dort); belastbar ist nur die Richtung.
     Belegt ist die Form also fuer AskSinPP und fuer das, was eine echte
-    Zentrale auf einen Rahmen OHNE WKMEUP sendet.
+    Zentrale auf einen Rahmen OHNE Weckbit sendet.
     """
     return Frame(msgcnt=frame.msgcnt, flags=FLAG_RPTEN, mtype=MT_ACK,
                  src=zentrale, dst=frame.src, payload=bytes([SUB_ACK_L2]))
