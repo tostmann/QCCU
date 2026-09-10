@@ -41,7 +41,7 @@ for name in ("SERIAL", "OWN_ADDR", "RPC_PORT", "REGA_PORT",
              "WEB_PORT", "JSON_PORT", "CUL_PORT", "ADVERTISE", "KENNUNG",
              "SOFORT_MELDEN", "ALT_PORTS", "LOCALHOST_ONLY",
              "BIDCOS_PORT", "BIDCOS_SENDEN", "BIDCOS_FREMD",
-             "RAW_LOG"):
+             "RAW_LOG", "FREQ_OFFSET"):
     wert = o.get(name.lower())
     if wert is None or wert == "":
         continue
@@ -352,6 +352,10 @@ serve() {
     # Rohmitschnitt zur Fehlersuche. Er liegt neben den Tabellen in /data und
     # bricht bei 8 MB auf `.1` um — hoechstens zwei Dateien.
     [ "$RAW_LOG" = "1" ] && set -- "$@" --raw-log /data/luft.log
+    # Sendekanal nachstellen. 0 heisst „nicht anfassen"; der Wert wird auf den
+    # Quarzausgleich der Firmware addiert, nicht an seine Stelle gesetzt.
+    [ -n "$FREQ_OFFSET" ] && [ "$FREQ_OFFSET" != "0" ] && \
+        set -- "$@" --freq-offset "$FREQ_OFFSET"
     log "Zentrale startet — Web auf $WEB_PORT, XML-RPC auf $RPC_PORT, JSON-RPC auf $JSON_PORT."
     exec "$@"
 }

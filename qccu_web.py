@@ -258,6 +258,8 @@ footer a{color:var(--mut)} footer a:hover{color:var(--acc)}
               onclick="location.href='api/luft.log'">Rohmitschnitt laden</button>
       <button id="knopf_luft_an" class="quiet" type="button"
               onclick="mitschnittSchalten()">Mitschnitt einschalten</button>
+      <button id="knopf_fdiag" class="quiet" type="button"
+              onclick="funkdiagnoseSchalten()">Frequenzdiagnose einschalten</button>
       <button class="quiet" onclick="oeffneFirmware()">Stick-Firmware</button>
     </span>
   </h2>
@@ -498,6 +500,32 @@ async function mitschnittSchalten(){
     else melde(an ? 'Mitschnitt läuft — '+(d.pfad||'') : 'Mitschnitt beendet.','ok');
   }catch(e){ melde('Mitschnitt: '+e,'bad'); }
   ka.disabled=false;
+  laden();
+}
+
+async function funkdiagnoseSchalten(){
+  // Schaltet `rf_diag` im Stick. Danach steht je empfangenem Rahmen eine
+  // Zeile `PH fe=<Schritte>` im Rohmitschnitt — `fe` ist der Frequenzversatz,
+  // der nach dem Ausgleich der Firmware noch bleibt.
+  // ⚠️ Ohne laufenden Mitschnitt landet das nirgends. Darum wird hier
+  // gesagt, was noch fehlt, statt einen Erfolg zu melden, den niemand sieht.
+  const kb=$('#knopf_fdiag');
+  const an = kb.dataset.an !== '1';
+  kb.disabled=true;
+  try{
+    const r=await fetch('api/stick/roh',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({cmd: an ? 'mH1' : 'mH0'})});
+    let d={}; try{ d=await r.json(); }catch(e){}
+    if(!r.ok) melde(d.error || 'Die Frequenzdiagnose ließ sich nicht schalten.','bad');
+    else if(!an) melde('Frequenzdiagnose aus.','ok');
+    else if($('#knopf_luft_an').dataset.an!=='1')
+      melde('Frequenzdiagnose läuft — es fehlt noch der Mitschnitt, '
+            +'sonst werden die Zeilen nirgends festgehalten.','warn');
+    else melde('Frequenzdiagnose läuft — im Mitschnitt steht jetzt je Rahmen '
+               +'eine Zeile PH fe=<Schritte>.','ok');
+  }catch(e){ melde('Frequenzdiagnose: '+e,'bad'); }
+  kb.disabled=false;
   laden();
 }
 
@@ -959,6 +987,29 @@ async function laden(){
     const an=!!r.mitschnitt_an;
     ka.textContent = an ? 'Mitschnitt ausschalten' : 'Mitschnitt einschalten';
     ka.dataset.an = an ? '1' : '0';
+  }
+  // Wie beim Mitschnitt: die Aufschrift sagt, was der Knopf TUN wird, und
+  // der Zustand kommt aus der Rueckmeldung des Sticks, nicht aus dem Klick.
+  const kb=document.getElementById('knopf_fdiag');
+  if(kb){
+    const an=!!r.rf_diag;
+    kb.textContent = an ? 'Frequenzdiagnose ausschalten' : 'Frequenzdiagnose einschalten';
+    kb.dataset.an = an ? '1' : '0';
+  }
+  // ⚠️ Was der Stick BESTAETIGT hat, nicht was eingestellt wurde. Ein
+  // fehlgeschlagenes Schreiben stuende sonst als „nachgestellt" da.
+  const fe=r.freq_ergebnis;
+  if(fe && fe.ok){
+    const sc=fe.schritte, khz=(sc*1.587).toFixed(1);
+    h+='<dt>Frequenzversatz</dt><dd>nachgestellt um '+(sc>0?'+':'')+sc
+      +' Schritte ('+(sc>0?'+':'')+khz+' kHz), FSCTRL0 '
+      +(fe.basis>0?'+':'')+fe.basis+' &rarr; '+(fe.fsctrl0>0?'+':'')+fe.fsctrl0+'</dd>';
+  }else if(fe && !fe.ok){
+    h+='<dt>Frequenzversatz</dt><dd class="bad">nicht gesetzt &mdash; '
+      +esc(fe.grund||'')+'</dd>';
+  }else if(r.freq_offset){
+    h+='<dt>Frequenzversatz</dt><dd class="warn">eingestellt ('
+      +(r.freq_offset>0?'+':'')+r.freq_offset+' Schritte), noch nicht angewandt</dd>';
   }
   const fg=r.funkgute;
   if(fg && (fg.pll_fail||fg.pll_lost)){

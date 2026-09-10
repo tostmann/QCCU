@@ -101,6 +101,7 @@ options:
   sofort_melden: false
   localhost_only: false
   raw_log: false
+  freq_offset: 0
 schema:
   # Leer lassen: QCCU sucht den Stick selbst. Nur nötig, wenn mehrere
   # busware-Sticks stecken.
@@ -108,6 +109,14 @@ schema:
   # Eigene Funkadresse (6 Hexziffern). Ohne Angabe wird beim ersten Start
   # eine gewürfelt und gemerkt.
   own_addr: "match(^$|^[0-9a-fA-F]{6}$)?"
+  # Sendekanal nachstellen, in Schritten zu je 1,587 kHz (-128..127).
+  # 0 = nichts anfassen. Nötig nur, wenn der Quarz des Sticks so weit neben den
+  # Geräten liegt, dass deren Antworten ausbleiben. ⚠️ Der Wert wird auf den
+  # Ausgleich der Firmware ADDIERT, nicht an seine Stelle gesetzt.
+  # Messen: auf der Startseite „Mitschnitt einschalten", dann
+  # „Frequenzdiagnose einschalten" — danach steht je empfangenem Rahmen
+  # `PH fe=<Schritte>` im Mitschnitt. `fe` ist der Rest, der noch fehlt.
+  freq_offset: "int?"
   # Adresse, unter der die Gegenstelle uns erreicht. ⚠️ Ohne sie findet
   # HMCCU den XML-RPC-Dienst nicht — der Rückruf geht dann ins Leere.
   advertise: "str?"

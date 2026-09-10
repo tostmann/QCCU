@@ -218,6 +218,46 @@ gemessen am selben Gerät: `-94 dBm` statt `-38 dBm`, also rund 50 dB zu
 pessimistisch. Wer BidCoS über den CUL-Zugang betreibt, sollte die Firmware
 einspielen (Oberfläche → *Firmware*).
 
+**Frequenzversatz.** Meldet der Stick eine Sendung als erfolgreich (kein
+`Ps ERR`, Sendezeitkonto voll), reagiert das Gerät aber nicht, kann der
+Sendekanal zu weit neben dem Gerät liegen. Die Firmware bringt dafür schon
+einen Ausgleich mit — die CUL-V3-Exemplare, an denen sie entstanden ist,
+liegen mit denselben Frequenzregistern rund 27 kHz unter den eq-3-Geräten,
+weshalb FSCTRL0 auf +17 Schritten steht statt auf 0. Liegt der Quarz eines
+Sticks anders herum daneben, schiebt dieser Ausgleich ihn um denselben Betrag
+in die falsche Richtung, und die Nachführung des Empfängerbausteins fängt bei
+dieser Bandbreite nur ±25,4 kHz.
+
+Messen, ohne neu zu flashen: in der Oberfläche *Mitschnitt einschalten*, dann
+*Frequenzdiagnose einschalten*. Danach steht im Mitschnitt je empfangenem
+Rahmen eine Zeile
+
+    PH fe=-6 first=-6 min=-7 max=-5 n=4 rssi=-71 len=27 raw=<gekuerzt>
+
+`fe` ist der Versatz, der **nach** dem Ausgleich noch bleibt, in Schritten zu
+je 1,587 kHz. ⚠️ Der Wert sättigt bei ±16 — am Aufbau durchgestimmt und dort so
+gemessen; er passt zum Fangbereich der Nachführung (±25,4 kHz bei 101,6 kHz
+Bandbreite, also ±16 Schritte). Steht dort +15 oder -15, ist der wahre Versatz
+größer als angezeigt, und es braucht einen zweiten Durchgang. Gemessen wird an
+den Rahmen, die hereinkommen; es braucht also ein Gerät, das sendet.
+
+Die Diagnose danach wieder ausschalten: sie schreibt je empfangenem Rahmen
+eine zusätzliche Zeile über dieselbe serielle Leitung, über die auch der
+Funkverkehr läuft — zum Messen ist das richtig, im Dauerbetrieb ist es
+unnötige Last.
+
+Nachstellen: den gemessenen Wert als Einstellung `freq_offset` eintragen (in
+Schritten, negativ wie positiv) und die Erweiterung neu starten. ⚠️ Der Wert
+wird zum Ausgleich der Firmware **addiert**, nicht an seine Stelle gesetzt —
+`fe=-6` heißt also `freq_offset: -6`. Danach noch einmal messen: `fe` sollte
+jetzt um 0 herum liegen.
+
+Braucht es einen zweiten Durchgang, wird der neue Messwert zum **bereits
+eingetragenen** addiert: stand dort `-16` und die Diagnose zeigt danach noch
+`-7`, lautet der neue Eintrag `-23`. `freq_offset` bezieht sich immer auf den
+Ausgangswert der Firmware, nicht auf den zuletzt gesetzten — QCCU merkt sich
+dafür, was vor dem ersten Eingriff im Register stand.
+
 **Wenn etwas nicht geht:** bleibt der CUL nach einem Neustart des Containers
 auf `disconnected` — `set qcul reopen`. Beide Funkfamilien teilen sich das
 1-%-Sendezeitkonto des Sticks; `get qcul credit10ms` nennt den Rest (in

@@ -24,6 +24,7 @@ Erweiterung eingerichtet.
 | `advertise` | Die Adresse, unter der die Gegenstelle diesen Rechner erreicht. ⚠️ Ohne sie findet FHEM/HMCCU den XML-RPC-Dienst nicht — der Rückruf ginge ins Leere. |
 | `cul_port` | TCP-Zugang im culfw-Stil für BidCoS/AskSin. `0` schaltet ihn ab. |
 | `json_port` | JSON-RPC für Home Assistant. `0` schaltet ihn ab. |
+| `freq_offset` | Sendekanal nachstellen, in Schritten zu je 1,587 kHz. `0` = nichts anfassen. Nur nötig, wenn der Quarz des Sticks so weit neben den Geräten liegt, dass deren Antworten ausbleiben. Gemessen wird mit *Mitschnitt* + *Frequenzdiagnose* in der Oberfläche; ⚠️ der Wert wird zum Ausgleich der Firmware **addiert**, nicht an seine Stelle gesetzt. |
 
 ## Home Assistant anbinden
 

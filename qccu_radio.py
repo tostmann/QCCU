@@ -1416,8 +1416,28 @@ class Radio:
 
     def __init__(self, port, qccu, tables, baud=38400, verbose=True,
                  state_file=None, raw_log=None, answer=True,
-                 answer_delay=0.075, icmp_answer=True):
+                 answer_delay=0.075, icmp_answer=True, freq_offset=0):
         self.qccu = qccu
+        # Nachstellung des Sendekanals in FSCTRL0-Schritten (1 Schritt =
+        # 1,587 kHz), gemessen mit `mH1` -> `PH fe=`. 0 = nichts anfassen.
+        self.freq_offset = int(freq_offset or 0)
+        # Laeuft die Funkdiagnose des Sticks? Beim Einrichten setzen WIR den
+        # Zustand (`mH0` in der Startfolge), danach wird er aus der Antwort
+        # des Sticks nachgefuehrt (`Pm H=…`) — ein `mH1`, das nie ankam, darf
+        # die Oberflaeche nicht als „laeuft" anzeigen. ⚠️ Ohne das `mH0` waere
+        # der Zustand nach einem QCCU-Neustart schlicht falsch: der Stick
+        # behaelt `rf_diag` (er wird beim Anschliessen NICHT zurueckgesetzt).
+        self.rf_diag = False
+        # Was beim letzten Mal in FSCTRL0 stand, bevor wir es angefasst haben,
+        # und was wir daraus gemacht haben: {"basis": <roh>, "gesetzt": <roh>}.
+        # ⚠️ Das ist KEINE Bequemlichkeit, sondern die einzige Moeglichkeit,
+        # den Versatz nicht bei jedem Start erneut aufzuaddieren — siehe
+        # `_frequenzversatz_setzen`.
+        self._fsctrl0_merk = None
+        # Ergebnis des letzten Versuchs, den Versatz zu setzen — fuer die
+        # Oberflaeche. Der Wunsch steht in `freq_offset`, hier steht, was
+        # daraus geworden ist.
+        self.freq_ergebnis = None
         self.t = tables
         self.verbose = verbose
         self.icmp_answer = icmp_answer
@@ -1582,6 +1602,25 @@ class Radio:
         return (time.strftime("%H:%M:%S", time.localtime(t))
                 + ".%03d" % int(t % 1 * 1000))
 
+    @staticmethod
+    def _ph_kuerzen(text):
+        """Aus einer `PH`-Diagnosezeile den mitgefuehrten Luftrahmen entfernen.
+
+        ⚠️ Der Stick gibt `PH … raw=<ganzer Rahmen>` aus `radio_poll` aus, also
+        VOR der Trennung nach Familien: fremde HmIP-Rahmen, die QCCU sonst
+        stillschweigend verwirft, stuenden damit vollstaendig und entwuerfelt
+        im Mitschnitt. Genau diese Datei laedt ein Anwender zur Fehlersuche
+        hoch. Fuer den Zweck, zu dem `mH1` hier freigegeben ist — den
+        Frequenzversatz messen — braucht es `fe=`, `rssi=` und `len=`; der
+        Rahmeninhalt gehoert nicht dazu.
+
+        Gekuerzt wird sichtbar (`raw=<gekuerzt>`), damit der Mitschnitt nicht
+        behauptet, der Stick habe die Zeile so ausgegeben.
+        """
+        if not text.startswith("PH ") or " raw=" not in text:
+            return text
+        return text.split(" raw=", 1)[0] + " raw=<gekuerzt>"
+
     def _log(self, direction, text):
         """Eine Zeile in den Rohmitschnitt.
 
@@ -1597,6 +1636,7 @@ class Radio:
         """
         if not self._raw:
             return
+        text = self._ph_kuerzen(text)
         ts = self._zeitmarke()
         with self._log_lock:
             raw = self._raw
@@ -1674,6 +1714,13 @@ class Radio:
             per_dev = saved
         for hmid, seq in per_dev.items():
             self.appseq[hmid] = (int(seq) + self.SEQ_STEP) & 0xFF
+        merk = saved.get("fsctrl0") if isinstance(saved, dict) else None
+        if isinstance(merk, dict) and "basis" in merk and "gesetzt" in merk:
+            try:
+                self._fsctrl0_merk = {"basis": int(merk["basis"]) & 0xFF,
+                                      "gesetzt": int(merk["gesetzt"]) & 0xFF}
+            except (TypeError, ValueError):
+                self._fsctrl0_merk = None
         wartend = saved.get("wartend") if isinstance(saved, dict) else None
         if isinstance(wartend, dict):
             for hmid, eintraege in wartend.items():
@@ -1705,6 +1752,12 @@ class Radio:
             return
         with self.lock:
             daten = {"appseq": dict(self.appseq), "mac_seq": self.mac_seq,
+                     # Ausgangswert und gesetzter Wert von FSCTRL0. Ohne diese
+                     # zwei Zahlen laesst sich nach einem Neustart nicht
+                     # unterscheiden, ob der gelesene Wert der Vorgabewert des
+                     # Sticks ist oder unser eigener von vorhin.
+                     **({"fsctrl0": self._fsctrl0_merk}
+                        if self._fsctrl0_merk else {}),
                      # Was auf ein Lebenszeichen wartet, ueberlebt einen
                      # Neustart: ein Ereignismelder, der seine Verknuepfung
                      # nie bekommt, meldet nie etwas (SMI55-A, 03.09.2026 —
@@ -1748,6 +1801,212 @@ class Radio:
         if self.verbose:
             print(f"  Funk {hmid.lower()} <-> {ccu_address.upper()}")
 
+    def _reg_lesen(self, reg):
+        """Ein CC1101-Konfigurationsregister lesen (`C<hh>` -> `C<hh>=<hh>`).
+
+        Nur waehrend der Einrichtung zu benutzen: der Lesefaden laeuft noch
+        nicht, die Antwort kann also direkt von der Leitung geholt werden.
+        Gibt None zurueck, wenn der Stick nicht oder anders antwortet — der
+        Aufrufer entscheidet dann, ob das ein Fehler ist.
+
+        ⚠️ Die Antwort wird im String GESUCHT, nicht am Zeilenanfang erwartet.
+        An echter Hardware gesehen (10.09.2026, laufender Empfang):
+
+            A1A10008E21442CC54118000037A7E273C0C=11
+
+        Die Antwort klebt ohne Zeilenumbruch hinter einem Empfangsrahmen — ein
+        `startswith` haette sie genau dann verworfen, wenn Funkverkehr da ist,
+        und am trockenen Pruefstand nie. (Die A-Zeile stand da, obwohl in
+        dieser Sitzung kein `Ar` geschickt worden war: der Stick hatte es noch
+        aus der vorigen. Auch das ist ein Beleg dafuer, dass ihn das Oeffnen
+        des Anschlusses nicht zuruecksetzt.)
+        """
+        muster = "C%02X=" % reg
+        # Zwei Anlaeufe: eine Antwort, die der Ausgabepuffer des Sticks
+        # zerschnitten hat, wird von `_hexantwort` verworfen — dann ist der
+        # zweite Versuch die Antwort, nicht ein „nicht lesbar".
+        for _ in range(2):
+            self.ser.reset_input_buffer()
+            self.ser.write(muster[:-1].encode() + b"\r\n")
+            self.ser.flush()
+            self._log(">>", muster[:-1])
+            ende = time.time() + 1.0
+            while time.time() < ende:
+                try:
+                    z = self.ser.readline().decode("ascii", "replace").strip()
+                except Exception:                                # noqa: BLE001
+                    return None
+                if not z:
+                    continue
+                self._log("<<", z)
+                wert = self._hexantwort(z, muster)
+                if wert is not None:
+                    return wert
+        return None
+
+    @staticmethod
+    def _hexantwort(zeile, muster):
+        """Aus einer Stickzeile den Hexwert hinter `muster` holen, egal wo er
+        steht — aber NUR, wenn dort genau zwei Hexziffern stehen und danach
+        keine weitere folgt.
+
+        ⚠️ Die Strenge ist der Punkt. `int(rest, 16)` auf zwei geschnittene
+        Zeichen nimmt klaglos `C0C=1` als 1, `C0C= 1` als 1 und `C0C=-1` als
+        -1 an, und ein abgeschnittener Wert ist hier kein Schoenheitsfehler:
+        er wandert als „Ausgangswert" ins Gedaechtnis und verstellt den Sender
+        dauerhaft. Abgeschnitten kommt wirklich vor — die Firmware verwirft
+        bei vollem Ausgabepuffer nach 20 ms zeichenweise (`avr/console.c`,
+        CON_PUT_GUARD), und die geklebte Zeile, an der dieser Weg entstanden
+        ist, war selbst verstuemmelt: Laengenbyte 0x1A, aber nur 16 Byte Hex.
+        Faellt der Schnitt in die Antwort, steht da `C0C=1` und dahinter
+        klebt die naechste Zeile — `C0C=1A1A1000…` laese sich als 0x1A.
+
+        Lieber „nicht lesbar" als ein Wert, der zu einem Sechzehntel falsch
+        ist: der Aufrufer liest dann noch einmal.
+        """
+        m = re.search(re.escape(muster) + r"([0-9A-F]{2})(?![0-9A-F])",
+                      zeile.upper())
+        return int(m.group(1), 16) if m else None
+
+    def _frequenzversatz_setzen(self):
+        """Den gemessenen Frequenzversatz nachstellen (FSCTRL0).
+
+        ⚠️ Der Wert wird ADDIERT, nicht gesetzt. Die Firmware bringt in FSCTRL0
+        bereits den Quarzausgleich des CUL mit (2.0.92: 0x11 = +17 Schritte);
+        `fe=` aus der Diagnosezeile ist der REST, der danach noch bleibt. Wer
+        den Messwert einfach einsetzt, wirft den Ausgleich weg und liegt
+        anschliessend um dessen Betrag daneben.
+
+        ⚠️⚠️ Und darum ist hier ein Gedaechtnis noetig: **das Oeffnen des
+        Anschlusses setzt den CUL NICHT zurueck.** Am 10.09.2026 gemessen —
+        FSCTRL0 auf 0x0E geschrieben, Anschluss geschlossen, neu geoeffnet,
+        gelesen: 0x0E; derselbe Stick meldete `recal=741`, also rund 185
+        Stunden Laufzeit ueber viele Portoeffnungen hinweg. Die Firmware
+        quittiert DTR/RTS, ohne sich zuruecksetzen zu lassen. Wer also bei
+        jedem Anbinden den GELESENEN Wert als Ausgangswert nimmt und den
+        Versatz daraufaddiert, verschiebt den Stick bei jedem Neustart des
+        Behaelters ein Stueck weiter — und erzeugt genau den Fehler, gegen den
+        diese Einstellung gebaut ist. (Ein Neustart ist der normale Weg, die
+        Einstellung ueberhaupt wirksam zu machen.)
+
+        Deshalb: Ausgangswert und gesetzter Wert werden gemerkt. Steht beim
+        naechsten Mal noch unser eigener Wert im Register, ist der Stick
+        durchgelaufen und der gemerkte Ausgangswert gilt weiter. Steht etwas
+        anderes da, war er stromlos oder ist ein anderer — dann ist das der
+        neue Ausgangswert.
+
+        Ein Schritt ist f_xosc/2^14 = 1,587 kHz. FSCTRL0 fasst -128..+127.
+        """
+        n = self.freq_offset
+        merk = self._fsctrl0_merk
+        if not n and not merk:
+            return                      # nie angefasst, nichts zu tun
+        ist = self._reg_lesen(0x0C)
+        if ist is None:
+            self.freq_ergebnis = {"ok": False, "grund": "FSCTRL0 nicht lesbar"}
+            print("  ⚠️ Frequenzversatz NICHT gesetzt: FSCTRL0 nicht lesbar")
+            return
+
+        if merk and ist == merk["gesetzt"]:
+            basis = merk["basis"]       # unser Wert steht noch: Stick lief durch
+        else:
+            # Hier wird eine NEUE Basis uebernommen, und die wandert in den
+            # Zustandsspeicher. Ein einziger zerschnittener Lesewert wuerde den
+            # Sender dauerhaft verstellen — deshalb zweimal lesen und
+            # Gleichheit verlangen. Kostet eine Sekunde, einmal je Anbinden.
+            zweit = self._reg_lesen(0x0C)
+            if zweit != ist:
+                self.freq_ergebnis = {"ok": False,
+                                      "grund": "FSCTRL0 zweimal verschieden gelesen"}
+                print(f"  ⚠️ Frequenzversatz NICHT gesetzt: FSCTRL0 zweimal "
+                      f"verschieden gelesen (0x{ist:02X} / "
+                      f"{'—' if zweit is None else '0x%02X' % zweit}). "
+                      f"Kein Ausgangswert, auf den zu rechnen waere.")
+                return
+            basis = ist
+            if merk:
+                print(f"  Frequenzversatz: Ausgangswert neu bestimmt — FSCTRL0 "
+                      f"steht auf 0x{ist:02X}, gemerkt war 0x{merk['gesetzt']:02X}. "
+                      f"Der Stick war zwischendurch stromlos, neu geflasht oder "
+                      f"ist ein anderer.")
+            elif n:
+                # ⚠️ Bekanntes Loch, hier ausgesprochen statt verschwiegen:
+                # ohne Gedaechtnis laesst sich nicht unterscheiden, ob
+                # 0x{ist:02X} die Vorgabe des Sticks ist oder ein Wert, den
+                # eine fruehere Fassung schon gesetzt hat (der Stick behaelt
+                # ihn ohne Stromlos). Trifft zu, wenn die Zustandsdatei
+                # verlorengegangen ist.
+                print(f"  Frequenzversatz: Ausgangswert erstmals vom Stick "
+                      f"uebernommen (FSCTRL0 0x{ist:02X}). Das gilt nur, wenn "
+                      f"der Stick seit dem letzten Setzen stromlos war — sonst "
+                      f"wird doppelt addiert.")
+
+        b = basis - 256 if basis > 127 else basis
+        ziel = b + n
+        if not -128 <= ziel <= 127:
+            ziel = max(-128, min(127, ziel))
+            print(f"  ⚠️ Frequenzversatz auf {ziel:+d} begrenzt (FSCTRL0 fasst -128..127)")
+        ziel_roh = ziel & 0xFF
+
+        if ziel_roh == ist:
+            # Nichts zu tun — aber merken, sonst gilt beim naechsten Start
+            # dieser Wert als Ausgangswert.
+            self._fsctrl0_merk = {"basis": basis, "gesetzt": ziel_roh}
+            self._save_state()
+            self.freq_ergebnis = {"ok": True, "schritte": n, "fsctrl0": ziel,
+                                  "basis": b, "unveraendert": True}
+            if self.verbose and n:
+                print(f"  Frequenzversatz steht bereits: FSCTRL0 {b:+d} {n:+d} "
+                      f"-> {ziel:+d}")
+            return
+
+        cmd = "W0C%02X" % ziel_roh
+        self.ser.reset_input_buffer()
+        self.ser.write(cmd.encode() + b"\r\n")
+        self.ser.flush()
+        self._log(">>", f"{cmd}  [FSCTRL0 {b:+d} {n:+d} -> {ziel:+d}]")
+        # Der Stick meldet den ZURUECKGELESENEN Wert. Ohne diese Probe stuende
+        # hier eine Zusage, die niemand geprueft hat. Fuer FSCTRL0 ist die
+        # Rueckmeldung belastbar (10.09. geprueft: W0C17 -> W0C=17, mit C0C
+        # bestaetigt). Bei AGCTEST weicht sie ab — am Bench beobachtet, Ursache
+        # offen; fuer FSCTRL0 sagt das nichts.
+        bestaetigt = None
+        ende = time.time() + 1.0
+        while time.time() < ende:
+            try:
+                z = self.ser.readline().decode("ascii", "replace").strip()
+            except Exception:                                    # noqa: BLE001
+                break
+            if not z:
+                continue
+            self._log("<<", z)
+            bestaetigt = self._hexantwort(z, "W0C=")
+            if bestaetigt is not None:
+                break
+
+        if bestaetigt is None:
+            self.freq_ergebnis = {"ok": False, "grund": "keine Rueckmeldung"}
+            print("  ⚠️ Frequenzversatz: keine Rueckmeldung des Sticks")
+            return
+        if bestaetigt != ziel_roh:
+            self.freq_ergebnis = {"ok": False,
+                                  "grund": f"FSCTRL0 steht auf 0x{bestaetigt:02X}, "
+                                           f"erwartet 0x{ziel_roh:02X}"}
+            print(f"  ⚠️ Frequenzversatz NICHT uebernommen: FSCTRL0 steht auf "
+                  f"0x{bestaetigt:02X}, erwartet 0x{ziel_roh:02X}")
+            return
+
+        # Erst NACH der Bestaetigung merken — ein Wert, der nie ankam, darf
+        # beim naechsten Start nicht als „unser Wert" gelten.
+        self._fsctrl0_merk = {"basis": basis, "gesetzt": ziel_roh}
+        self._save_state()
+        self.freq_ergebnis = {"ok": True, "schritte": n, "fsctrl0": ziel,
+                              "basis": b, "unveraendert": False,
+                              **({"basis_geraten": True} if merk is None else {})}
+        if self.verbose:
+            print(f"  Frequenzversatz {n:+d} Schritte ({n * 1.587:+.1f} kHz), "
+                  f"FSCTRL0 {b:+d} -> {ziel:+d}")
+
     def setup(self, own_addr):
         """Stick als Zentrale einrichten."""
         self.own_addr = own_addr.lower()
@@ -1764,7 +2023,12 @@ class Radio:
         #     Aufkleberschluessel verpackt, over-air. So uebernimmt man auch
         #     eine laufende Anlage: der Stick lernt sich als Geraet an ihrer
         #     alten Zentrale an, deren Schluessel wandert dabei mit.
-        folge = ["mL0", "mC", f"mA{own_addr}", "mQ1", "mE1", "Pr"]
+        # ⚠️ `mH0` gehoert dazu, weil der Stick beim Anschliessen NICHT
+        # zurueckgesetzt wird (10.09. gemessen): eine Funkdiagnose aus einer
+        # frueheren Sitzung liefe sonst weiter, waehrend die Oberflaeche
+        # „einschalten" anbietet — und schriebe je Rahmen eine Zeile ueber
+        # dieselbe serielle Leitung wie der Funkverkehr.
+        folge = ["mL0", "mC", f"mA{own_addr}", "mQ1", "mE1", "mH0", "Pr"]
         for cmd in folge:
             self.ser.write(cmd.encode() + b"\r\n")
             self.ser.flush()
@@ -1774,6 +2038,11 @@ class Radio:
         self._netzschluessel_sicherstellen()
         self._seq_angleichen()
         self._burst_probe()
+        # Zuletzt. Noetig ist das nicht — die Firmware laesst FSCTRL0 beim
+        # Weckkanalwechsel ausdruecklich stehen, weil der Quarzausgleich fuer
+        # beide Kanaele gilt —, aber `_burst_probe` bewegt den Synthesizer,
+        # und die Reihenfolge kostet nichts.
+        self._frequenzversatz_setzen()
 
         self.ser.reset_input_buffer()
         if self.verbose:
@@ -1818,10 +2087,21 @@ class Radio:
     # den Netzwerkschluessel, und danach ist JEDES angelernte Geraet ausgesperrt
     # und muss neu angelernt werden. Bei einem Heizungsregler kostet das die
     # Ventiladaption. Deshalb keine schwarze Liste (die vergisst man zu
-    # pflegen), sondern eine weisse: nur die `mU`-Familie, also Vorlaufdauer
-    # und Weckkanal. Die aendern nichts Bleibendes und sind genau das, was am
-    # Pruefstand zwischen zwei Messreihen umgestellt werden muss.
-    ROH_ERLAUBT = ("mU",)
+    # pflegen), sondern eine weisse: die `mU`-Familie, also Vorlaufdauer und
+    # Weckkanal, sowie `mH`. Die aendern nichts Bleibendes und sind genau das,
+    # was am Pruefstand zwischen zwei Messreihen umgestellt werden muss.
+    #
+    # `mH1` schaltet die Funkdiagnose des Sticks ein (`rf_diag`, ein Flag im
+    # RAM): danach steht je empfangenem Rahmen eine `PH`-Zeile im
+    # Rohmitschnitt, mit `fe=` — dem verbliebenen Frequenzversatz. Das ist der
+    # Messweg fuer `freq_offset`, und er ist der Grund, warum `mH` hier steht:
+    # ohne ihn kann ein Anwender den Versatz nicht bestimmen.
+    # ⚠️ Die `PH`-Zeile fuehrt ausserdem den GANZEN entwuerfelten Luftrahmen
+    # (`raw=`) mit, und zwar aus `radio_poll`, also VOR der Familientrennung —
+    # auch fuer fremde HmIP-Rahmen, die QCCU sonst verwirft. Der Rohmitschnitt
+    # ist die Datei, die ein Anwender ins Forum haengt. Deshalb wird `raw=`
+    # beim Schreiben gekuerzt, siehe `_log`.
+    ROH_ERLAUBT = ("mU", "mH")
 
     # Grenzen fuer `pruefstand_setzen`. Eng, damit ein Vertipper nicht den
     # Normalbetrieb verstellt: tx_timeout unter 20 ms waere kuerzer als die
@@ -2380,6 +2660,13 @@ class Radio:
         return dst[:2] in ("f0", "e0") and src in eigene
 
     def _handle(self, line):
+        # Die Rueckmeldung auf `mH` (`Pm H=0` / `Pm H=1`) nur MITLESEN: die
+        # Zeile wird nicht verschluckt, damit ein wartender Auftrag sie
+        # weiterhin sehen kann. Sie ist die einzige belastbare Quelle dafuer,
+        # ob die Diagnose laeuft.
+        if line.startswith("Pm H="):
+            self.rf_diag = line[5:6] == "1"
+
         if line[:1] == "A" and (self.cul is not None or self.bidcos is not None):
             if not self._ist_eigener_frame(line):
                 if self.cul is not None:
@@ -3964,6 +4251,17 @@ class Radio:
                 "v_banner": self.v_banner, "pfad": self.port,
                 "budget": self.budget,
                 "own_addr": self.own_addr,
+                # Frequenzdiagnose: laeuft sie, und um wieviel ist der Kanal
+                # nachgestellt? Beides gehoert sichtbar zusammen — ein
+                # gesetzter Versatz ohne Diagnose ist der Normalfall, eine
+                # laufende Diagnose ohne Mitschnitt ist wirkungslos.
+                # ⚠️ `freq_offset` ist der WUNSCH aus der Einstellung,
+                # `freq_ergebnis` das, was der Stick bestaetigt hat. Die
+                # Oberflaeche zeigt das Ergebnis: sonst stuende dort
+                # „nachgestellt", waehrend das Schreiben fehlgeschlagen ist.
+                "rf_diag": bool(self.rf_diag),
+                "freq_offset": self.freq_offset,
+                "freq_ergebnis": self.freq_ergebnis,
                 "tot": bool(self.tot), "tot_grund": self.tot_grund,
                 # Ohne Netzwerkschluessel schlaegt jedes Anlernen fehl. Der
                 # Zustand stand frueher nur im Protokoll — die Oberflaeche

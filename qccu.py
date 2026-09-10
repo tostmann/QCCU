@@ -2489,6 +2489,17 @@ def main():
     a.add_argument("--own-addr", default=None,
                    help="eigene Funkadresse (6 Hex). Ohne Angabe wird beim "
                         "ersten Start eine gewuerfelt und gemerkt.")
+    a.add_argument("--freq-offset", type=int, default=0, metavar="SCHRITTE",
+                   help="Sendekanal nachstellen, in FSCTRL0-Schritten zu je "
+                        "1,587 kHz (-128..127). Der Wert wird auf den "
+                        "Quarzausgleich der Firmware ADDIERT, nicht an seine "
+                        "Stelle gesetzt. Zu messen ueber die Oberflaeche: "
+                        "erst 'Mitschnitt einschalten', dann "
+                        "'Frequenzdiagnose einschalten' — danach steht je "
+                        "Rahmen eine Zeile `PH fe=<Schritte>` im Mitschnitt. "
+                        "`fe` ist der verbliebene Versatz und schlaegt bei "
+                        "+-16 an, also ggf. mehrfach nachstellen. "
+                        "0 = nichts anfassen.")
     a.add_argument("--devices", default="qccu_devices.json",
                    metavar="DATEI",
                    help="Speicher der angelernten Geraete (ueberdauert "
@@ -2594,7 +2605,8 @@ def main():
         r = Radio(g.serial, lc, t, state_file=g.state, raw_log=g.raw_log,
                   answer=not g.no_answer,
                   answer_delay=g.answer_delay,
-                  icmp_answer=not g.no_icmp_answer)
+                  icmp_answer=not g.no_icmp_answer,
+                  freq_offset=g.freq_offset)
         r.setup(lc.own_addr)
         for addr, rf in lc.rf.items():
             r.bind(rf, addr)
