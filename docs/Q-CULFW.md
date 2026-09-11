@@ -2,7 +2,9 @@
 
 Dieses Dokument beschreibt den Befehlssatz der Firmware **q-culfw**, so wie sie
 in [`firmware/q-culfw-CUL_V3.hex`](../firmware/) mitgeliefert wird (Fassung
-**2.0.92**, aus dem Quelltext dieser Fassung gelesen). Es richtet sich an alle,
+**2.0.95**, aus dem Quelltext dieser Fassung gelesen; Abweichungen der
+Vorgängerfassung 2.0.92, die QCCU bis 2026.9.11 mitbrachte, sind als solche
+vermerkt). Es richtet sich an alle,
 die den Stick **ohne QCCU** ansprechen wollen — ein eigenes FHEM-Modul, ein
 Skript, ein anderer Wirt. QCCU selbst ist ein Wirt wie jeder andere: es
 spricht ausschließlich über diese Schnittstelle mit dem Stick.
@@ -27,7 +29,7 @@ um den culfw-Dialekt für FHEM. Hier geht es um den Stick selbst.
 | Kennung | VID `03EB`, PID `2069` (Laborkennung — **nicht** die `03EB:204B` eines culfw-CUL), Hersteller `busware.de`, Produkt `q-culfw`, Seriennummer = Werkskennung des Bausteins; unter Linux `/dev/serial/by-id/usb-busware.de_q-culfw_<serial>-if00` |
 | Befehl | ASCII, abgeschlossen mit CR **oder** LF (CR LF geht auch, die leere zweite Zeile wird verworfen); **höchstens 131 Zeichen**, was darüber hinausgeht, wird stillschweigend abgeschnitten |
 | Antwort | Zeilen mit CR LF; kein Echo der Eingabe |
-| Beim Start | der Stick meldet einmalig seine Fassung: `V q-culfw 2.0.92` |
+| Beim Start | der Stick meldet einmalig seine Fassung: `V q-culfw 2.0.95` |
 
 **Das Öffnen der Schnittstelle setzt den Stick nicht zurück.** DTR/RTS werden
 quittiert, sonst nichts. Ein Wirt findet also den Zustand vor, den die vorige
@@ -91,7 +93,7 @@ flüchtig:** jeder Schalter oben, Rolle und Adresse, Registerwerte über `W`.
 
 | Befehl | Wirkung | Antwort |
 |---|---|---|
-| `V` | Fassung | `V q-culfw 2.0.92` |
+| `V` | Fassung | `V q-culfw 2.0.95` |
 | `?` | Befehlsbuchstaben im culfw-Format | `? (? is unknown) Use one of A B C P T V W X m` |
 | `X` | Meldeform und Restkonto (FHEM: `credit10ms`) | `21 <konto>` — dezimal, in 10-ms-Einheiten; bei abgeschaltetem Konto (`mX0`) steht dort `900` |
 | `X<hh>` | Meldeform setzen (FHEM schickt `X21`). Wird geführt, aber nicht ausgewertet: der Empfangspegel hängt hier an jeder Zeile | keine; bei ungültigem Argument `X ERR` |
@@ -99,7 +101,7 @@ flüchtig:** jeder Schalter oben, Rolle und Adresse, Registerwerte über `W`.
 | `T01<hhhh>` | FHT-Hauscode setzen — nur damit FHEMs Anmeldung durchläuft, es gibt kein FHT | keine; ein ungültiges Argument wird ignoriert und der aktuelle Hauscode ausgegeben |
 | `T…` sonst | | `? ` |
 | `C<hh>` | CC1101-Register lesen; ab `30` die Statusregister (`C32` = FREQEST, `C34` = RSSI …) | `C<hh>=<hh>` — z. B. `C0D=21`; ungültiges Argument `C ERR` |
-| `W<hh><hh>` | CC1101-Register **flüchtig** schreiben, nur `00`…`2E`; Reset stellt den Registersatz wieder her | `W<hh>=<hh>` mit dem zurückgelesenen Wert, sonst `W ERR` |
+| `W<hh><hh>` | CC1101-Register **flüchtig** schreiben, nur `00`…`2E`; Reset stellt den Registersatz wieder her (bis 2.0.93 schrieb der Befehl ein Byte über seinen Puffer hinaus — folgenlos geblieben, seit 2.0.95 behoben) | `W<hh>=<hh>` mit dem zurückgelesenen Wert, sonst `W ERR` |
 | `B01` | in den Bootlader springen (DFU) | `B bootlader`, danach ist der Stick weg |
 | `B…` sonst | | `B ERR (B01)` |
 | leere Zeile | | keine |
@@ -291,13 +293,14 @@ Was ein Wirt daraus wissen muss:
 * Die 6-Byte-Kurzquittungen erscheinen **nie** als `A`- oder `P`-Zeile; die an
   uns gerichteten kommen als `PK`.
 * `a=1` in der `PM`-Zeile heißt: der Stick hat diesen Frame mit einer
-  ct=4-Quittung beantwortet. ⚠️ In 2.0.92 steht es auch dann, wenn die
-  Quittung am leeren Sendezeit-Konto scheiterte — der Rückgabewert `LOVF` des
-  Sendewegs wird von den internen Aufrufern (ct=4-Quittung, Kurzquittung,
-  Weiterleitung, BidCoS-Selbstquittung) als Erfolg gewertet; `acks`, `k6tx`
-  und `fwd` zählen dann mit, und bei `Aq1` gilt die nicht gesendete
-  Selbstquittung als gegeben — die des Wirts wird dann als Doppel geschluckt,
-  das Gerät bekommt keine. Nur bei erschöpftem Konto von Belang.
+  ct=4-Quittung beantwortet. ⚠️ **Bis 2.0.93** (also auch in der mitgelieferten
+  2.0.92) stand es auch dann, wenn die Quittung am leeren Sendezeit-Konto
+  scheiterte: die internen Aufrufer (ct=4-Quittung, Kurzquittung,
+  Weiterleitung, BidCoS-Selbstquittung) werteten `LOVF` als Erfolg; `acks`,
+  `k6tx` und `fwd` zählten mit, und bei `Aq1` galt die nicht gesendete
+  Selbstquittung als gegeben — die des Wirts wurde als Doppel geschluckt, das
+  Gerät bekam keine. Seit 2.0.95 zählen nur hinausgegangene Rahmen. Nur bei
+  erschöpftem Konto von Belang.
 * Unicasts an uns quittiert der Stick (`mQ1`) mit der Kurzquittung **vor** dem
   Entschlüsseln und **vor** der Ausgabe — die Frist des Geräts liegt bei
   wenigen Dutzend Millisekunden, die serielle Ausgabe eines langen Frames
@@ -453,7 +456,7 @@ kalibriert; beides zählt `pll` und `recal`.
 
 **BidCoS, wie FHEM mit einem CUL** (`00_CUL.pm` macht genau das):
 
-    V          -> V q-culfw 2.0.92
+    V          -> V q-culfw 2.0.95
     X21        (keine Antwort)
     Ar         (keine Antwort; öffnet den Riegel)
     T01        -> 0000
