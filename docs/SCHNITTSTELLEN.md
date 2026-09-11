@@ -232,6 +232,10 @@ Laufzeit.
 Homematic-IP-Frames erscheinen hier nicht — der Stick trennt die Familien
 selbst. Beide teilen sich das 1-%-Sendezeitkonto des Sticks.
 
+Das ist die Teilmenge, die QCCU nach außen gibt. Was der Stick selbst
+versteht — der ganze Befehlssatz von q-culfw, auch die HmIP-Seite —, steht in
+[Q-CULFW.md](Q-CULFW.md).
+
 ---
 
 ## Was einem weiteren System zu prüfen bleibt

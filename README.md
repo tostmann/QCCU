@@ -13,6 +13,7 @@ weit, wie [docs/SCHNITTSTELLEN.md](docs/SCHNITTSTELLEN.md) es ausweist.
 | **FHEM** | HMCCU (Homematic IP) und CUL/CUL_HM (BidCoS) | [docs/FHEM.md](docs/FHEM.md) |
 | **Home Assistant** | Homematic(IP) Local (aiohomematic) — als Add-on oder Container | [docs/HOMEASSISTANT.md](docs/HOMEASSISTANT.md) |
 | weitere CCU-Clients | die nachgebildete Fläche im Einzelnen — ungeprüft | [docs/SCHNITTSTELLEN.md](docs/SCHNITTSTELLEN.md) |
+| eigener Wirt direkt am Stick | der Befehlssatz der Firmware q-culfw, ohne QCCU | [docs/Q-CULFW.md](docs/Q-CULFW.md) |
 
 Derselbe Stick bedient nebenher **BidCoS/AskSin** über einen culfw-kompatiblen
 TCP-Zugang; ein CUL für beide Welten.
