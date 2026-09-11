@@ -710,6 +710,11 @@ class QCCU:
         self.rpc_port = 2010
         self.install_until = 0.0
         self.radio = None
+        # Steht, solange die Oberflaeche Firmware einspielt (qccu_web). Der
+        # Stick-Waechter laesst dann seine Runde aus — sonst suchen beide den
+        # zurueckkehrenden Stick und einer verliert den Anschluss („Could not
+        # exclusively lock port", am Aufbau gesehen 11.09.2026).
+        self.flash_laeuft = False
         self._budget_at = 0.0
         self.lock = threading.Lock()
         self._store_lock = threading.Lock()
@@ -2715,6 +2720,14 @@ def main():
         """
         while True:
             time.sleep(pause)
+            # Waehrend des Einspielens gehoert der Stick der Flash-Routine:
+            # sie schickt ihn in den Bootlader, waehrenddessen ist der Anschluss
+            # weg (saehe hier wie „abgezogen" aus), und danach bindet sie ihn
+            # selbst wieder an. Ein zweiter Oeffner im selben Moment bekommt
+            # den Anschluss nicht — und je nachdem, wer gewinnt, meldet die
+            # Flash-Routine faelschlich „der Stick meldet sich noch nicht".
+            if getattr(lc, "flash_laeuft", False):
+                continue
             r = getattr(lc, "radio", None)
             if r is not None:
                 pfad = getattr(r, "port", None) or getattr(lc, "serial_path", None)
@@ -2745,6 +2758,10 @@ def main():
                         g.serial = None
                 else:
                     continue
+            # Noch einmal, kurz vor dem Oeffnen: das Einspielen kann waehrend
+            # der Pruefung oben begonnen haben.
+            if getattr(lc, "flash_laeuft", False):
+                continue
             try:
                 neu = bind_radio()
             except Exception as ex:                  # noqa: BLE001

@@ -1693,6 +1693,12 @@ class WebHandler(BaseHTTPRequestHandler):
             # zwei Sticks am Rechner). Nur beim Erstflash aus dem Bootlader
             # (kein Funk vorher) darf ohne Seriennummer gesucht werden.
             aktualisierung = lc.radio is not None
+            # Den Stick-Waechter (qccu.stick_waechter) fuer die Dauer des
+            # Einspielens anhalten: er suchte sonst den zurueckkehrenden
+            # Stick gleichzeitig mit uns, und einer von beiden bekommt den
+            # Anschluss nicht (am Aufbau gesehen, 11.09.2026). Gesetzt VOR dem
+            # Bootlader-Sprung, geloescht im finally — auch bei Abbruch.
+            lc.flash_laeuft = True
             try:
                 if lc.radio is not None:
                     sag("Funk wird angehalten, Stick geht in den Bootlader …")
@@ -1735,6 +1741,7 @@ class WebHandler(BaseHTTPRequestHandler):
             except Exception as ex:
                 sag(f"Fehler: {ex}")
             finally:
+                lc.flash_laeuft = False
                 with FLASH_LOCK:
                     FLASH_STATE["laeuft"] = False
 
