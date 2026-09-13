@@ -960,9 +960,13 @@ async function laden(){
     // lässt, landet in `mic` — bei einem Stick, der beide Familien sieht,
     // ist das überwiegend der BidCoS-Verkehr und KEIN Fehler. Ohne diesen
     // Satz liest man den Zähler als Störungsanzeige.
+    // ⚠️ `acks` zählt nur Quittungen, die der Stick SELBST sendet (HmIP-
+    // Kurzquittung, BidCoS-Selbstquittung). Hängt FHEM am CUL-Zugang,
+    // quittiert FHEM, und der Wert bleibt 0 — als „Quittungen 0" las sich
+    // das wie ein Fehler (Forum, 09. und 13.09.2026).
     h+='<dt>Empfangen</dt><dd>'+c.rx+' <span class="mut">beide Familien</span>'
       +' · entschlüsselt '+c.ok
-      +' · Quittungen '+c.acks+' · gesendet '+c.tx
+      +' · selbst quittiert '+c.acks+' · gesendet '+c.tx
       +(c.txerr?' · <span class="bad">Fehler '+c.txerr+'</span>':'')+'</dd>';
     if(c.mic) h+='<dt>Nicht für uns</dt><dd>'+c.mic
       +' <span class="mut">— meist BidCoS, kein Fehler</span></dd>';
