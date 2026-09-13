@@ -990,11 +990,14 @@ async function laden(){
   }
   // Wie beim Mitschnitt: die Aufschrift sagt, was der Knopf TUN wird, und
   // der Zustand kommt aus der Rueckmeldung des Sticks, nicht aus dem Klick.
-  const kb=document.getElementById('knopf_fdiag');
-  if(kb){
+  // ⚠️ Nicht `kb` — der Name ist in dieser Funktion schon an die
+  // BidCoS-Kachel vergeben, und ein doppeltes `const` legt das GANZE Skript
+  // der Seite lahm (2026.9.11/9.12: keine Anzeige, kein Firmware-Dialog).
+  const kf=document.getElementById('knopf_fdiag');
+  if(kf){
     const an=!!r.rf_diag;
-    kb.textContent = an ? 'Frequenzdiagnose ausschalten' : 'Frequenzdiagnose einschalten';
-    kb.dataset.an = an ? '1' : '0';
+    kf.textContent = an ? 'Frequenzdiagnose ausschalten' : 'Frequenzdiagnose einschalten';
+    kf.dataset.an = an ? '1' : '0';
   }
   // ⚠️ Was der Stick BESTAETIGT hat, nicht was eingestellt wurde. Ein
   // fehlgeschlagenes Schreiben stuende sonst als „nachgestellt" da.

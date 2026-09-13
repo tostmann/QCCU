@@ -24,6 +24,12 @@ jobs:
       - name: Shell-Dateien
         run: |
           for f in docker/*.sh; do sh -n "$f" && echo "ok  $f"; done
+      # Ein Syntaxfehler im Skript der Weboberfläche legt die ganze Seite
+      # lahm, ohne dass Python oder der Server etwas davon merken.
+      - name: Skript der Weboberfläche
+        run: |
+          python3 -c 'import re, qccu_web; print("\n".join(re.findall(r"<script>(.*?)</script>", qccu_web.PAGE, re.S)))' > /tmp/seite.js
+          node --check /tmp/seite.js && echo "Seitenskript parst"
 
   abbild:
     name: Abbild
