@@ -881,6 +881,18 @@ STELLBEFEHLE = {
     "LEVEL@shade":           (142, DT_LEVEL_16BIT, 0, 0xC8),
     "LEVEL@uniLight":        (144, DT_LEVEL, 0, 0xC8),
     "LEVEL@withRoom":        (145, DT_LEVEL, 0, 0xC8),
+    # Die beiden Zeitfelder der EXECUTION_START. Sie tragen KEIN Typbyte,
+    # sondern stehen an fester Stelle hinter dem Pegel — `generatePayload()`
+    # schreibt `<02> <Kanal> <Pegel:1> [<timeSpan:2>] [<onTime:2>]`, und
+    # `setPayload()` liest sie genauso positionsbehaftet zurueck. Die Aktion 2
+    # und die Feldnummern 1/2 stehen in ihren Fabriken
+    # (`createRampTimeParameter` -> `(byte)2, (byte)1`,
+    #  `createOnTimeParameter`  -> `(byte)2, (byte)2`).
+    # ⚠️ Darum nur GEMEINSAM mit LEVEL und nur in dieser Reihenfolge; das
+    # prueft `_rumpf`. Umgerechnet wird nicht mit Faktor/Versatz, sondern mit
+    # `exec_zeit_hex` (`DoubleToDirectExecutionTime`).
+    "RAMP_TIME":             (AKTION_START, None, 1, 0),
+    "ON_TIME":               (AKTION_START, None, 2, 0),
     "SET_POINT_TEMPERATURE": (AKTION_THERMOSTAT, DT_TEMPERATURE_SET_POINT, 1, 1),
     "SET_POINT_MODE":        (AKTION_THERMOSTAT, DT_TEMPERATURE_SET_POINT, 0, 1),
     "BOOST_MODE":            (AKTION_THERMOSTAT, DT_LOGIC, 1, 1),
@@ -994,6 +1006,37 @@ def datum_roh(text):
     if not 0 <= jahr <= 0xFF:
         return None
     return bytes((zeit >> 1, ((zeit & 1) << 7) | t.tm_mday, t.tm_mon, jahr))
+
+
+def exec_zeit_hex(sekunden):
+    """Sekunden als Zeitfeld einer EXECUTION_START — zwei Byte.
+
+    Elf Bit Mantisse, fuenf Bit Exponent, Schrittweite 0,1 s:
+    `Wert = Mantisse * 2^Exponent * 0,1 s`. Abgeschrieben aus
+    `DoubleToDirectExecutionTime.convertLogicalToPhysical` im Jar — die
+    Mantisse wird nach rechts geschoben, bis sie in elf Bit passt, und der
+    Exponent zaehlt die Schiebungen.
+
+        b0 = Mantisse >> 3
+        b1 = ((Mantisse << 5) & 0xFF) | Exponent
+
+    Rueckgabe: vier Hexziffern, oder None, wenn der Wert nicht darstellbar ist.
+    """
+    try:
+        zehntel = int(float(sekunden) * 10.0)
+    except (TypeError, ValueError):
+        return None
+    if zehntel < 0:
+        return None
+    mantisse, exponent = zehntel, 0
+    while exponent < 31 and mantisse & ~0x7FF:
+        mantisse >>= 1
+        exponent += 1
+    if mantisse & ~0x7FF:                      # auch nach 31 Schiebungen zu gross
+        return None
+    b0 = (mantisse >> 3) & 0xFF
+    b1 = ((mantisse << 5) & 0xFF) | (exponent & 0x1F)
+    return f"{b0:02X}{b1:02X}"
 
 
 def daten_bytes(datentyp, dataindex, roh):
@@ -3963,8 +4006,40 @@ class Radio:
                     print(f"  ! {param}={value!r} ist kein Zeitpunkt der Form "
                           f"'{DATUM_FORM}' — nicht gesendet")
                 return None
-            return (aktion, datentyp, daten,
+            return (aktion, datentyp, dataindex, daten,
                     f"{param}={value!r} (Feld 0x{daten})")
+
+        # Die Zeitfelder der EXECUTION_START rechnen nicht mit Faktor und
+        # Versatz, sondern mit Mantisse und Exponent (`exec_zeit_hex`). Sie
+        # stehen VOR der allgemeinen Umrechnung, weil `zahl * faktor` aus einer
+        # Sekundenangabe sonst ein Pegelbyte machen wuerde.
+        if datentyp is None and dataindex in (1, 2):
+            try:
+                sek = float(value)
+            except (TypeError, ValueError):
+                if self.verbose:
+                    print(f"  ! {param}={value!r} ist keine Zeit in Sekunden")
+                return None
+            mn, mx = desc.get("MIN"), desc.get("MAX")
+            if (isinstance(mn, (int, float)) and isinstance(mx, (int, float))
+                    and not mn <= sek <= mx):
+                if self.verbose:
+                    print(f"  ! {param}={value!r} liegt ausserhalb {mn}..{mx} "
+                          f"— nicht gesendet")
+                return None
+            daten = exec_zeit_hex(sek)
+            if daten is None:
+                if self.verbose:
+                    print(f"  ! {param}={value!r} ist als Zeitfeld nicht "
+                          f"darstellbar — nicht gesendet")
+                return None
+            # Was das Geraet tatsaechlich bekommt: die Schrittweite ist 0,1 s,
+            # und oberhalb von 204,7 s wird gerundet (Exponent > 0).
+            roh = bytes.fromhex(daten)
+            mant = ((roh[0] & 0xFF) << 3) + ((roh[1] & 0xFF) >> 5)
+            wirk = mant * (2 ** (roh[1] & 0x1F)) * 0.1
+            return (aktion, datentyp, dataindex, daten,
+                    f"{param}={value!r} (Feld 0x{daten} = {wirk:g} s)")
 
         # BOOL kommt als Wahrheitswert herein, ENUM als Zeichenkette aus der
         # Werteliste — beides erst in eine Zahl bringen, dann umrechnen.
@@ -4004,7 +4079,7 @@ class Radio:
                       f"— nicht gesendet")
             return None
 
-        return (aktion, datentyp, daten,
+        return (aktion, datentyp, dataindex, daten,
                 f"{param}={value!r} (roh 0x{roh & 0xFF:02X}, Feld 0x{daten})")
 
     def _heutiger_wert(self, ccu_address, channel, param):
@@ -4073,9 +4148,15 @@ class Radio:
             feld = self._stellbefehl(ccu_address, channel, p, v)
             if feld is None:
                 return None
-            aktion, datentyp, daten, klartext = feld
+            aktion, datentyp, dataindex, daten, klartext = feld
             klartexte.append(klartext)
-            schluessel = (aktion, datentyp)
+            # ⚠️ Die Lage gehoert NUR bei den typlosen Feldern in den
+            # Schluessel. Bei einem Datentyp teilen sich mehrere Parameter ein
+            # Byte und werden verodert (Betriebsart + Sollwert) — da waere sie
+            # falsch. Die Felder einer EXECUTION_START dagegen stehen
+            # NACHEINANDER im Rumpf (Pegel, timeSpan, onTime); wuerde man sie
+            # verodern, kaeme ein Pegel heraus, den niemand gemeint hat.
+            schluessel = (aktion, datentyp, dataindex if datentyp is None else None)
             roh = bytes.fromhex(daten)
             schon = bloecke.get(schluessel)
             if schon is not None:
@@ -4085,7 +4166,7 @@ class Radio:
                 roh = bytes(a | b for a, b in zip(roh, schon))
             bloecke[schluessel] = roh
 
-        aktionen = {a for a, _ in bloecke}
+        aktionen = {k[0] for k in bloecke}
         if len(aktionen) != 1:
             if self.verbose:
                 print(f"  ! der Satz mischt Aktionen {aktionen} — das baut "
@@ -4093,11 +4174,28 @@ class Radio:
             return None
         aktion = aktionen.pop()
 
+        # ⚠️ Die typlosen Felder einer EXECUTION_START sind POSITIONSBEHAFTET:
+        # `setPayload()` liest Pegel, dann timeSpan, dann onTime, jedes an
+        # seiner Stelle und ohne Kennzeichnung. Fehlt eines davor, ruecken die
+        # folgenden auf — ein ON_TIME ohne RAMP_TIME landet als Rampe im
+        # Geraet, eine Rampe ohne Pegel als Pegel. Das faellt an keinem
+        # Rahmenpruefer auf, nur am falsch reagierenden Geraet. Darum hier:
+        # entweder luecken los ab Feld 0, oder gar nichts.
+        lagen = sorted(k[2] for k in bloecke if k[1] is None)
+        if lagen and lagen != list(range(len(lagen))):
+            fehlend = [i for i in range(max(lagen) + 1) if i not in lagen]
+            if self.verbose:
+                print(f"  ! die Felder der EXECUTION_START stehen an fester "
+                      f"Stelle; es fehlt {fehlend} vor {lagen} "
+                      f"(LEVEL=0, RAMP_TIME=1, ON_TIME=2) — nicht gesendet")
+            return None
+
         kanal = int(channel)
         rumpf = f"{aktion:02X}{kanal:02X}"
-        for (_, datentyp) in sorted(bloecke, key=lambda k: (k[1] is not None,
-                                                            k[1] or 0)):
-            daten = bloecke[(aktion, datentyp)].hex().upper()
+        for schluessel in sorted(bloecke, key=lambda k: (k[1] is not None,
+                                                         k[1] or 0, k[2] or 0)):
+            datentyp = schluessel[1]
+            daten = bloecke[schluessel].hex().upper()
             rumpf += daten if datentyp is None else f"{datentyp:02X}{daten}"
         return rumpf, ", ".join(klartexte)
 
