@@ -197,20 +197,9 @@ public class DumpParamsRpc {
                  * Nie an Klienten: `getParamsetDescription` streicht sie. */
                 for (Object p : se.getValue()) {
                     String pn = str(field(p, "channelParameter"));
-                    Object ln = field(p, "listNumber");
-                    if (pn == null || ln == null) continue;
+                    if (pn == null) continue;
                     Object vorhanden = out.get(pn);
-                    if (!(vorhanden instanceof Map)) continue;
-                    Map<String, Object> pd = cast(vorhanden);
-                    Map<String, Object> adr = new TreeMap<>();
-                    adr.put("LISTE", ln);
-                    adr.put("BYTE", field(p, "indexByte"));
-                    adr.put("BIT", field(p, "indexBit"));
-                    adr.put("LAENGE_BYTE", field(p, "lengthByte"));
-                    adr.put("LAENGE_BIT", field(p, "lengthBit"));
-                    pd.put("ADRESSE", adr);
-                    Object conv = field(p, "typeConverter");
-                    if (conv != null) pd.put("UMRECHNER", umrechner(conv));
+                    if (vorhanden instanceof Map) schreibwegAnhaengen(cast(vorhanden), p);
                 }
                 result.computeIfAbsent(chType, k -> new TreeMap<>()).put(psName, out);
             }
@@ -234,10 +223,19 @@ public class DumpParamsRpc {
                     String sub = str(call(e.getKey(), "getParameterSubtypeID"));
                     if (n == null || e.getValue() == null) continue;
                     String key = n + "@" + (sub == null || sub.isEmpty() ? "default" : sub);
+                    /* Auch hier der Schreibweg: OHNE ihn ist JEDER Parameter,
+                     * der nur in einer device_*.xml steht, unschreibbar — die
+                     * Zentrale lehnt putParamset MASTER ab, weil sie die
+                     * Listenbytes nicht bilden kann (am HmIP-PDT gemessen:
+                     * LED_DISABLE_CHANNELSTATE, ON_MIN_LEVEL). Adresse und
+                     * Umrechner haengen am Parameter selbst, nicht am
+                     * Kanaltyp — der Subtyp im Schluessel trennt die Lagen. */
+                    Map<String, Object> pd = describeSingle(e.getValue(), n);
+                    schreibwegAnhaengen(pd, e.getValue());
                     if (!f) flat.append(",\n");
                     f = false;
                     flat.append("  ").append(q(key)).append(": ")
-                        .append(renderParam(describeSingle(e.getValue(), n)));
+                        .append(renderParam(pd));
                 }
             }
             write(lookupPath, flat.append("\n}\n").toString());
@@ -287,6 +285,29 @@ public class DumpParamsRpc {
         if (min != null) pd.put("MIN", min);
         if (max != null) pd.put("MAX", max);
         return pd;
+    }
+
+    /** Adresse (Liste, Byte, Bit, Laengen) und Umrechner eines Konfigurations-
+     *  parameters anhaengen — der Schreibweg. Die Zentrale setzt daraus die
+     *  Listenbytes zusammen (`getConfigurationDataOfParameters`,
+     *  `shiftLogicalToPhysical`) und schickt START_PARAMETER_SETTING /
+     *  SET_PARAMETER_BY_INDEX / COMMIT_PARAMETER_SETTING. Nie an Klienten:
+     *  `getParamsetDescription` streicht beides.
+     *
+     *  Beide Angaben sind Felder des Parameters SELBST. Ein Parameter ohne
+     *  `listNumber` ist kein Konfigurationsparameter und bekommt nichts. */
+    static void schreibwegAnhaengen(Map<String, Object> pd, Object p) {
+        Object ln = field(p, "listNumber");
+        if (ln == null) return;
+        Map<String, Object> adr = new TreeMap<>();
+        adr.put("LISTE", ln);
+        adr.put("BYTE", field(p, "indexByte"));
+        adr.put("BIT", field(p, "indexBit"));
+        adr.put("LAENGE_BYTE", field(p, "lengthByte"));
+        adr.put("LAENGE_BIT", field(p, "lengthBit"));
+        pd.put("ADRESSE", adr);
+        Object conv = field(p, "typeConverter");
+        if (conv != null) pd.put("UMRECHNER", umrechner(conv));
     }
 
     /** Der Typumwandler eines Parameters als Tabelle: Klasse und die Zahlen,
