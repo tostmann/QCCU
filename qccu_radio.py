@@ -1762,6 +1762,11 @@ class Radio:
             try:
                 self._fsctrl0_merk = {"basis": int(merk["basis"]) & 0xFF,
                                       "gesetzt": int(merk["gesetzt"]) & 0xFF}
+                # Nur vorhanden, solange ein Schreiben unbestaetigt blieb —
+                # siehe `_frequenzversatz_setzen`.
+                auch = merk.get("auch")
+                if isinstance(auch, list) and auch:
+                    self._fsctrl0_merk["auch"] = [int(w) & 0xFF for w in auch]
             except (TypeError, ValueError):
                 self._fsctrl0_merk = None
         wartend = saved.get("wartend") if isinstance(saved, dict) else None
@@ -1950,7 +1955,7 @@ class Radio:
             print("  ⚠️ Frequenzversatz NICHT gesetzt: FSCTRL0 nicht lesbar")
             return
 
-        if merk and ist == merk["gesetzt"]:
+        if merk and (ist == merk["gesetzt"] or ist in merk.get("auch", ())):
             basis = merk["basis"]       # unser Wert steht noch: Stick lief durch
         else:
             # Hier wird eine NEUE Basis uebernommen, und die wandert in den
@@ -2003,6 +2008,23 @@ class Radio:
                       f"-> {ziel:+d}")
             return
 
+        # ⚠️ VOR dem Schreiben merken — und zwar beide Werte, den alten und den
+        # neuen. Bis 2026.9.13 wurde erst nach der Bestaetigung gemerkt, mit
+        # der Begruendung, ein Wert, der nie ankam, duerfe nicht als unserer
+        # gelten. Der haeufige Fall ist aber der umgekehrte: das Schreiben
+        # kommt an, nur die Rueckmeldung geht auf der Leitung verloren (die
+        # Firmware verwirft bei vollem Ausgabepuffer zeichenweise, s.
+        # `_hexantwort`). Dann stand beim naechsten Start unser Wert im
+        # Register, ohne dass ihn jemand als unseren kannte — er wurde zur
+        # neuen Basis und der Versatz ein zweites Mal addiert (-27 auf 0x11:
+        # erst 0xF6, beim naechsten Start 0xDB), bestaetigt und fortan fuer
+        # richtig gehalten. Mit beiden Werten im Gedaechtnis ist der naechste
+        # Start in jedem Fall richtig: steht der neue da, kam das Schreiben
+        # an; steht der alte da, kam es nicht an — und der alte ist entweder
+        # die Basis selbst oder unser voriger Wert zur selben Basis.
+        self._fsctrl0_merk = {"basis": basis, "gesetzt": ziel_roh, "auch": [ist]}
+        self._save_state()
+
         cmd = "W0C%02X" % ziel_roh
         self.ser.reset_input_buffer()
         self.ser.write(cmd.encode() + b"\r\n")
@@ -2027,11 +2049,26 @@ class Radio:
             if bestaetigt is not None:
                 break
 
+        # Fehlt die Rueckmeldung, sagt das nichts darueber, ob das Schreiben
+        # ankam — also nachsehen, statt den Anwender neu starten zu lassen.
+        nachgelesen = bestaetigt is None
+        if nachgelesen:
+            bestaetigt = self._reg_lesen(0x0C)
+
         if bestaetigt is None:
-            self.freq_ergebnis = {"ok": False, "grund": "keine Rueckmeldung"}
-            print("  ⚠️ Frequenzversatz: keine Rueckmeldung des Sticks")
+            # Das Gedaechtnis von oben bleibt stehen: es kennt beide Werte.
+            self.freq_ergebnis = {"ok": False,
+                                  "grund": "keine Rueckmeldung, auch nicht beim Nachlesen"}
+            print("  ⚠️ Frequenzversatz: keine Rueckmeldung des Sticks, auch nicht "
+                  "beim Nachlesen")
             return
         if bestaetigt != ziel_roh:
+            # Was der Stick meldet, steht im Register — und steht dort wegen
+            # unseres Schreibens. Also ebenfalls als unser Wert merken, sonst
+            # wird es beim naechsten Start zur Basis.
+            if bestaetigt not in self._fsctrl0_merk["auch"]:
+                self._fsctrl0_merk["auch"].append(bestaetigt)
+                self._save_state()
             self.freq_ergebnis = {"ok": False,
                                   "grund": f"FSCTRL0 steht auf 0x{bestaetigt:02X}, "
                                            f"erwartet 0x{ziel_roh:02X}"}
@@ -2039,12 +2076,12 @@ class Radio:
                   f"0x{bestaetigt:02X}, erwartet 0x{ziel_roh:02X}")
             return
 
-        # Erst NACH der Bestaetigung merken — ein Wert, der nie ankam, darf
-        # beim naechsten Start nicht als „unser Wert" gelten.
+        # Bestaetigt: der alte Wert ist nicht mehr unserer.
         self._fsctrl0_merk = {"basis": basis, "gesetzt": ziel_roh}
         self._save_state()
         self.freq_ergebnis = {"ok": True, "schritte": n, "fsctrl0": ziel,
                               "basis": b, "unveraendert": False,
+                              **({"nachgelesen": True} if nachgelesen else {}),
                               **({"basis_geraten": True} if merk is None else {})}
         if self.verbose:
             print(f"  Frequenzversatz {n:+d} Schritte ({n * 1.587:+.1f} kHz), "
