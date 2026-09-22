@@ -1928,7 +1928,15 @@ class Radio:
         Antwort wird im String gesucht (sie kann hinter einer Empfangszeile
         kleben) und nur mit genau zwei Hexziffern angenommen.
         """
-        for _ in range(2):
+        for _ in range(3):
+            # ⚠️ Erst zur Ruhe kommen lassen. In der Startfolge stehen die
+            # Antworten der vorigen Befehle noch an, und die Firmware verwirft
+            # bei vollem Ausgabepuffer ZEICHENWEISE (`avr/console.c`,
+            # CON_PUT_GUARD). Am Stick gesehen (22.09.2026): die erste Frage
+            # blieb ohne Antwort, die zweite kam als „?" verstuemmelt an —
+            # ein Abgleich, den der Stick traegt, waere so unsichtbar
+            # geblieben, und QCCU haette weiter geraten.
+            time.sleep(0.3)
             self.ser.reset_input_buffer()
             self.ser.write(b"mJ\r\n")
             self.ser.flush()
