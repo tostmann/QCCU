@@ -483,6 +483,31 @@ function dialogeSchliessen(){
   document.querySelectorAll('dialog[open]').forEach(d=>d.close());
 }
 
+async function abgleichSchreiben(aktion, frage){
+  if(frage && !confirm(frage)) return;
+  try{
+    const r=await fetch('api/stick/abgleich',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({aktion:aktion})});
+    let d={}; try{ d=await r.json(); }catch(e){}
+    if(!r.ok) melde(d.error || 'Der Abgleich ließ sich nicht ändern.','bad');
+    else melde(aktion==='speichern' ? 'Im Stick gespeichert.'
+                                    : 'Abgleich im Stick gelöscht.','ok');
+  }catch(e){ melde('Der Abgleich ließ sich nicht ändern.','bad'); }
+  laden();
+}
+function abgleichSpeichern(){
+  abgleichSchreiben('speichern',
+    'Den eingestellten Frequenzversatz dauerhaft im Stick speichern?\n\n'
+    +'Er gilt danach auch ohne QCCU und überlebt neue Firmware. '
+    +'Die Einstellung freq_offset kann anschließend entfernt werden.');
+}
+function abgleichLoeschen(){
+  abgleichSchreiben('loeschen',
+    'Den Abgleich im Stick löschen?\n\nEr fällt damit auf den Wert der '
+    +'Platine zurück.');
+}
+
 async function mitschnittSchalten(){
   // ⚠️ Umschalten anhand des ZULETZT GEMELDETEN Zustands, nicht anhand der
   // Aufschrift: die Aufschrift sagt, was der Knopf tun wird.
@@ -1011,7 +1036,20 @@ async function laden(){
     const w=stickAbgl.wert>127?stickAbgl.wert-256:stickAbgl.wert;
     h+='<dt>Frequenzabgleich</dt><dd>FSCTRL0 '+(w>0?'+':'')+w
       +(stickAbgl.quelle==='ee'?' &mdash; im Stick gespeichert'
-                        :' &mdash; Wert der Platine, kein eigener Abgleich')+'</dd>';
+                        :' &mdash; Wert der Platine, kein eigener Abgleich');
+    // Speichern lohnt nur, wenn ein Versatz eingestellt ist, der noch NICHT
+    // im Stick steht — sonst gaebe es nichts zu speichern.
+    if(r.freq_offset && !stickAbgl.eingerechnet)
+      h+=' <button type="button" onclick="abgleichSpeichern()">im Stick speichern</button>';
+    if(stickAbgl.quelle==='ee')
+      h+=' <button type="button" onclick="abgleichLoeschen()">Abgleich löschen</button>';
+    if(stickAbgl.eingerechnet)
+      h+='<br><span class="mut">Dieser Versatz steckt schon im Abgleich des '
+        +'Sticks — die Einstellung <code>freq_offset</code> kann entfernt werden.</span>';
+    else if(stickAbgl.warnung)
+      h+='<br><span class="warn">Der Stick trägt einen eigenen Abgleich, und '
+        +'zusätzlich ist ein Versatz eingestellt: er wird daraufaddiert.</span>';
+    h+='</dd>';
   }
   // ⚠️ Was der Stick BESTAETIGT hat, nicht was eingestellt wurde. Ein
   // fehlgeschlagenes Schreiben stuende sonst als „nachgestellt" da.
@@ -1486,6 +1524,25 @@ class WebHandler(BaseHTTPRequestHandler):
             kanaele = self.radio.zentralen_verknuepfen(
                 str(body.get("address", "")), body.get("channels"))
             return self._json({"ok": True, "kanaele": kanaele})
+
+        if self.path == "/api/stick/abgleich":
+            # Den Frequenzabgleich dauerhaft im Stick ablegen oder verwerfen
+            # (`mJ`, q-culfw ab 2.0.101). Nur auf Knopfdruck: geschrieben wird
+            # ins EEPROM des Sticks, und der Wert gilt dann auch fuer jeden
+            # anderen Wirt.
+            if not self.radio:
+                return self._json({"error": "kein Funk angebunden"}, 409)
+            aktion = body.get("aktion")
+            if aktion == "speichern":
+                zustand, err = self.radio.abgleich_speichern()
+            elif aktion == "loeschen":
+                zustand, err = self.radio.abgleich_loeschen()
+            else:
+                return self._json({"error": "aktion muss speichern oder "
+                                            "loeschen sein"}, 400)
+            return self._json({"error": err} if err
+                              else {"ok": True, "abgleich": zustand},
+                              409 if err else 200)
 
         if self.path == "/api/stick/roh":
             # Nur fuer den Pruefstand: ein Kommando aus der weissen Liste an

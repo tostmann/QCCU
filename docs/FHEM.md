@@ -261,6 +261,14 @@ ein Stick seinen eigenen Abgleich im EEPROM tragen (`mJ`, siehe
 [Q-CULFW.md](Q-CULFW.md)); dann ist **dieser** der Ausgangswert, und
 `freq_offset` wird nach dem Abgleich neu gemessen — meist bleibt es bei 0.
 
+**Dauerhaft im Stick ablegen:** Steht der Versatz richtig, legt der Knopf
+„im Stick speichern“ auf der Startseite ihn im EEPROM des Sticks ab (q-culfw
+ab 2.0.101). Er gilt dann auch ohne QCCU, überlebt einen neu angelegten
+Container und das Einspielen neuer Firmware, und `freq_offset` kann entfernt
+werden. Solange die Einstellung noch dasteht, rechnet QCCU sie nicht ein
+zweites Mal dazu und sagt das auf der Startseite. „Abgleich löschen“ stellt
+den Stick auf den Wert seiner Platine zurück.
+
 **Wenn etwas nicht geht:** bleibt der CUL nach einem Neustart des Containers
 auf `disconnected` — `set qcul reopen`. Beide Funkfamilien teilen sich das
 1-%-Sendezeitkonto des Sticks; `get qcul credit10ms` nennt den Rest (in

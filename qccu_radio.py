@@ -1482,6 +1482,12 @@ class Radio:
         # q-culfw 2.0.101): {"wert": <FSCTRL0 roh>, "quelle": "ee"|"platine"},
         # oder None bei aelterer Firmware. Gelesen in `setup`.
         self.abgleich = None
+        # Was beim Speichern in den Stick gewandert ist: {"wert": <roh>,
+        # "eingerechnet": <freq_offset zu dem Zeitpunkt>}. Solange der Stick
+        # diesen Wert meldet UND `freq_offset` unveraendert dasteht, ist der
+        # Versatz bereits im Abgleich enthalten und darf NICHT noch einmal
+        # addiert werden — sonst waere das Speichern eine Verdopplung.
+        self._abgl_marke = None
         # Ergebnis des letzten Versuchs, den Versatz zu setzen — fuer die
         # Oberflaeche. Der Wunsch steht in `freq_offset`, hier steht, was
         # daraus geworden ist.
@@ -1774,6 +1780,13 @@ class Radio:
                     self._fsctrl0_merk["auch"] = [int(w) & 0xFF for w in auch]
             except (TypeError, ValueError):
                 self._fsctrl0_merk = None
+        mk = saved.get("abgleich") if isinstance(saved, dict) else None
+        if isinstance(mk, dict) and "wert" in mk:
+            try:
+                self._abgl_marke = {"wert": int(mk["wert"]) & 0xFF,
+                                    "eingerechnet": int(mk.get("eingerechnet", 0))}
+            except (TypeError, ValueError):
+                self._abgl_marke = None
         wartend = saved.get("wartend") if isinstance(saved, dict) else None
         if isinstance(wartend, dict):
             for hmid, eintraege in wartend.items():
@@ -1811,6 +1824,11 @@ class Radio:
                      # Sticks ist oder unser eigener von vorhin.
                      **({"fsctrl0": self._fsctrl0_merk}
                         if self._fsctrl0_merk else {}),
+                     # Was im Stick gespeichert wurde und welcher freq_offset
+                     # darin steckt — sonst addiert der naechste Start ihn
+                     # noch einmal.
+                     **({"abgleich": getattr(self, "_abgl_marke", None)}
+                        if getattr(self, "_abgl_marke", None) else {}),
                      # Was auf ein Lebenszeichen wartet, ueberlebt einen
                      # Neustart: ein Ereignismelder, der seine Verknuepfung
                      # nie bekommt, meldet nie etwas (SMI55-A, 03.09.2026 —
@@ -1955,6 +1973,85 @@ class Radio:
                       zeile.upper())
         return int(m.group(1), 16) if m else None
 
+    def abgleich_zustand(self):
+        """Was die Oberflaeche ueber den Abgleich wissen muss.
+
+        `eingerechnet`: der eingestellte `freq_offset` steckt schon im Wert im
+        Stick (dann rechnet QCCU ihn nicht noch einmal drauf).
+        `warnung`: der Stick traegt einen eigenen Abgleich UND es ist ein
+        `freq_offset` eingestellt, der nachweislich NICHT darin steckt — das
+        ist entweder ein gewollter Feintrimm oder eine verlorene Marke.
+        """
+        a = dict(self.abgleich) if self.abgleich else None
+        if a:
+            n = int(self.freq_offset or 0)
+            m = getattr(self, "_abgl_marke", None)
+            a["eingerechnet"] = bool(n and m and m.get("wert") == a["wert"]
+                                     and int(m.get("eingerechnet", 0)) == n)
+            a["warnung"] = bool(n and a["quelle"] == "ee"
+                                and not a["eingerechnet"])
+        return a
+
+    def abgleich_speichern(self):
+        """Den wirksamen Wert dauerhaft im Stick ablegen (`mJ<hh>`).
+
+        Danach traegt der Stick ihn selbst — ueber Neustarts, neu angelegte
+        Behaelter und das Einspielen neuer Firmware hinweg (das EEPROM
+        ueberlebt den DFU-Flash). Gespeichert wird, was WIRKLICH im Register
+        steht, nicht was eingestellt war: nur dafuer ist belegt, dass es der
+        Wert ist, mit dem die Anlage laeuft.
+
+        Rueckgabe (zustand, fehler).
+        """
+        if not self.abgleich:
+            return {}, ("Dieser Stick kennt den Abgleich noch nicht — dafuer "
+                        "braucht es q-culfw 2.0.101 oder neuer.")
+        m = self._ask("C0C", r"C0C=([0-9A-F]{2})(?![0-9A-F])")
+        if not m:
+            return {}, "FSCTRL0 ist nicht lesbar — es wurde nichts gespeichert."
+        wert = int(m.group(1), 16)
+        a = self._ask("mJ%02X" % wert,
+                      r"Pm J=([0-9A-F]{2}) (ee|platine)(?![0-9A-Za-z])")
+        if not a:
+            return {}, "Der Stick hat das Speichern nicht bestaetigt."
+        # Die Antwort kommt aus dem EEPROM zurueckgelesen: sie sagt, was beim
+        # naechsten Start gilt. Nur darauf ist Verlass.
+        gespeichert, quelle = int(a.group(1), 16), a.group(2)
+        if gespeichert != wert or quelle != "ee":
+            return {}, (f"Der Stick meldet 0x{gespeichert:02X} ({quelle}), "
+                        f"erwartet 0x{wert:02X} (ee).")
+        self.abgleich = {"wert": wert, "quelle": "ee"}
+        self._abgl_marke = {"wert": wert,
+                            "eingerechnet": int(self.freq_offset or 0)}
+        self._fsctrl0_merk = {"basis": wert, "gesetzt": wert}
+        self._save_state()
+        if self.verbose:
+            print(f"  Frequenzabgleich im Stick gespeichert: FSCTRL0 "
+                  f"0x{wert:02X}")
+        return self.abgleich_zustand(), None
+
+    def abgleich_loeschen(self):
+        """Den Abgleich im Stick verwerfen (`mJ-`) — zurueck auf den Wert der
+        Platine. Rueckgabe (zustand, fehler)."""
+        if not self.abgleich:
+            return {}, ("Dieser Stick kennt den Abgleich noch nicht — dafuer "
+                        "braucht es q-culfw 2.0.101 oder neuer.")
+        a = self._ask("mJ-", r"Pm J=([0-9A-F]{2}) (ee|platine)(?![0-9A-Za-z])")
+        if not a:
+            return {}, "Der Stick hat das Loeschen nicht bestaetigt."
+        wert, quelle = int(a.group(1), 16), a.group(2)
+        if quelle != "platine":
+            return {}, (f"Der Stick meldet weiter einen eigenen Abgleich "
+                        f"(0x{wert:02X}).")
+        self.abgleich = {"wert": wert, "quelle": "platine"}
+        self._abgl_marke = None
+        self._fsctrl0_merk = {"basis": wert, "gesetzt": wert}
+        self._save_state()
+        if self.verbose:
+            print(f"  Frequenzabgleich im Stick geloescht — FSCTRL0 "
+                  f"0x{wert:02X} (Wert der Platine)")
+        return self.abgleich_zustand(), None
+
     def _frequenzversatz_setzen(self):
         """Den gemessenen Frequenzversatz nachstellen (FSCTRL0).
 
@@ -1988,6 +2085,17 @@ class Radio:
         n = self.freq_offset
         merk = self._fsctrl0_merk
         abgl = getattr(self, "abgleich", None)
+        marke = getattr(self, "_abgl_marke", None)
+        if (n and abgl and abgl.get("quelle") == "ee" and marke
+                and marke.get("wert") == abgl.get("wert")
+                and int(n) == int(marke.get("eingerechnet", 0))):
+            # Dieser Versatz steckt schon im Abgleich des Sticks — noch einmal
+            # addiert waere er doppelt. Die Oberflaeche sagt, dass die
+            # Einstellung weg kann; bis dahin wird sie hier nur verrechnet.
+            print(f"  Frequenzversatz {n:+d} steckt bereits im Abgleich des "
+                  f"Sticks (FSCTRL0 0x{abgl['wert']:02X}) — die Einstellung "
+                  f"freq_offset kann entfernt werden.")
+            n = 0
         if not n and not merk:
             return                      # nie angefasst, nichts zu tun
         ist = self._reg_lesen(0x0C)
@@ -4471,7 +4579,7 @@ class Radio:
                 "rf_diag": bool(self.rf_diag),
                 "freq_offset": self.freq_offset,
                 "freq_ergebnis": self.freq_ergebnis,
-                "abgleich": getattr(self, "abgleich", None),
+                "abgleich": self.abgleich_zustand(),
                 "tot": bool(self.tot), "tot_grund": self.tot_grund,
                 # Ohne Netzwerkschluessel schlaegt jedes Anlernen fehl. Der
                 # Zustand stand frueher nur im Protokoll — die Oberflaeche
