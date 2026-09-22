@@ -1003,6 +1003,16 @@ async function laden(){
     kf.textContent = an ? 'Frequenzdiagnose ausschalten' : 'Frequenzdiagnose einschalten';
     kf.dataset.an = an ? '1' : '0';
   }
+  // Der Abgleich im Stick (q-culfw ab 2.0.101, `mJ`): womit der Sender
+  // startet — ein eigener, am Sender gemessener Wert aus dem EEPROM oder der
+  // feste Wert der Platine. Aeltere Firmware meldet nichts, dann keine Zeile.
+  const stickAbgl=r.abgleich;
+  if(stickAbgl){
+    const w=stickAbgl.wert>127?stickAbgl.wert-256:stickAbgl.wert;
+    h+='<dt>Frequenzabgleich</dt><dd>FSCTRL0 '+(w>0?'+':'')+w
+      +(stickAbgl.quelle==='ee'?' &mdash; im Stick gespeichert'
+                        :' &mdash; Wert der Platine, kein eigener Abgleich')+'</dd>';
+  }
   // ⚠️ Was der Stick BESTAETIGT hat, nicht was eingestellt wurde. Ein
   // fehlgeschlagenes Schreiben stuende sonst als „nachgestellt" da.
   const fe=r.freq_ergebnis;

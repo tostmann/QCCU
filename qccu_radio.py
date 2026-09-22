@@ -1478,6 +1478,10 @@ class Radio:
         # den Versatz nicht bei jedem Start erneut aufzuaddieren — siehe
         # `_frequenzversatz_setzen`.
         self._fsctrl0_merk = None
+        # Was der Stick selbst ueber seinen Frequenzabgleich sagt (`mJ`, ab
+        # q-culfw 2.0.101): {"wert": <FSCTRL0 roh>, "quelle": "ee"|"platine"},
+        # oder None bei aelterer Firmware. Gelesen in `setup`.
+        self.abgleich = None
         # Ergebnis des letzten Versuchs, den Versatz zu setzen — fuer die
         # Oberflaeche. Der Wunsch steht in `freq_offset`, hier steht, was
         # daraus geworden ist.
@@ -1893,6 +1897,40 @@ class Radio:
                     return wert
         return None
 
+    def _abgleich_lesen(self):
+        """Den Frequenzabgleich des Sticks erfragen (`mJ`, ab q-culfw 2.0.101).
+
+        Rueckgabe {"wert": FSCTRL0 roh, "quelle": "ee" | "platine"} — `ee`
+        heisst: der Stick traegt einen eigenen, am Sender gemessenen Abgleich im
+        EEPROM, `platine`: er laeuft mit dem festen Wert seiner Platine. None,
+        wenn die Firmware `mJ` nicht kennt (bis 2.0.100: `Pm ERR`) oder nicht
+        antwortet.
+
+        Wie `_reg_lesen` nur waehrend der Einrichtung, und ebenso streng: die
+        Antwort wird im String gesucht (sie kann hinter einer Empfangszeile
+        kleben) und nur mit genau zwei Hexziffern angenommen.
+        """
+        for _ in range(2):
+            self.ser.reset_input_buffer()
+            self.ser.write(b"mJ\r\n")
+            self.ser.flush()
+            self._log(">>", "mJ")
+            ende = time.time() + 1.0
+            while time.time() < ende:
+                try:
+                    z = self.ser.readline().decode("ascii", "replace").strip()
+                except Exception:                                # noqa: BLE001
+                    return None
+                if not z:
+                    continue
+                self._log("<<", z)
+                m = re.search(r"Pm J=([0-9A-F]{2}) (ee|platine)(?![0-9A-Za-z])", z)
+                if m:
+                    return {"wert": int(m.group(1), 16), "quelle": m.group(2)}
+                if "Pm ERR" in z:
+                    return None                 # Firmware ohne `mJ`
+        return None
+
     @staticmethod
     def _hexantwort(zeile, muster):
         """Aus einer Stickzeile den Hexwert hinter `muster` holen, egal wo er
@@ -1949,6 +1987,7 @@ class Radio:
         """
         n = self.freq_offset
         merk = self._fsctrl0_merk
+        abgl = getattr(self, "abgleich", None)
         if not n and not merk:
             return                      # nie angefasst, nichts zu tun
         ist = self._reg_lesen(0x0C)
@@ -1957,7 +1996,17 @@ class Radio:
             print("  ⚠️ Frequenzversatz NICHT gesetzt: FSCTRL0 nicht lesbar")
             return
 
-        if merk and (ist == merk["gesetzt"] or ist in merk.get("auch", ())):
+        if abgl is not None:
+            # Ab q-culfw 2.0.101 sagt der Stick selbst, mit welchem Wert er
+            # gestartet ist (`mJ`: aus dem EEPROM oder der Platine) — das IST
+            # die Basis, ohne Raten und ohne Gedaechtnis. Das Gedaechtnis kann
+            # einen EEPROM-Abgleich nicht von einem eigenen, noch stehenden
+            # Wert unterscheiden, wenn beide gleich sind: dann hielt es den
+            # Abgleich fuer seinen Wert und schrieb die alte Basis zurueck
+            # (Review 22.09.2026). Es wird unten trotzdem weitergefuehrt — fuer
+            # den Fall, dass wieder eine Firmware ohne `mJ` eingespielt wird.
+            basis = abgl["wert"]
+        elif merk and (ist == merk["gesetzt"] or ist in merk.get("auch", ())):
             basis = merk["basis"]       # unser Wert steht noch: Stick lief durch
         else:
             # Hier wird eine NEUE Basis uebernommen, und die wandert in den
@@ -2084,7 +2133,8 @@ class Radio:
         self.freq_ergebnis = {"ok": True, "schritte": n, "fsctrl0": ziel,
                               "basis": b, "unveraendert": False,
                               **({"nachgelesen": True} if nachgelesen else {}),
-                              **({"basis_geraten": True} if merk is None else {})}
+                              **({"basis_geraten": True}
+                                 if merk is None and abgl is None else {})}
         if self.verbose:
             print(f"  Frequenzversatz {n:+d} Schritte ({n * 1.587:+.1f} kHz), "
                   f"FSCTRL0 {b:+d} -> {ziel:+d}")
@@ -2124,6 +2174,7 @@ class Radio:
         # Weckkanalwechsel ausdruecklich stehen, weil der Quarzausgleich fuer
         # beide Kanaele gilt —, aber `_burst_probe` bewegt den Synthesizer,
         # und die Reihenfolge kostet nichts.
+        self.abgleich = self._abgleich_lesen()
         self._frequenzversatz_setzen()
 
         self.ser.reset_input_buffer()
@@ -4420,6 +4471,7 @@ class Radio:
                 "rf_diag": bool(self.rf_diag),
                 "freq_offset": self.freq_offset,
                 "freq_ergebnis": self.freq_ergebnis,
+                "abgleich": getattr(self, "abgleich", None),
                 "tot": bool(self.tot), "tot_grund": self.tot_grund,
                 # Ohne Netzwerkschluessel schlaegt jedes Anlernen fehl. Der
                 # Zustand stand frueher nur im Protokoll — die Oberflaeche
