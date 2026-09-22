@@ -18,6 +18,11 @@ __pycache__/
 *.log
 /data/
 
+# Geraetespeicher und Zustand einer QCCU, die im Repo-Verzeichnis gestartet
+# wurde (Vorgaben von --devices und --state): SGTINs, Adressen, Werte.
+/qccu_devices.json
+/qccu_state.json
+
 # Vollstaendige Geraetetabellen: sie entstehen beim ersten Start aus dem
 # Paket des Nutzers und gehoeren NICHT ins Repo.
 tables/catalog.json
