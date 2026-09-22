@@ -1652,6 +1652,65 @@ class QCCU:
     # Zentrale von eq-3 wartet ebenfalls den Ausgang der Transaktion ab.
     STELL_WARTEN = 8.0
 
+    # Pflichtsaetze je Kanaltyp — nur die, in denen ON_TIME und RAMP_TIME
+    # vorkommen. Abgeschrieben aus `DeviceUtil.checkRequiredValues` im Jar:
+    # ein optionales Feld zaehlt nur mit, wenn es im Satz steht, das
+    # Pflichtfeld immer. Die uebrigen Zweige dort (Alarm, Farbe, Akustik,
+    # Display, Rollladen LEVEL_2, Bewegungsmelder, Rauchmelder) betreffen
+    # Werte, die QCCU nicht stellen kann; der Zweig fuer
+    # HEATING_CLIMATECONTROL_TRANSCEIVER haelt SET_POINT_MODE bis zum
+    # naechsten Sollwert zurueck und widerspraeche dem Satz, den QCCU dafuer
+    # sofort baut (`KOMPOSITE`, am Geraet belegt) — beides bewusst nicht hier.
+    PFLICHTSAETZE = {
+        "SWITCH_VIRTUAL_RECEIVER":       ("STATE", ("ON_TIME",)),
+        "BACKLIGHTING_RECEIVER":         ("STATE", ("ON_TIME",)),
+        "WATER_SWITCH_VIRTUAL_RECEIVER": ("STATE", ("ON_TIME",)),
+        "SERVO_VIRTUAL_RECEIVER":        ("LEVEL", ("RAMP_TIME", "ON_TIME")),
+        "DIMMER_VIRTUAL_RECEIVER":       ("LEVEL", ("RAMP_TIME", "ON_TIME")),
+    }
+
+    def _wartefach(self, base, kanal, param, value):
+        """Ist der Satz aus `setValue` vollstaendig — oder wartet er?
+
+        Die Zentrale von eq-3 schickt `setValue(ON_TIME)` nicht allein
+        hinaus: ohne Pegel gaebe es keinen Rahmen. Sie legt den Wert in ein
+        Fach (`DeviceUtil.storedDeviceChannelValuesCommandDTO`), meldet dem
+        Aufrufer Erfolg und mischt das Fach in den naechsten `setValue` auf
+        dasselbe Geraet und denselben Kanal ein (`DeviceUtil.setValue`).
+        So stellen Klienten eine Einschaltdauer in zwei Aufrufen — erst
+        ON_TIME, dann STATE —, aiohomematic etwa an allen Schaltkanaelen ohne
+        eigenes Profil.
+
+        Nachgebaut wie dort: EIN Fach fuer alle Geraete, kein Verfall; es
+        leert sich nur, wenn ein Satz mit Pflichtsatz vollstaendig hinausgeht
+        — der Parameter gehoert nicht zum Pflichtsatz, oder der Satz ist so
+        gross wie der Pflichtsatz. Ein Kanaltyp ohne Pflichtsatz laesst das
+        Fach stehen. Einen Farbdimmer (Kanal fuehrt COLOR) nimmt die Zentrale
+        eigens aus; er faellt hier ebenfalls heraus.
+
+        Rueckgabe: (Satz, jetzt senden?).
+        """
+        werte = {param: value}
+        with self.lock:
+            d = self.devices.get(base)
+            fach = self._fach
+            if fach and fach[0] == base and fach[1] == kanal:
+                for p, v in fach[2].items():
+                    werte.setdefault(p, v)
+            kt = dict(d.channel_list()).get(kanal) if d else None
+            regel = self.PFLICHTSAETZE.get(kt)
+            if (regel and kt == "DIMMER_VIRTUAL_RECEIVER"
+                    and "COLOR" in (d.paramset(kanal) or {})):
+                regel = None
+            if not regel:
+                return werte, True
+            pflicht = {regel[0]} | {p for p in regel[1] if p in werte}
+            if param not in pflicht or len(pflicht) == len(werte):
+                self._fach = None
+                return werte, True
+            self._fach = (base, kanal, werte)
+            return werte, False
+
     def setValue(self, address, param, value, *rest):
         """Schaltbefehl von aussen: senden, den Ausgang abwarten, DANN melden.
 
@@ -1679,18 +1738,43 @@ class QCCU:
             # Ohne Funkpfad gibt es keinen Ausgang abzuwarten.
             self._wert_uebernehmen(base, ch, param, value)
             return ""
-        try:
-            auftrag = self.on_set(base, kanal, param, value)
-        except Exception as ex:
-            print(f"  ! Sendepfad scheiterte: {ex}")
-            raise xmlrpc.client.Fault(-1, "Generic error (SEND_FAILED)")
-        if not hasattr(auftrag, "warten"):
-            # Ein Funkpfad, der nur „quittiert ja/nein" zurueckgibt.
+        werte, jetzt = self._wartefach(base, kanal, param, value)
+        if not jetzt:
+            # Wie die Zentrale: kein Rahmen, kein Fehler, keine Meldung.
+            if self.verbose:
+                print(f"  {address} {param}={value!r} wartet auf den "
+                      f"naechsten setValue an diesem Kanal")
+            return ""
+        if len(werte) > 1 and self.on_set_many:
+            # Mit dem Inhalt des Fachs: EIN Rahmen, wie bei putParamset.
+            satz = tuple(werte.items())
+            try:
+                auftrag = self.on_set_many(base, kanal, satz)
+            except Exception as ex:
+                print(f"  ! Sendepfad scheiterte: {ex}")
+                raise xmlrpc.client.Fault(-1, "Generic error (SEND_FAILED)")
+            if hasattr(auftrag, "warten"):
+                self._ausgang_abwarten(auftrag, base, ch, satz)
+                return ""
             if auftrag is not None:
                 self.note_reachable(base, bool(auftrag))
-            self._wert_uebernehmen(base, ch, param, value)
+            for p, v in satz:
+                self._wert_uebernehmen(base, ch, p, v)
             return ""
-        self._ausgang_abwarten(auftrag, base, ch, ((param, value),))
+        # Ein Wert — oder ein Funkpfad ohne Satzweg: einzeln, wie bisher.
+        for p, v in werte.items():
+            try:
+                auftrag = self.on_set(base, kanal, p, v)
+            except Exception as ex:
+                print(f"  ! Sendepfad scheiterte: {ex}")
+                raise xmlrpc.client.Fault(-1, "Generic error (SEND_FAILED)")
+            if not hasattr(auftrag, "warten"):
+                # Ein Funkpfad, der nur „quittiert ja/nein" zurueckgibt.
+                if auftrag is not None:
+                    self.note_reachable(base, bool(auftrag))
+                self._wert_uebernehmen(base, ch, p, v)
+                continue
+            self._ausgang_abwarten(auftrag, base, ch, ((p, v),))
         return ""
 
     def _wert_uebernehmen(self, base, ch, param, value):
@@ -1752,6 +1836,10 @@ class QCCU:
     on_set = None
     on_set_many = None
     kann_stellen = None
+    # Das Wartefach der Zentrale fuer einen unvollstaendigen Satz aus
+    # `setValue` — (Adresse, Kanal, {Parameter: Wert}) oder None. EINES fuer
+    # alle Geraete, wie dort (siehe `_wartefach`).
+    _fach = None
 
     def putParamset(self, address, paramset, values, *rest):
         addr = address.upper()
