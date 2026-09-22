@@ -2006,23 +2006,55 @@ class Radio:
         if not self.abgleich:
             return {}, ("Dieser Stick kennt den Abgleich noch nicht — dafuer "
                         "braucht es q-culfw 2.0.101 oder neuer.")
+        alt = int(self.abgleich["wert"])
+        n = int(self.freq_offset or 0)
+        fe = self.freq_ergebnis
+        # ⚠️ Nur speichern, was am Stick auch wirklich steht. Ist das Setzen
+        # des Versatzes fehlgeschlagen (nicht lesbar, keine Rueckmeldung,
+        # anderer Wert), steht im Register noch der Ausgangswert — gespeichert
+        # wuerde also eine Null-Aenderung, und der Anwender bekaeme dazu den
+        # Rat, seine Einstellung zu entfernen. Genau die Sorte stiller Verlust,
+        # gegen die der ganze Weg gebaut ist.
+        if n and not (fe and fe.get("ok")):
+            grund = (fe or {}).get("grund")
+            return {}, ("Der eingestellte Versatz steht nicht am Stick"
+                        + (f" ({grund})" if grund else "")
+                        + " — erst muss er wirken, dann speichern.")
         m = self._ask("C0C", r"C0C=([0-9A-F]{2})(?![0-9A-F])")
         if not m:
             return {}, "FSCTRL0 ist nicht lesbar — es wurde nichts gespeichert."
         wert = int(m.group(1), 16)
+        if n and fe and (int(fe.get("fsctrl0", 0)) & 0xFF) != wert:
+            return {}, (f"Im Register steht 0x{wert:02X}, gemeldet war "
+                        f"0x{int(fe.get('fsctrl0', 0)) & 0xFF:02X} — nichts "
+                        f"gespeichert.")
         a = self._ask("mJ%02X" % wert,
                       r"Pm J=([0-9A-F]{2}) (ee|platine)(?![0-9A-Za-z])")
         if not a:
-            return {}, "Der Stick hat das Speichern nicht bestaetigt."
+            # Eine ausgebliebene Bestaetigung heisst NICHT, dass nichts
+            # geschrieben wurde (bei aktivem CUL-Zugang klebt die Antwort
+            # hinter einer Empfangszeile und erreicht den Auftrag nicht) —
+            # also nachlesen, statt einen falschen Zustand zu behalten.
+            a = self._ask("mJ", r"Pm J=([0-9A-F]{2}) (ee|platine)(?![0-9A-Za-z])")
+            if not a:
+                return {}, ("Der Stick hat das Speichern nicht bestaetigt und "
+                            "antwortet auch auf Nachfrage nicht. Es kann "
+                            "trotzdem geschrieben worden sein — nach einem "
+                            "Neustart zeigt die Startseite, was gilt.")
         # Die Antwort kommt aus dem EEPROM zurueckgelesen: sie sagt, was beim
         # naechsten Start gilt. Nur darauf ist Verlass.
         gespeichert, quelle = int(a.group(1), 16), a.group(2)
         if gespeichert != wert or quelle != "ee":
             return {}, (f"Der Stick meldet 0x{gespeichert:02X} ({quelle}), "
                         f"erwartet 0x{wert:02X} (ee).")
+        # ⚠️ Was in den gespeicherten Wert EINGEGANGEN ist, ist die Differenz
+        # zum bisherigen Ausgangswert des Sticks — nicht die Einstellung. Wer
+        # die Einstellung nimmt, merkt sich eine Verrechnung, die vielleicht
+        # nie stattgefunden hat.
+        vorher = alt - 256 if alt > 127 else alt
+        neu = wert - 256 if wert > 127 else wert
         self.abgleich = {"wert": wert, "quelle": "ee"}
-        self._abgl_marke = {"wert": wert,
-                            "eingerechnet": int(self.freq_offset or 0)}
+        self._abgl_marke = {"wert": wert, "eingerechnet": neu - vorher}
         self._fsctrl0_merk = {"basis": wert, "gesetzt": wert}
         self._save_state()
         if self.verbose:
@@ -2046,6 +2078,10 @@ class Radio:
         self.abgleich = {"wert": wert, "quelle": "platine"}
         self._abgl_marke = None
         self._fsctrl0_merk = {"basis": wert, "gesetzt": wert}
+        # Der Stick steht ab sofort auf dem Wert der Platine; was vorher ueber
+        # das Setzen des Versatzes gemeldet wurde, gilt nicht mehr. Ein
+        # eingestellter `freq_offset` wirkt erst beim naechsten Anbinden wieder.
+        self.freq_ergebnis = None
         self._save_state()
         if self.verbose:
             print(f"  Frequenzabgleich im Stick geloescht — FSCTRL0 "

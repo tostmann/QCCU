@@ -496,10 +496,13 @@ async function abgleichSchreiben(aktion, frage){
   }catch(e){ melde('Der Abgleich ließ sich nicht ändern.','bad'); }
   laden();
 }
-function abgleichSpeichern(){
+function abgleichSpeichern(wert){
   abgleichSchreiben('speichern',
-    'Den eingestellten Frequenzversatz dauerhaft im Stick speichern?\n\n'
-    +'Er gilt danach auch ohne QCCU und überlebt neue Firmware. '
+    'FSCTRL0 '+(wert>0?'+':'')+wert+' dauerhaft im Stick speichern?\n\n'
+    +'Gespeichert wird, was gerade am Stick steht. Sinnvoll ist das erst, '
+    +'wenn der Wert gemessen ist — mit der Frequenzdiagnose (mH1) sollte der '
+    +'Versatz der Geräte danach um 0 liegen.\n\n'
+    +'Er gilt dann auch ohne QCCU und überlebt neue Firmware (CUL V3). '
     +'Die Einstellung freq_offset kann anschließend entfernt werden.');
 }
 function abgleichLoeschen(){
@@ -1038,9 +1041,12 @@ async function laden(){
       +(stickAbgl.quelle==='ee'?' &mdash; im Stick gespeichert'
                         :' &mdash; Wert der Platine, kein eigener Abgleich');
     // Speichern lohnt nur, wenn ein Versatz eingestellt ist, der noch NICHT
-    // im Stick steht — sonst gaebe es nichts zu speichern.
-    if(r.freq_offset && !stickAbgl.eingerechnet)
-      h+=' <button type="button" onclick="abgleichSpeichern()">im Stick speichern</button>';
+    // im Stick steht — und nur, wenn er am Stick auch WIRKT: sonst legte man
+    // eine Null-Aenderung ab und haette den Versatz stillschweigend verloren.
+    const feAb=r.freq_ergebnis;
+    if(r.freq_offset && !stickAbgl.eingerechnet && feAb && feAb.ok)
+      h+=' <button type="button" onclick="abgleichSpeichern('+feAb.fsctrl0+')">'
+        +'im Stick speichern</button>';
     if(stickAbgl.quelle==='ee')
       h+=' <button type="button" onclick="abgleichLoeschen()">Abgleich löschen</button>';
     if(stickAbgl.eingerechnet)

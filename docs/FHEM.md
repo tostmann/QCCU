@@ -264,8 +264,9 @@ ein Stick seinen eigenen Abgleich im EEPROM tragen (`mJ`, siehe
 **Dauerhaft im Stick ablegen:** Steht der Versatz richtig, legt der Knopf
 „im Stick speichern“ auf der Startseite ihn im EEPROM des Sticks ab (q-culfw
 ab 2.0.101). Er gilt dann auch ohne QCCU, überlebt einen neu angelegten
-Container und das Einspielen neuer Firmware, und `freq_offset` kann entfernt
-werden. Solange die Einstellung noch dasteht, rechnet QCCU sie nicht ein
+Container und auf dem CUL V3 auch das Einspielen neuer Firmware (das EEPROM
+überlebt den DFU-Flash), und `freq_offset` kann entfernt werden. Speichern
+lässt sich nur ein Wert, der am Stick auch wirklich steht. Solange die Einstellung noch dasteht, rechnet QCCU sie nicht ein
 zweites Mal dazu und sagt das auf der Startseite. „Abgleich löschen“ stellt
 den Stick auf den Wert seiner Platine zurück.
 
