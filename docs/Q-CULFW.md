@@ -2,9 +2,9 @@
 
 Dieses Dokument beschreibt den Befehlssatz der Firmware **q-culfw**, so wie sie
 in [`firmware/q-culfw-CUL_V3.hex`](../firmware/) mitgeliefert wird (Fassung
-**2.0.95**, aus dem Quelltext dieser Fassung gelesen; Abweichungen der
-Vorgängerfassung 2.0.92, die QCCU bis 2026.9.11 mitbrachte, sind als solche
-vermerkt). Es richtet sich an alle,
+**2.0.101**, aus dem Quelltext dieser Fassung gelesen; Abweichungen der
+Vorgängerfassungen 2.0.95 und 2.0.92, die QCCU bis 2026.9.15 bzw. 2026.9.11
+mitbrachte, sind als solche vermerkt). Es richtet sich an alle,
 die den Stick **ohne QCCU** ansprechen wollen — ein eigenes FHEM-Modul, ein
 Skript, ein anderer Wirt. QCCU selbst ist ein Wirt wie jeder andere: es
 spricht ausschließlich über diese Schnittstelle mit dem Stick.
@@ -29,7 +29,7 @@ um den culfw-Dialekt für FHEM. Hier geht es um den Stick selbst.
 | Kennung | VID `03EB`, PID `2069` (Laborkennung — **nicht** die `03EB:204B` eines culfw-CUL), Hersteller `busware.de`, Produkt `q-culfw`, Seriennummer = Werkskennung des Bausteins; unter Linux `/dev/serial/by-id/usb-busware.de_q-culfw_<serial>-if00` |
 | Befehl | ASCII, abgeschlossen mit CR **oder** LF (CR LF geht auch, die leere zweite Zeile wird verworfen); **höchstens 131 Zeichen**, was darüber hinausgeht, wird stillschweigend abgeschnitten |
 | Antwort | Zeilen mit CR LF; kein Echo der Eingabe |
-| Beim Start | der Stick meldet einmalig seine Fassung: `V q-culfw 2.0.95` |
+| Beim Start | der Stick meldet einmalig seine Fassung: `V q-culfw 2.0.101` |
 
 **Das Öffnen der Schnittstelle setzt den Stick nicht zurück.** DTR/RTS werden
 quittiert, sonst nichts. Ein Wirt findet also den Zustand vor, den die vorige
@@ -67,6 +67,7 @@ Nach Reset oder Anstecken gilt:
 | Netz-Haushalt quittieren | an | `mN0` |
 | Router-Rolle | aus | `mF1` |
 | Frequenzdiagnose (`PH`-Zeilen) | aus | `mH1` |
+| Frequenzabgleich (`FSCTRL0`) | der Abgleich dieses Sticks aus dem EEPROM, falls je einer gesetzt wurde, sonst `0x11` (ab 2.0.101; 2.0.95 immer `0x11`) | `mJ<hh>` |
 | Sendezeit-Konto | an, halb voll (450 von 900) | `mX` |
 | BidCoS-Vorlauf | an, 360 ms | `mU` |
 | HmIP-Vorlauf | 360 / 360 ms, Weckkanal `21717A` (869,52 MHz), Zustellabstand 30 ms | `mU` |
@@ -77,7 +78,7 @@ Nach Reset oder Anstecken gilt:
 **Was den Reset überlebt (EEPROM):** Kennung (SGTIN) und Aufkleberschlüssel,
 der Hauptschlüssel, Netzwerkschlüssel samt Merker, der Sendezähler (in einem
 Ring, geschrieben beim Start und danach alle 1024 Schritte — ohne Schalter,
-immer). Die beim Anlernen zugeteilte Adresse und die Zentralenadresse werden
+immer), ab 2.0.101 der Frequenzabgleich (`mJ`; ihn löscht auch `mV` nicht). Die beim Anlernen zugeteilte Adresse und die Zentralenadresse werden
 zwar abgelegt, nach einem Reset aber **nicht wieder geladen**: der Stick
 startet immer als Zentrale mit `000000`. Wer ihn als Gerät betreibt, setzt
 nach dem Anstecken `mD` und `mA<addr aus ANGELERNT>` nach; die Rückmeldung des
@@ -93,7 +94,7 @@ flüchtig:** jeder Schalter oben, Rolle und Adresse, Registerwerte über `W`.
 
 | Befehl | Wirkung | Antwort |
 |---|---|---|
-| `V` | Fassung | `V q-culfw 2.0.95` |
+| `V` | Fassung | `V q-culfw 2.0.101` |
 | `?` | Befehlsbuchstaben im culfw-Format | `? (? is unknown) Use one of A B C P T V W X m` |
 | `X` | Meldeform und Restkonto (FHEM: `credit10ms`) | `21 <konto>` — dezimal, in 10-ms-Einheiten; bei abgeschaltetem Konto (`mX0`) steht dort `900` |
 | `X<hh>` | Meldeform setzen (FHEM schickt `X21`). Wird geführt, aber nicht ausgewertet: der Empfangspegel hängt hier an jeder Zeile | keine; bei ungültigem Argument `X ERR` |
@@ -255,6 +256,7 @@ Fehlerhafte Argumente: `Pm ERR`.
 | Befehl | Wirkung | Antwort |
 |---|---|---|
 | `mH1` / `mH0` | Frequenzdiagnose: je empfangenem Frame mit gültiger Prüfsumme eine `PH`-Zeile — **auch fremde Netze**, mit dem ganzen Luftframe | `Pm H=1` |
+| `mJ` / `mJ<hh>` / `mJ-` | Frequenzabgleich dieses Sticks im EEPROM: zeigen / `FSCTRL0` ablegen und sofort einstellen / löschen (zurück auf `0x11`). Gilt ab dem nächsten Start statt `0x11`, überlebt Flash und `mV`. Ab 2.0.101; 2.0.95 antwortet `Pm ERR` | `Pm J=<hh> ee` (aus dem EEPROM) oder `Pm J=11 platine`; `Pm ERR` bei anderer Eingabe als zwei Hexziffern oder `-` |
 | `mV` | Löschmarke dieses Sticks zeigen (aus der Werkskennung, je Stick anders) | `Pm marke=<8hex> — loeschen mit mV<8hex> (ALLES weg: Kennung, Schluessel, Zaehler)`; ohne lesbare Werkskennung `Pm ERR keine Seriennummer` |
 | `mV<marke 8hex>` | **Urzustand**: Kennung, Aufkleber- und Netzwerkschlüssel, Adresse, Sendezähler löschen, dann Neustart. Die Werkskennung bleibt | `Pm Urzustand — Kennung, Schluessel und Zaehler geloescht`; falsche Marke `Pm ERR marke — erst mV fragen` |
 
@@ -436,14 +438,16 @@ Registersatz des eq-3-Coprozessors: 868,30 MHz, 2-FSK, rund 10 kbit/s,
 doppeltes Synchronwort, 4 Byte Präambel, Verwürfelung und Prüfsumme im Chip,
 **keine** Kanalprüfung vor dem Senden (die Sendezeit begrenzt das Konto, nicht
 der Chip). Einzige Abweichung: **`FSCTRL0 = 0x11`** (+17 Schritte, +27 kHz)
-gleicht den Quarz des CUL V3 gegen eq-3-Geräte aus.
+gleicht den Quarz des CUL V3 gegen eq-3-Geräte aus. Der Quarz streut aber je
+Exemplar; ab 2.0.101 kann ein Stick seinen eigenen, am Sender gemessenen
+Abgleich im EEPROM tragen (`mJ`), der dann statt `0x11` gilt.
 
 Wer den Versatz für einen eigenen Stick prüfen will: `mH1`, dann die
 `PH fe=`-Werte der Geräte ansehen (ein Schritt = 26 MHz / 2¹⁴ = 1,587 kHz;
 positiv = der Sender liegt über der eigenen Frequenz; Anschlag bei ±16). `fe`
 ist der **Rest**versatz bei der aktuellen Einstellung, ein neuer Wert wird also
 auf `C0C` **addiert**: `W0C<hex>`. Flüchtig — nach einem Reset steht wieder
-`0x11`. `C32` (FREQEST) direkt zu lesen taugt dafür nicht: der Wert gilt nur
+`0x11` bzw. der Abgleich aus dem EEPROM; dauerhaft stellt `mJ<hex>` ein. `C32` (FREQEST) direkt zu lesen taugt dafür nicht: der Wert gilt nur
 während des Pakets, danach steht das Register auf 0.
 
 PLL-Wache: jede Sekunde wird FSCAL1 auf einen gescheiterten Lock geprüft und
@@ -456,7 +460,7 @@ kalibriert; beides zählt `pll` und `recal`.
 
 **BidCoS, wie FHEM mit einem CUL** (`00_CUL.pm` macht genau das):
 
-    V          -> V q-culfw 2.0.95
+    V          -> V q-culfw 2.0.101
     X21        (keine Antwort)
     Ar         (keine Antwort; öffnet den Riegel)
     T01        -> 0000
