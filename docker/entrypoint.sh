@@ -275,6 +275,12 @@ need_tables() {
     # den Eintrag filtert QCCU den Wert weg — und ein Geraet, das nach der
     # Inklusion eine Stunde lang jeden Befehl verwirft, sieht aus wie kaputt.
     grep -q '"BOOTED"' "$TABLES/paramsets.json" 2>/dev/null || return 1
+    # Der Schreibweg der geraeteeigenen Konfigurationsparameter (`ADRESSE`
+    # in extra_params.json, ab 2026.9.14): ohne ihn lehnt putParamset MASTER
+    # jeden Parameter ab, der nur in einer device_*.xml steht (am HmIP-PDT:
+    # LED_DISABLE_CHANNELSTATE, ON_MIN_LEVEL). Aeltere Tabellen fuehren den
+    # Schluessel dort gar nicht.
+    grep -q '"ADRESSE"' "$TABLES/extra_params.json" 2>/dev/null || return 1
     # Link-Rollen der Kanaltypen (ab 2026.9.2): ohne sie kann QCCU keine
     # Verknuepfung zur Zentrale anlegen — ein Fensterkontakt meldet dann
     # keine Ereignisse.
