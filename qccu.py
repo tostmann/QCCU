@@ -1685,12 +1685,23 @@ class QCCU:
         leert sich nur, wenn ein Satz mit Pflichtsatz vollstaendig hinausgeht
         — der Parameter gehoert nicht zum Pflichtsatz, oder der Satz ist so
         gross wie der Pflichtsatz. Ein Kanaltyp ohne Pflichtsatz laesst das
-        Fach stehen. Einen Farbdimmer (Kanal fuehrt COLOR) nimmt die Zentrale
-        eigens aus; er faellt hier ebenfalls heraus.
+        Fach stehen. Fuer einen Farbdimmer (Kanal fuehrt COLOR) hat die
+        Zentrale eine eigene Regel mit LEVEL und COLOR; QCCU stellt COLOR
+        nicht, er faellt hier heraus (in den Tabellen des Pruefstands fuehrt
+        kein DIMMER_VIRTUAL_RECEIVER COLOR).
+
+        Zwei Dinge geschehen in der Zentrale VOR dem Fach und deshalb auch
+        hier: COMBINED_PARAMETER wird zu einem putParamset umgeleitet und
+        laesst das Fach unberuehrt, und ein Parameter, den der Kanal nicht
+        fuehrt, scheitert schon an `convertParameterValue` — sonst laege etwa
+        ein ON_TIME an einem Relais des BWTH-A (VALUES nur STATE) im Fach, und
+        der Aufrufer bekaeme Erfolg gemeldet.
 
         Rueckgabe: (Satz, jetzt senden?).
         """
         werte = {param: value}
+        if param == "COMBINED_PARAMETER":
+            return werte, True
         with self.lock:
             d = self.devices.get(base)
             fach = self._fach
@@ -1704,6 +1715,8 @@ class QCCU:
                 regel = None
             if not regel:
                 return werte, True
+            if not isinstance((d.paramset(kanal) or {}).get(param), dict):
+                raise xmlrpc.client.Fault(-5, f"Unknown parameter: {param}")
             pflicht = {regel[0]} | {p for p in regel[1] if p in werte}
             if param not in pflicht or len(pflicht) == len(werte):
                 self._fach = None
