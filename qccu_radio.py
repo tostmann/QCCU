@@ -889,7 +889,8 @@ STELLBEFEHLE = {
     # (`createRampTimeParameter` -> `(byte)2, (byte)1`,
     #  `createOnTimeParameter`  -> `(byte)2, (byte)2`).
     # ⚠️ Darum nur GEMEINSAM mit LEVEL und nur in dieser Reihenfolge; das
-    # prueft `_rumpf`. Umgerechnet wird nicht mit Faktor/Versatz, sondern mit
+    # prueft `_rumpf`, der eine fehlende Rampe vor ON_TIME wie die Zentrale
+    # ergaenzt. Umgerechnet wird nicht mit Faktor/Versatz, sondern mit
     # `exec_zeit_hex` (`DoubleToDirectExecutionTime`).
     "RAMP_TIME":             (AKTION_START, None, 1, 0),
     "ON_TIME":               (AKTION_START, None, 2, 0),
@@ -4211,13 +4212,34 @@ class Radio:
             return None
         aktion = aktionen.pop()
 
+        # Ein ON_TIME ohne RAMP_TIME weist die Zentrale NICHT ab, sie fuellt
+        # die Rampe auf (`TransactionTaskFactory`, Zweig `level != null`):
+        # `new DirectExecutionTime((byte)0, 5)` = 0,5 s, am
+        # WINDOW_DRIVE_RECEIVER `(byte)2, 150` = 60 s — gleich, ob der Kanal
+        # RAMP_TIME ueberhaupt fuehrt. Die Relaiskanaele der PS-2 fuehren nur
+        # STATE und ON_TIME; ohne diese Ergaenzung liesse sich dort keine
+        # Einschaltdauer stellen. Die Bytes sind die aus `getSerialData()`,
+        # NICHT aus `exec_zeit_hex`: dieselben 60 s kodiert die Umrechnung
+        # als 4B00. Ohne Pegel schickt die Zentrale gar nichts — das bleibt
+        # unten beim Riegel.
+        if (aktion == AKTION_START and (aktion, None, 0) in bloecke
+                and (aktion, None, 2) in bloecke
+                and (aktion, None, 1) not in bloecke):
+            fenster = (self._kanaltyp(ccu_address, channel)
+                       == "WINDOW_DRIVE_RECEIVER")
+            fuell = "12C2" if fenster else "00A0"
+            bloecke[(aktion, None, 1)] = bytes.fromhex(fuell)
+            klartexte.append(f"RAMP_TIME ergaenzt (Feld 0x{fuell} = "
+                             f"{'60' if fenster else '0,5'} s, wie die "
+                             f"Zentrale)")
+
         # ⚠️ Die typlosen Felder einer EXECUTION_START sind POSITIONSBEHAFTET:
         # `setPayload()` liest Pegel, dann timeSpan, dann onTime, jedes an
         # seiner Stelle und ohne Kennzeichnung. Fehlt eines davor, ruecken die
-        # folgenden auf — ein ON_TIME ohne RAMP_TIME landet als Rampe im
-        # Geraet, eine Rampe ohne Pegel als Pegel. Das faellt an keinem
-        # Rahmenpruefer auf, nur am falsch reagierenden Geraet. Darum hier:
-        # entweder luecken los ab Feld 0, oder gar nichts.
+        # folgenden auf — ein ON_TIME ohne RAMP_TIME landete als Rampe im
+        # Geraet (darum oben ergaenzt), eine Rampe ohne Pegel als Pegel. Das
+        # faellt an keinem Rahmenpruefer auf, nur am falsch reagierenden
+        # Geraet. Darum hier: entweder luecken los ab Feld 0, oder gar nichts.
         lagen = sorted(k[2] for k in bloecke if k[1] is None)
         if lagen and lagen != list(range(len(lagen))):
             fehlend = [i for i in range(max(lagen) + 1) if i not in lagen]
