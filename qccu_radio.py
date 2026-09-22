@@ -2003,7 +2003,7 @@ class Radio:
             # einen EEPROM-Abgleich nicht von einem eigenen, noch stehenden
             # Wert unterscheiden, wenn beide gleich sind: dann hielt es den
             # Abgleich fuer seinen Wert und schrieb die alte Basis zurueck
-            # (Review 22.09.2026). Es wird unten trotzdem weitergefuehrt — fuer
+            # (22.09.2026). Es wird unten trotzdem weitergefuehrt — fuer
             # den Fall, dass wieder eine Firmware ohne `mJ` eingespielt wird.
             basis = abgl["wert"]
         elif merk and (ist == merk["gesetzt"] or ist in merk.get("auch", ())):

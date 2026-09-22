@@ -1016,7 +1016,15 @@ async function laden(){
   // ⚠️ Was der Stick BESTAETIGT hat, nicht was eingestellt wurde. Ein
   // fehlgeschlagenes Schreiben stuende sonst als „nachgestellt" da.
   const fe=r.freq_ergebnis;
-  if(fe && fe.ok){
+  // Ohne eingestellten Versatz (0 Schritte) sagt die Zeile nur etwas, wenn
+  // dabei zurueckgestellt wurde — sonst stuende nach jedem Start „nachgestellt
+  // um 0 Schritte" da, sobald einmal ein Versatz gesetzt war (das Gedaechtnis
+  // bleibt). Den Zustand zeigt dann „Frequenzabgleich".
+  if(fe && fe.ok && !fe.schritte){
+    if(!fe.unveraendert)
+      h+='<dt>Frequenzversatz</dt><dd>keiner eingestellt, FSCTRL0 zurückgestellt auf '
+        +(fe.fsctrl0>0?'+':'')+fe.fsctrl0+'</dd>';
+  }else if(fe && fe.ok){
     const sc=fe.schritte, khz=(sc*1.587).toFixed(1);
     h+='<dt>Frequenzversatz</dt><dd>nachgestellt um '+(sc>0?'+':'')+sc
       +' Schritte ('+(sc>0?'+':'')+khz+' kHz), FSCTRL0 '
