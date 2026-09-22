@@ -1921,7 +1921,8 @@ class Radio:
         """Den gemessenen Frequenzversatz nachstellen (FSCTRL0).
 
         ⚠️ Der Wert wird ADDIERT, nicht gesetzt. Die Firmware bringt in FSCTRL0
-        bereits den Quarzausgleich des CUL mit (2.0.92: 0x11 = +17 Schritte);
+        bereits den Quarzausgleich des CUL mit (0x11 = +17 Schritte, ab 2.0.101
+        ggf. den Abgleich dieses Sticks aus dem EEPROM, `mJ`);
         `fe=` aus der Diagnosezeile ist der REST, der danach noch bleibt. Wer
         den Messwert einfach einsetzt, wirft den Ausgleich weg und liegt
         anschliessend um dessen Betrag daneben.

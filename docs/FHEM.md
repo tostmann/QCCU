@@ -256,7 +256,10 @@ Braucht es einen zweiten Durchgang, wird der neue Messwert zum **bereits
 eingetragenen** addiert: stand dort `-16` und die Diagnose zeigt danach noch
 `-7`, lautet der neue Eintrag `-23`. `freq_offset` bezieht sich immer auf den
 Ausgangswert der Firmware, nicht auf den zuletzt gesetzten — QCCU merkt sich
-dafür, was vor dem ersten Eingriff im Register stand.
+dafür, was vor dem ersten Eingriff im Register stand. Ab Firmware 2.0.101 kann
+ein Stick seinen eigenen Abgleich im EEPROM tragen (`mJ`, siehe
+[Q-CULFW.md](Q-CULFW.md)); dann ist **dieser** der Ausgangswert, und
+`freq_offset` wird nach dem Abgleich neu gemessen — meist bleibt es bei 0.
 
 **Wenn etwas nicht geht:** bleibt der CUL nach einem Neustart des Containers
 auf `disconnected` — `set qcul reopen`. Beide Funkfamilien teilen sich das
