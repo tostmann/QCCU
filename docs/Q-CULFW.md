@@ -2,9 +2,9 @@
 
 Dieses Dokument beschreibt den Befehlssatz der Firmware **q-culfw**, so wie sie
 in [`firmware/q-culfw-CUL_V3.hex`](../firmware/) mitgeliefert wird (Fassung
-**2.0.101**, aus dem Quelltext dieser Fassung gelesen; Abweichungen der
-Vorgängerfassungen 2.0.95 und 2.0.92, die QCCU bis 2026.9.15 bzw. 2026.9.11
-mitbrachte, sind als solche vermerkt). Es richtet sich an alle,
+**2.0.110**, aus dem Quelltext dieser Fassung gelesen; Abweichungen der
+Vorgängerfassungen 2.0.101, 2.0.95 und 2.0.92, die QCCU bis 2026.9.19,
+2026.9.15 bzw. 2026.9.11 mitbrachte, sind als solche vermerkt). Es richtet sich an alle,
 die den Stick **ohne QCCU** ansprechen wollen — ein eigenes FHEM-Modul, ein
 Skript, ein anderer Wirt. QCCU selbst ist ein Wirt wie jeder andere: es
 spricht ausschließlich über diese Schnittstelle mit dem Stick.
@@ -29,7 +29,7 @@ um den culfw-Dialekt für FHEM. Hier geht es um den Stick selbst.
 | Kennung | VID `03EB`, PID `2069` (Laborkennung — **nicht** die `03EB:204B` eines culfw-CUL), Hersteller `busware.de`, Produkt `q-culfw`, Seriennummer = Werkskennung des Bausteins; unter Linux `/dev/serial/by-id/usb-busware.de_q-culfw_<serial>-if00` |
 | Befehl | ASCII, abgeschlossen mit CR **oder** LF (CR LF geht auch, die leere zweite Zeile wird verworfen); **höchstens 131 Zeichen**, was darüber hinausgeht, wird stillschweigend abgeschnitten |
 | Antwort | Zeilen mit CR LF; kein Echo der Eingabe |
-| Beim Start | der Stick meldet einmalig seine Fassung: `V q-culfw 2.0.101` |
+| Beim Start | der Stick meldet einmalig seine Fassung: `V q-culfw 2.0.110` |
 
 **Das Öffnen der Schnittstelle setzt den Stick nicht zurück.** DTR/RTS werden
 quittiert, sonst nichts. Ein Wirt findet also den Zustand vor, den die vorige
@@ -67,7 +67,7 @@ Nach Reset oder Anstecken gilt:
 | Netz-Haushalt quittieren | an | `mN0` |
 | Router-Rolle | aus | `mF1` |
 | Frequenzdiagnose (`PH`-Zeilen) | aus | `mH1` |
-| Frequenzabgleich (`FSCTRL0`) | der Abgleich dieses Sticks aus dem EEPROM, falls je einer gesetzt wurde, sonst `0x11` (ab 2.0.101; 2.0.95 immer `0x11`) | `mJ<hh>` |
+| Frequenzabgleich (`FSCTRL0`) | der eigene Abgleich (`mJ`), sonst beim CUL V3 (868) der Werksabgleich des busware-Prüfplatzes, sonst `0x11` (Werksabgleich ab 2.0.110, eigener ab 2.0.101; 2.0.95 immer `0x11`) | `mJ<hh>` |
 | Sendezeit-Konto | an, halb voll (450 von 900) | `mX` |
 | BidCoS-Vorlauf | an, 360 ms | `mU` |
 | HmIP-Vorlauf | 360 / 360 ms, Weckkanal `21717A` (869,52 MHz), Zustellabstand 30 ms | `mU` |
@@ -78,7 +78,7 @@ Nach Reset oder Anstecken gilt:
 **Was den Reset überlebt (EEPROM):** Kennung (SGTIN) und Aufkleberschlüssel,
 der Hauptschlüssel, Netzwerkschlüssel samt Merker, der Sendezähler (in einem
 Ring, geschrieben beim Start und danach alle 1024 Schritte — ohne Schalter,
-immer), ab 2.0.101 der Frequenzabgleich (`mJ`; ihn löscht auch `mV` nicht). Die beim Anlernen zugeteilte Adresse und die Zentralenadresse werden
+immer), ab 2.0.101 der Frequenzabgleich (`mJ`; ihn löscht auch `mV` nicht). Den Werksabgleich (`0x3D8`/`0x3D9`) legt der busware-Prüfplatz an; q-culfw liest ihn nur. Die beim Anlernen zugeteilte Adresse und die Zentralenadresse werden
 zwar abgelegt, nach einem Reset aber **nicht wieder geladen**: der Stick
 startet immer als Zentrale mit `000000`. Wer ihn als Gerät betreibt, setzt
 nach dem Anstecken `mD` und `mA<addr aus ANGELERNT>` nach; die Rückmeldung des
@@ -94,7 +94,7 @@ flüchtig:** jeder Schalter oben, Rolle und Adresse, Registerwerte über `W`.
 
 | Befehl | Wirkung | Antwort |
 |---|---|---|
-| `V` | Fassung | `V q-culfw 2.0.101` |
+| `V` | Fassung | `V q-culfw 2.0.110` |
 | `?` | Befehlsbuchstaben im culfw-Format | `? (? is unknown) Use one of A B C P T V W X m` |
 | `X` | Meldeform und Restkonto (FHEM: `credit10ms`) | `21 <konto>` — dezimal, in 10-ms-Einheiten; bei abgeschaltetem Konto (`mX0`) steht dort `900` |
 | `X<hh>` | Meldeform setzen (FHEM schickt `X21`). Wird geführt, aber nicht ausgewertet: der Empfangspegel hängt hier an jeder Zeile | keine; bei ungültigem Argument `X ERR` |
@@ -166,7 +166,7 @@ wirkt wie `mE1`.
 | `mE1` / `mE0` | MAC-Schicht ein / aus. Erst damit werden HmIP-Frames geprüft, entschlüsselt, quittiert und als `PM`-Zeile gemeldet | `Pm E=1` |
 | `mC` / `mD` | Rolle Zentrale / Gerät. `mC` legt beim **ersten** Aufruf einen Netzwerkschlüssel an — **nur, wenn eine Kennung da ist** (`mG`): der Schlüssel wird gegen die Kennung verpackt. Ohne Kennung meldet `mC` die Rolle und legt **stillschweigend nichts** an; `m` zeigt dann weiter `key=0` | `Pm rolle=Zentrale` / `Pm rolle=Geraet`; beim ersten Anlegen **danach** die Zeile `Pm Netzwerkschluessel erzeugt` |
 | `mA<6hex>` | eigene Funkadresse | `Pm addr=<6hex>`, sonst `Pm ERR addr` |
-| `mQ0` / `mQ1` / `mQ2` | Quittungen: aus / **wie die Zentrale** (Kurzquittung auf jeden Unicast an uns; ct=4 nur auf die Anlernbestätigung und quittungspflichtige Rundrufe) / ct=4 zusätzlich auf jeden verschlüsselten Frame an uns | `Pm Q=1` |
+| `mQ0` / `mQ1` / `mQ2` | Quittungen: aus / **wie die Zentrale** (Kurzquittung auf jeden Unicast an uns — ab 2.0.110 außer auf die Anlernbestätigung, die allein den ct=4 bekommt, und auf ein ct=4 `00 03` eines Geräts, das ein ct=4 `00 01` bekommt; ct=4 auf die Anlernbestätigung und quittungspflichtige Rundrufe) / ct=4 zusätzlich auf jeden verschlüsselten Frame an uns | `Pm Q=1` |
 | `mP1` / `mP0` | piggybackACK-Bit im Kopf künftiger Sendungen | `Pm P=1` |
 | `mF1` / `mF0` | Router-Rolle: Durchgangsverkehr an sein Ziel weiterreichen (zählt `fwd`) | `Pm F=1` |
 | `mN1` / `mN0` | Netz-Haushalt: die Nachbarschaftsmeldung eines Geräts an die Sammeladresse quittieren, wie die echte Zentrale (Vorgabe an) | `Pm N=1` |
@@ -306,7 +306,11 @@ Was ein Wirt daraus wissen muss:
 * Unicasts an uns quittiert der Stick (`mQ1`) mit der Kurzquittung **vor** dem
   Entschlüsseln und **vor** der Ausgabe — die Frist des Geräts liegt bei
   wenigen Dutzend Millisekunden, die serielle Ausgabe eines langen Frames
-  allein dauert einige.
+  allein dauert einige. Ab 2.0.110 zwei Ausnahmen, beide wie die Zentrale
+  von eQ-3: verschlüsselte Netzverwaltung an uns wird erst nach dem
+  Entschlüsseln kurz quittiert, und die Anlernbestätigung darunter gar nicht —
+  sie bekommt allein den ct=4. Ein ct=4 `00 03` eines Geräts beantwortet der
+  Stick mit einem ct=4 `00 01` statt mit der Kurzquittung.
 
 #### Felder der `PM`-Zeile
 
@@ -440,7 +444,10 @@ doppeltes Synchronwort, 4 Byte Präambel, Verwürfelung und Prüfsumme im Chip,
 der Chip). Einzige Abweichung: **`FSCTRL0 = 0x11`** (+17 Schritte, +27 kHz)
 gleicht den Quarz des CUL V3 gegen eq-3-Geräte aus. Der Quarz streut aber je
 Exemplar; ab 2.0.101 kann ein Stick seinen eigenen, am Sender gemessenen
-Abgleich im EEPROM tragen (`mJ`), der dann statt `0x11` gilt.
+Abgleich im EEPROM tragen (`mJ`), der dann statt `0x11` gilt. Ab 2.0.110 liest
+ein CUL V3 (868) außerdem den Werksabgleich, den der busware-Prüfplatz je Stick
+misst und ablegt; ein eigener Abgleich geht vor. Beim CUL433 bleibt es bei
+`0x11` — sein Werkswert gilt für 433,92 MHz.
 
 Wer den Versatz für einen eigenen Stick prüfen will: `mH1`, dann die
 `PH fe=`-Werte der Geräte ansehen (ein Schritt = 26 MHz / 2¹⁴ = 1,587 kHz;
@@ -460,7 +467,7 @@ kalibriert; beides zählt `pll` und `recal`.
 
 **BidCoS, wie FHEM mit einem CUL** (`00_CUL.pm` macht genau das):
 
-    V          -> V q-culfw 2.0.101
+    V          -> V q-culfw 2.0.110
     X21        (keine Antwort)
     Ar         (keine Antwort; öffnet den Riegel)
     T01        -> 0000
