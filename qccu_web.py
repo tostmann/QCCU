@@ -1775,6 +1775,14 @@ class WebHandler(BaseHTTPRequestHandler):
             lc = qccu_obj
             hexp = getattr(lc, "firmware_hex", None)
             spath = getattr(lc, "serial_path", None)
+            # Jeder Ausgang steht in „Zuletzt geschehen", nicht nur im
+            # Einspiel-Protokoll. Frueher stand dort nach jedem Einspielen
+            # „Funkzugang zum Stick verloren" als juengster Eintrag, waehrend
+            # der Funk laengst wieder lief (Dirk 20.08.2026). Seit der gewollte
+            # Bootlader-Sprung keinen Verlust mehr meldet (release_for_flash),
+            # muss auch ein Scheitern hier stehen — sonst stuende es nirgends.
+            merke = (getattr(lc, "merke_ereignis", None)
+                     or (lambda art, text: None))
             # War der Stick VOR dem Einspielen angebunden, ist es eine
             # Aktualisierung DESSELBEN Sticks — dann bleibt seine Seriennummer
             # verbindlich. Sonst greift die Suche waehrend seiner
@@ -1803,11 +1811,16 @@ class WebHandler(BaseHTTPRequestHandler):
                             "Der Stick trägt noch seine bisherige Firmware: "
                             "abziehen, wieder anstecken und das Aktualisieren "
                             "erneut starten.")
+                        merke("bad", "Firmware nicht eingespielt: der Bootlader "
+                                     "meldet sich nicht — Stick abziehen und "
+                                     "wieder anstecken")
                         return
                     lc.radio = None
                     klasse.radio = None
                 ok, _ = fw.flash(hexp, log=sag)
                 if not ok:
+                    merke("bad", "Firmware nicht eingespielt — Einzelheiten "
+                                 "unter Stick-Firmware")
                     return
                 sag("Warte auf den Stick …")
                 # Erstflash aus dem Bootlader: wer hier eingespielt hat, meint
@@ -1819,26 +1832,18 @@ class WebHandler(BaseHTTPRequestHandler):
                     lc.stick_serial = None
                 rb = getattr(lc, "rebind_radio", None)
                 neu = rb() if rb else None
-                # ⚠️ Der Verlust wird in „Zuletzt geschehen" vermerkt
-                # (qccu_radio), die Rueckkehr stand bisher NUR im
-                # Einspiel-Protokoll. Damit blieb „Funkzugang zum Stick
-                # verloren" als juengster Eintrag stehen, waehrend der Funk
-                # laengst wieder lief und der Punkt oben gruen zeigte — ein
-                # Widerspruch, den niemand aufloesen kann (Dirk 20.08.2026).
-                merke = getattr(lc, "merke_ereignis", None)
                 if neu:
                     klasse.radio = neu
                     sag("Funk wieder angebunden.")
-                    if merke:
-                        merke("ok", "Stick wieder angebunden")
+                    merke("ok", "Firmware eingespielt, Stick angebunden")
                 else:
                     sag("Firmware eingespielt. Der Stick meldet sich noch "
                         "nicht — bitte kurz warten.")
-                    if merke:
-                        merke("warn", "Firmware eingespielt, aber der Stick "
-                                      "meldet sich noch nicht.")
+                    merke("warn", "Firmware eingespielt, aber der Stick "
+                                  "meldet sich noch nicht.")
             except Exception as ex:
                 sag(f"Fehler: {ex}")
+                merke("bad", f"Firmware nicht eingespielt: {ex}")
             finally:
                 lc.flash_laeuft = False
                 with FLASH_LOCK:

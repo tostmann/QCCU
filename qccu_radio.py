@@ -2852,7 +2852,17 @@ class Radio:
         return m.group(0).strip()
 
     def release_for_flash(self):
-        """Stick in den Bootlader schicken und den Port GANZ loslassen."""
+        """Stick in den Bootlader schicken und den Port GANZ loslassen.
+
+        ⚠️ `tot` steht schon VOR dem `B01`. Der Stick verlaesst den USB, bevor
+        `stop()` greift, und der Lesefaden hielt das fuer einen Verlust: nach
+        jedem gewollten Einspielen stand ein rotes „Funkzugang zum Stick
+        verloren" unter „Zuletzt geschehen" (am Aufbau gesehen, 24.09.2026).
+        Bei gesetztem `tot` schweigt `_abmelden`. Bleibt der Bootlader aus,
+        loest der Waechter den Funk wegen `tot` trotzdem und sucht den Stick.
+        """
+        self.tot = True
+        self.tot_grund = "zum Einspielen freigegeben"
         try:
             self._submit("B01", "ask")
         except Exception:
@@ -2900,6 +2910,9 @@ class Radio:
         Das Anbinden macht absichtlich NICHT dieser Faden, sondern der
         Waechter in qccu.py — dort liegt sie schon, samt Suche nach der
         gemerkten Seriennummer, Einrichtung und CUL-Zugang.
+
+        Steht `tot` schon, bleibt es still: ein zweiter Fehler meldet nichts
+        Neues, und nach `release_for_flash` ist der Abgang gewollt.
         """
         if self.tot:
             return
