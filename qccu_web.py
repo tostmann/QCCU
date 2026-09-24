@@ -1032,13 +1032,15 @@ async function laden(){
     kf.dataset.an = an ? '1' : '0';
   }
   // Der Abgleich im Stick (q-culfw ab 2.0.101, `mJ`): womit der Sender
-  // startet — ein eigener, am Sender gemessener Wert aus dem EEPROM oder der
-  // feste Wert der Platine. Aeltere Firmware meldet nichts, dann keine Zeile.
+  // startet — ein eigener, am Sender gemessener Wert aus dem EEPROM, der am
+  // busware-Pruefplatz gemessene Werksabgleich (ab 2.0.110) oder der feste
+  // Wert der Platine. Aeltere Firmware meldet nichts, dann keine Zeile.
   const stickAbgl=r.abgleich;
   if(stickAbgl){
     const w=stickAbgl.wert>127?stickAbgl.wert-256:stickAbgl.wert;
     h+='<dt>Frequenzabgleich</dt><dd>FSCTRL0 '+(w>0?'+':'')+w
       +(stickAbgl.quelle==='ee'?' &mdash; im Stick gespeichert'
+       :stickAbgl.quelle==='werk'?' &mdash; Werksabgleich (am Prüfplatz gemessen)'
                         :' &mdash; Wert der Platine, kein eigener Abgleich');
     // Speichern lohnt nur, wenn ein Versatz eingestellt ist, der noch NICHT
     // im Stick steht — und nur, wenn er am Stick auch WIRKT: sonst legte man
@@ -1053,8 +1055,9 @@ async function laden(){
       h+='<br><span class="mut">Dieser Versatz steckt schon im Abgleich des '
         +'Sticks — die Einstellung <code>freq_offset</code> kann entfernt werden.</span>';
     else if(stickAbgl.warnung)
-      h+='<br><span class="warn">Der Stick trägt einen eigenen Abgleich, und '
-        +'zusätzlich ist ein Versatz eingestellt: er wird daraufaddiert.</span>';
+      h+='<br><span class="warn">Der Stick trägt '
+        +(stickAbgl.quelle==='werk'?'einen Werksabgleich':'einen eigenen Abgleich')
+        +', und zusätzlich ist ein Versatz eingestellt: er wird daraufaddiert.</span>';
     h+='</dd>';
   }
   // ⚠️ Was der Stick BESTAETIGT hat, nicht was eingestellt wurde. Ein

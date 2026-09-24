@@ -256,7 +256,7 @@ Fehlerhafte Argumente: `Pm ERR`.
 | Befehl | Wirkung | Antwort |
 |---|---|---|
 | `mH1` / `mH0` | Frequenzdiagnose: je empfangenem Frame mit gültiger Prüfsumme eine `PH`-Zeile — **auch fremde Netze**, mit dem ganzen Luftframe | `Pm H=1` |
-| `mJ` / `mJ<hh>` / `mJ-` | Frequenzabgleich dieses Sticks im EEPROM: zeigen / `FSCTRL0` ablegen und sofort einstellen / löschen (zurück auf `0x11`). Gilt ab dem nächsten Start statt `0x11`, überlebt Flash und `mV`. Ab 2.0.101; 2.0.95 antwortet `Pm ERR` | `Pm J=<hh> ee` (aus dem EEPROM) oder `Pm J=11 platine`; `Pm ERR` bei anderer Eingabe als zwei Hexziffern oder `-` |
+| `mJ` / `mJ<hh>` / `mJ-` | Frequenzabgleich dieses Sticks im EEPROM: zeigen / `FSCTRL0` ablegen und sofort einstellen / löschen (zurück auf den Werksabgleich, sonst `0x11`). Gilt ab dem nächsten Start statt `0x11`, überlebt Flash und `mV`. Ab 2.0.101; 2.0.95 antwortet `Pm ERR`. Ab 2.0.110 liest ein CUL V3 (868) zusätzlich den am busware-Prüfplatz gemessenen Werksabgleich (EEPROM `0x3D8`/`0x3D9`); ein eigener Abgleich geht vor | `Pm J=<hh> ee` (eigener Abgleich), `Pm J=<hh> werk` (Werksabgleich) oder `Pm J=11 platine`; `Pm ERR` bei anderer Eingabe als zwei Hexziffern oder `-` |
 | `mV` | Löschmarke dieses Sticks zeigen (aus der Werkskennung, je Stick anders) | `Pm marke=<8hex> — loeschen mit mV<8hex> (ALLES weg: Kennung, Schluessel, Zaehler)`; ohne lesbare Werkskennung `Pm ERR keine Seriennummer` |
 | `mV<marke 8hex>` | **Urzustand**: Kennung, Aufkleber- und Netzwerkschlüssel, Adresse, Sendezähler löschen, dann Neustart. Die Werkskennung bleibt | `Pm Urzustand — Kennung, Schluessel und Zaehler geloescht`; falsche Marke `Pm ERR marke — erst mV fragen` |
 

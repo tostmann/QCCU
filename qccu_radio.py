@@ -1479,7 +1479,7 @@ class Radio:
         # `_frequenzversatz_setzen`.
         self._fsctrl0_merk = None
         # Was der Stick selbst ueber seinen Frequenzabgleich sagt (`mJ`, ab
-        # q-culfw 2.0.101): {"wert": <FSCTRL0 roh>, "quelle": "ee"|"platine"},
+        # q-culfw 2.0.101): {"wert": <FSCTRL0 roh>, "quelle": "ee"|"werk"|"platine"},
         # oder None bei aelterer Firmware. Gelesen in `setup`.
         self.abgleich = None
         # Was beim Speichern in den Stick gewandert ist: {"wert": <roh>,
@@ -1918,9 +1918,11 @@ class Radio:
     def _abgleich_lesen(self):
         """Den Frequenzabgleich des Sticks erfragen (`mJ`, ab q-culfw 2.0.101).
 
-        Rueckgabe {"wert": FSCTRL0 roh, "quelle": "ee" | "platine"} — `ee`
-        heisst: der Stick traegt einen eigenen, am Sender gemessenen Abgleich im
-        EEPROM, `platine`: er laeuft mit dem festen Wert seiner Platine. None,
+        Rueckgabe {"wert": FSCTRL0 roh, "quelle": "ee" | "werk" | "platine"} —
+        `ee` heisst: der Stick traegt einen eigenen, am Sender gemessenen
+        Abgleich im EEPROM, `werk`: den am busware-Pruefplatz gemessenen
+        (q-culfw ab 2.0.110, CUL V3 868), `platine`: er laeuft mit dem festen
+        Wert seiner Platine. None,
         wenn die Firmware `mJ` nicht kennt (bis 2.0.100: `Pm ERR`) oder nicht
         antwortet.
 
@@ -1950,7 +1952,7 @@ class Radio:
                 if not z:
                     continue
                 self._log("<<", z)
-                m = re.search(r"Pm J=([0-9A-F]{2}) (ee|platine)(?![0-9A-Za-z])", z)
+                m = re.search(r"Pm J=([0-9A-F]{2}) (ee|werk|platine)(?![0-9A-Za-z])", z)
                 if m:
                     return {"wert": int(m.group(1), 16), "quelle": m.group(2)}
                 if "Pm ERR" in z:
@@ -1986,7 +1988,7 @@ class Radio:
 
         `eingerechnet`: der eingestellte `freq_offset` steckt schon im Wert im
         Stick (dann rechnet QCCU ihn nicht noch einmal drauf).
-        `warnung`: der Stick traegt einen eigenen Abgleich UND es ist ein
+        `warnung`: der Stick traegt einen Abgleich (eigenen oder vom Werk) UND es ist ein
         `freq_offset` eingestellt, der nachweislich NICHT darin steckt — das
         ist entweder ein gewollter Feintrimm oder eine verlorene Marke.
         """
@@ -1996,7 +1998,9 @@ class Radio:
             m = getattr(self, "_abgl_marke", None)
             a["eingerechnet"] = bool(n and m and m.get("wert") == a["wert"]
                                      and int(m.get("eingerechnet", 0)) == n)
-            a["warnung"] = bool(n and a["quelle"] == "ee"
+            # Auch beim Werksabgleich: ein alter `freq_offset`, der einen
+            # unabgeglichenen Stick ausglich, kaeme sonst unbemerkt obendrauf.
+            a["warnung"] = bool(n and a["quelle"] in ("ee", "werk")
                                 and not a["eingerechnet"])
         return a
 
@@ -2037,13 +2041,13 @@ class Radio:
                         f"0x{int(fe.get('fsctrl0', 0)) & 0xFF:02X} — nichts "
                         f"gespeichert.")
         a = self._ask("mJ%02X" % wert,
-                      r"Pm J=([0-9A-F]{2}) (ee|platine)(?![0-9A-Za-z])")
+                      r"Pm J=([0-9A-F]{2}) (ee|werk|platine)(?![0-9A-Za-z])")
         if not a:
             # Eine ausgebliebene Bestaetigung heisst NICHT, dass nichts
             # geschrieben wurde (bei aktivem CUL-Zugang klebt die Antwort
             # hinter einer Empfangszeile und erreicht den Auftrag nicht) —
             # also nachlesen, statt einen falschen Zustand zu behalten.
-            a = self._ask("mJ", r"Pm J=([0-9A-F]{2}) (ee|platine)(?![0-9A-Za-z])")
+            a = self._ask("mJ", r"Pm J=([0-9A-F]{2}) (ee|werk|platine)(?![0-9A-Za-z])")
             if not a:
                 return {}, ("Der Stick hat das Speichern nicht bestaetigt und "
                             "antwortet auch auf Nachfrage nicht. Es kann "
@@ -2071,29 +2075,33 @@ class Radio:
         return self.abgleich_zustand(), None
 
     def abgleich_loeschen(self):
-        """Den Abgleich im Stick verwerfen (`mJ-`) — zurueck auf den Wert der
-        Platine. Rueckgabe (zustand, fehler)."""
+        """Den eigenen Abgleich im Stick verwerfen (`mJ-`) — zurueck auf den
+        Werksabgleich, sonst auf den Wert der Platine. Rueckgabe (zustand, fehler)."""
         if not self.abgleich:
             return {}, ("Dieser Stick kennt den Abgleich noch nicht — dafuer "
                         "braucht es q-culfw 2.0.101 oder neuer.")
-        a = self._ask("mJ-", r"Pm J=([0-9A-F]{2}) (ee|platine)(?![0-9A-Za-z])")
+        a = self._ask("mJ-", r"Pm J=([0-9A-F]{2}) (ee|werk|platine)(?![0-9A-Za-z])")
         if not a:
             return {}, "Der Stick hat das Loeschen nicht bestaetigt."
         wert, quelle = int(a.group(1), 16), a.group(2)
-        if quelle != "platine":
+        if quelle == "ee":
             return {}, (f"Der Stick meldet weiter einen eigenen Abgleich "
                         f"(0x{wert:02X}).")
-        self.abgleich = {"wert": wert, "quelle": "platine"}
+        # Danach gilt der Werksabgleich (`werk`, am Pruefplatz gemessen) oder
+        # der Wert der Platine -- beides ist richtig.
+        self.abgleich = {"wert": wert, "quelle": quelle}
         self._abgl_marke = None
         self._fsctrl0_merk = {"basis": wert, "gesetzt": wert}
-        # Der Stick steht ab sofort auf dem Wert der Platine; was vorher ueber
-        # das Setzen des Versatzes gemeldet wurde, gilt nicht mehr. Ein
-        # eingestellter `freq_offset` wirkt erst beim naechsten Anbinden wieder.
+        # Der Stick steht ab sofort auf dem Werksabgleich bzw. dem Wert der
+        # Platine; was vorher ueber das Setzen des Versatzes gemeldet wurde,
+        # gilt nicht mehr. Ein eingestellter `freq_offset` wirkt erst beim
+        # naechsten Anbinden wieder.
         self.freq_ergebnis = None
         self._save_state()
         if self.verbose:
             print(f"  Frequenzabgleich im Stick geloescht — FSCTRL0 "
-                  f"0x{wert:02X} (Wert der Platine)")
+                  f"0x{wert:02X} ("
+                  f"{'Werksabgleich' if quelle == 'werk' else 'Wert der Platine'})")
         return self.abgleich_zustand(), None
 
     def _frequenzversatz_setzen(self):
