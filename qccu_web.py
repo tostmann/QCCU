@@ -1794,7 +1794,15 @@ class WebHandler(BaseHTTPRequestHandler):
                 if lc.radio is not None:
                     sag("Funk wird angehalten, Stick geht in den Bootlader …")
                     if not fw.to_bootloader(lc.radio, spath):
-                        sag("Der Bootlader meldet sich nicht — abgebrochen.")
+                        # Geloescht ist noch nichts (erase kommt erst nach dem
+                        # Bootlader-Nachweis): nach dem Umstecken startet der
+                        # Stick mit seiner bisherigen Firmware. Am 24.09.2026
+                        # an einem Pi-5-Anschluss gesehen — der Bootlader kam
+                        # nach B01 nicht am USB an, erst Umstecken half.
+                        sag("Der Bootlader meldet sich nicht — abgebrochen. "
+                            "Der Stick trägt noch seine bisherige Firmware: "
+                            "abziehen, wieder anstecken und das Aktualisieren "
+                            "erneut starten.")
                         return
                     lc.radio = None
                     klasse.radio = None
